@@ -360,5 +360,9 @@ class RalphOrchestrator:
         
         self.execute_loop()
 
-if __name__ == "__main__":
+def main():
+    """Entry point for the ralph CLI."""
     RalphOrchestrator().start()
+
+if __name__ == "__main__":
+    main()

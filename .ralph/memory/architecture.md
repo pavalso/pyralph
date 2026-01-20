@@ -27,6 +27,7 @@ pytest
 testralph/
 ├── ralph.py        # Main orchestrator and agent logic
 ├── test_ralph.py   # Unit tests (pytest)
+├── pyproject.toml  # Package metadata and build config
 ├── CLAUDE.md       # Instructions for Claude Code
 └── .ralph/         # Agent state directory
     ├── memory/     # Knowledge base (wiki files)
@@ -34,6 +35,19 @@ testralph/
     ├── prd.json    # Current project plan
     ├── progress.txt # Error state (if failing)
     └── ralph_log.txt # Audit trail
+```
+
+## Packaging
+
+The project uses `pyproject.toml` for packaging with setuptools:
+
+- **Build backend**: setuptools + wheel
+- **Entry point**: `ralph` command maps to `ralph:main`
+- **Python requirement**: >=3.8
+
+Install in development mode:
+```bash
+pip install -e .
 ```
 
 ## Core Components
