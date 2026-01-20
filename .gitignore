@@ -2,3 +2,5 @@ __pycache__/
 .pyest_cache__/
 .vscode/
 .claude/
+dist/
+*.egg-info/

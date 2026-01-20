@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ralph"
+version = "0.1.0"
+description = "Autonomous software development agent that iteratively builds projects"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    { name = "Ralph Agent" }
+]
+dependencies = []
+
+[project.scripts]
+ralph = "ralph:main"
+
+[tool.setuptools]
+py-modules = ["ralph"]

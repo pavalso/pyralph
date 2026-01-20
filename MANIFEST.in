@@ -1,0 +1,15 @@
+# Include documentation files
+include CLAUDE.md
+include README.md
+
+# Include package data
+include pyproject.toml
+
+# Exclude agent state directory
+prune .ralph
+
+# Exclude test files
+exclude test_ralph.py
+exclude test_*.py
+prune __pycache__
+prune .pytest_cache
