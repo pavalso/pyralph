@@ -45,11 +45,29 @@ The project uses `pyproject.toml` for packaging with setuptools:
 - **Build backend**: setuptools + wheel
 - **Entry point**: `ralph` command maps to `ralph:main`
 - **Python requirement**: >=3.8
+- **Explicit module**: `py-modules = ["ralph"]` (excludes test files from build)
 
-Install in development mode:
+### Build Commands
+
 ```bash
+# Install build tool (one-time)
+pip install build
+
+# Build wheel and sdist
+python -m build
+
+# Install from wheel
+pip install dist/ralph-0.1.0-py3-none-any.whl
+
+# Install in development mode
 pip install -e .
 ```
+
+### Distribution Files
+
+After running `python -m build`:
+- `dist/ralph-0.1.0-py3-none-any.whl` - Wheel distribution
+- `dist/ralph-0.1.0.tar.gz` - Source distribution
 
 ### MANIFEST.in
 
@@ -57,11 +75,6 @@ Controls what files are included in source distributions:
 
 - **Included**: `CLAUDE.md`, `pyproject.toml`
 - **Excluded**: `.ralph/` (agent state), test files, `__pycache__/`, `.pytest_cache/`
-
-Build a distribution:
-```bash
-python -m build
-```
 
 ## Core Components
 
