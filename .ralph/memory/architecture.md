@@ -29,6 +29,7 @@ testralph/
 ├── test_ralph.py   # Unit tests (pytest)
 ├── pyproject.toml  # Package metadata and build config
 ├── MANIFEST.in     # Distribution file inclusions/exclusions
+├── README.md       # PyPI long description
 ├── CLAUDE.md       # Instructions for Claude Code
 └── .ralph/         # Agent state directory
     ├── memory/     # Knowledge base (wiki files)
@@ -73,7 +74,7 @@ After running `python -m build`:
 
 Controls what files are included in source distributions:
 
-- **Included**: `CLAUDE.md`, `pyproject.toml`
+- **Included**: `CLAUDE.md`, `README.md`, `pyproject.toml`
 - **Excluded**: `.ralph/` (agent state), test files, `__pycache__/`, `.pytest_cache/`
 
 ## Core Components
