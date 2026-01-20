@@ -28,6 +28,7 @@ testralph/
 ├── ralph.py        # Main orchestrator and agent logic
 ├── test_ralph.py   # Unit tests (pytest)
 ├── pyproject.toml  # Package metadata and build config
+├── MANIFEST.in     # Distribution file inclusions/exclusions
 ├── CLAUDE.md       # Instructions for Claude Code
 └── .ralph/         # Agent state directory
     ├── memory/     # Knowledge base (wiki files)
@@ -48,6 +49,18 @@ The project uses `pyproject.toml` for packaging with setuptools:
 Install in development mode:
 ```bash
 pip install -e .
+```
+
+### MANIFEST.in
+
+Controls what files are included in source distributions:
+
+- **Included**: `CLAUDE.md`, `pyproject.toml`
+- **Excluded**: `.ralph/` (agent state), test files, `__pycache__/`, `.pytest_cache/`
+
+Build a distribution:
+```bash
+python -m build
 ```
 
 ## Core Components
