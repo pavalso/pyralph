@@ -179,6 +179,29 @@ class GitUtils:
         stdout, stderr, code = Shell.run(cmd)
         return code == 0
 
+    @staticmethod
+    def merge_prd_to_default(default_branch: str, prd_branch: str) -> bool:
+        """
+        Merge the PRD feature branch to the default branch with --no-ff flag.
+
+        Args:
+            default_branch: The default branch (e.g., 'main', 'master')
+            prd_branch: The PRD feature branch to merge (e.g., 'feature/git-workflow-prd')
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        # Checkout the default branch
+        stdout, stderr, code = Shell.run(f"git checkout {default_branch}")
+        if code != 0:
+            return False
+
+        # Merge with --no-ff to create a merge commit
+        commit_message = f"Merge PRD: {prd_branch}"
+        cmd = f'git merge --no-ff {prd_branch} -m "{commit_message}"'
+        stdout, stderr, code = Shell.run(cmd)
+        return code == 0
+
 class Shell:
     """Safe wrapper for subprocess calls."""
 
@@ -383,19 +406,29 @@ This branch is detected at the start of the workflow and used as the base for fe
     def execute_loop(self):
         prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
         test_cmd = self.memory.extract_test_command()
-        
+
         Logger.info(f"\n🚀 Starting Loop. Verify Command: '{test_cmd}'", "YELLOW")
-        
+
         for task in prd.get('userStories', []):
             if task.get('status') == 'completed': continue
-            
+
             Logger.info(f"\n▶️  Task {task['id']}: {task['description']}", "CYAN")
             self._execute_task(task, test_cmd)
-            
+
             # Save state
             CONF.PRD_FILE.write_text(json.dumps(prd, indent=2), encoding='utf-8')
 
         Logger.info("\n🎉 All Tasks Complete.", "GREEN")
+
+        # Merge PRD branch to default branch
+        default_branch = GitUtils.detect_default_branch()
+        prd_branch = prd.get('featureBranch', 'feature/task-002')
+        Logger.info(f"\n📦 Merging {prd_branch} to {default_branch}...", "CYAN")
+        if GitUtils.merge_prd_to_default(default_branch, prd_branch):
+            Logger.info(f"✅ PRD merged to default branch with merge commit.", "GREEN")
+        else:
+            Logger.info(f"⚠️ PRD merge failed, but all tasks completed.", "YELLOW")
+
         self._archive_prd()
 
     def _execute_task(self, task: dict, test_cmd: str):

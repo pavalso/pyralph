@@ -107,6 +107,33 @@ After a task is successfully verified, the task branch is merged back to the PRD
 4. Task is marked completed
 5. Task branch remains available for historical reference
 
+## PRD Branch Merge to Default (TASK-005)
+
+**Implemented**: `GitUtils.merge_prd_to_default(default_branch: str, prd_branch: str) -> bool`
+
+After all user stories are successfully completed, the PRD feature branch is merged back to the default branch:
+
+1. **Checkout default branch** - switches to the default branch (main, master, etc.)
+2. **Merge with --no-ff** - creates a merge commit using the `--no-ff` flag (no fast-forward)
+3. **Commit message format** - `Merge PRD: {featureBranch}`
+4. **Returns**: True if successful, False otherwise
+
+### Integration
+
+- Called after all tasks complete in `execute_loop()`
+- Ensures the completed feature work is integrated back to the main line of development
+- Preserves branch history with a final merge commit
+- Allows for feature rollback if needed
+
+### Complete Workflow
+
+1. **Default branch detected** (TASK-001 ✓)
+2. **Feature branch created** from default branch (TASK-002 ✓)
+3. **Task branches created** from PRD feature branch (TASK-003 ✓)
+4. **Task branches merged** to PRD with merge commits (TASK-004 ✓)
+5. **PRD branch merged** to default branch with merge commit (TASK-005 ✓)
+6. **Orchestrator manages** the entire workflow (TASK-006)
+
 ## Implementation Status
 
 All core git workflow features have been implemented and tested:
@@ -115,7 +142,7 @@ All core git workflow features have been implemented and tested:
 2. ✅ **TASK-002**: Feature branch creation from default branch
 3. ✅ **TASK-003**: Task branch creation from PRD feature branch
 4. ✅ **TASK-004**: Merge task branch to PRD with merge commits
-5. ⏳ **TASK-005**: PRD branch merge to default branch (pending)
+5. ✅ **TASK-005**: PRD branch merge to default branch (completed)
 6. ⏳ **TASK-006**: Orchestrator integration (pending)
 
 ## Integration Points
