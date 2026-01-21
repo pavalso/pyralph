@@ -98,6 +98,27 @@ class GitUtils:
         # Last resort default
         return "main"
 
+    @staticmethod
+    def create_feature_branch(base_branch: str, feature_branch_name: str) -> bool:
+        """
+        Create and checkout a new feature branch from the specified base branch.
+
+        Args:
+            base_branch: The branch to branch from (e.g., 'main', 'master')
+            feature_branch_name: The name for the new feature branch (e.g., 'feature/task-001')
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        # Ensure we're on the base branch first
+        stdout, stderr, code = Shell.run(f"git checkout {base_branch}")
+        if code != 0:
+            return False
+
+        # Create and checkout the feature branch
+        stdout, stderr, code = Shell.run(f"git checkout -b {feature_branch_name}")
+        return code == 0
+
 class Shell:
     """Safe wrapper for subprocess calls."""
 
@@ -322,16 +343,30 @@ This branch is detected at the start of the workflow and used as the base for fe
         while retries < CONF.MAX_RETRIES:
             memory_tree = self.memory.get_structure()
             prev_errors = CONF.PROGRESS_FILE.read_text(encoding='utf-8') if CONF.PROGRESS_FILE.exists() else ""
-            
+
+            # On first retry (retries == 0), create feature branch
+            if retries == 0:
+                prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+                default_branch = GitUtils.detect_default_branch()
+                feature_branch = prd.get('featureBranch', f"feature/task-002")
+
+                Logger.info(f"   📦 Creating feature branch: {feature_branch}", "CYAN")
+                if GitUtils.create_feature_branch(default_branch, feature_branch):
+                    Logger.info(f"   ✅ Feature branch created and checked out.", "GREEN")
+                else:
+                    self._record_failure(retries, "Feature Branch Creation Failed", f"Failed to create {feature_branch}")
+                    retries += 1
+                    continue
+
             prompt = f"""
             ROLE: Developer (Ralph). TASK: {task['id']}
             DESC: {task['description']}
             CRITERIA: {task['acceptanceCriteria']}
-            
+
             CONTEXT:
             You have access to documentation in:
             {memory_tree}
-            
+
             INSTRUCTIONS:
             1. PLAN your approach.
             2. IMPLEMENT the code.
@@ -346,12 +381,12 @@ This branch is detected at the start of the workflow and used as the base for fe
             - Use YAML frontmatter with type: wiki.
             - The file names MUST be unique and descriptive.
             - You can create directories under .ralph/memory/ if needed.
-            
+
             FEEDBACK: {prev_errors}
             """
-            
+
             success, output = self.agent.run(prompt, f"WORKER-{task['id']}")
-            
+
             if not success:
                 self._record_failure(retries, "CLI Crash", output)
                 retries += 1
@@ -374,9 +409,9 @@ This branch is detected at the start of the workflow and used as the base for fe
                     self._record_failure(retries, "Verification Failed", stderr[-1000:])
             else:
                 self._record_failure(retries, "Agent Reported Failure", output[-1000:])
-            
+
             retries += 1
-        
+
         Logger.info(f"🛑 Max retries for {task['id']}.", "RED")
         sys.exit(1)
 

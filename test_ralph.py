@@ -111,6 +111,33 @@ def test_detect_default_branch_detached_head(MockShellRun):
     branch = GitUtils.detect_default_branch()
     assert branch == "main"
 
+@patch("ralph.Shell.run")
+def test_create_feature_branch_success(MockShellRun):
+    """Test successful feature branch creation."""
+    MockShellRun.side_effect = [
+        ("", "", 0),  # git checkout base_branch success
+        ("", "", 0),  # git checkout -b feature_branch success
+    ]
+    result = GitUtils.create_feature_branch("main", "feature/task-002")
+    assert result is True
+
+@patch("ralph.Shell.run")
+def test_create_feature_branch_checkout_base_fails(MockShellRun):
+    """Test feature branch creation when checkout base branch fails."""
+    MockShellRun.return_value = ("", "error", 1)
+    result = GitUtils.create_feature_branch("main", "feature/task-002")
+    assert result is False
+
+@patch("ralph.Shell.run")
+def test_create_feature_branch_create_fails(MockShellRun):
+    """Test feature branch creation when creating new branch fails."""
+    MockShellRun.side_effect = [
+        ("", "", 0),  # git checkout base_branch success
+        ("", "error", 1),  # git checkout -b feature_branch fails
+    ]
+    result = GitUtils.create_feature_branch("main", "feature/task-002")
+    assert result is False
+
 # ==============================================================================
 # ORCHESTRATOR TESTS
 # ==============================================================================
@@ -136,23 +163,33 @@ def test_planner_retry_on_failure(MockAgentClass, mock_config):
 @patch("ralph.ClaudeAgent")
 def test_execute_task_verification_success(MockAgentClass, MockShell, mock_config):
     """Test full flow: Agent writes code -> Tests Pass -> Commit -> Archive."""
-    
+
     # Setup PRD
-    prd = {"userStories": [{"id": "T1", "description": "desc", "acceptanceCriteria": [], "status": "pending"}]}
+    prd = {
+        "featureBranch": "feature/task-002",
+        "userStories": [{"id": "T1", "description": "desc", "acceptanceCriteria": [], "status": "pending"}]
+    }
     mock_config.PRD_FILE.write_text(json.dumps(prd))
-    
+
     mock_agent_instance = MockAgentClass.return_value
     mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
-    
-    MockShell.return_value = ("Tests Passed", "", 0)
+
+    # Sequence: detect_branch, checkout base, checkout -b feature, test, commit
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0),  # git checkout -b feature/task-002
+        ("Tests Passed", "", 0),  # pytest
+        ("", "", 0)  # git commit
+    ]
 
     orchestrator = RalphOrchestrator()
     orchestrator.execute_loop()
-    
+
     # FIX: Check ARCHIVE directory (PRD_FILE is gone/moved)
     archives = list(mock_config.ARCHIVE_DIR.glob("*.json"))
     assert len(archives) == 1
-    
+
     archived_data = json.loads(archives[0].read_text())
     assert archived_data["userStories"][0]["status"] == "completed"
 
@@ -160,25 +197,62 @@ def test_execute_task_verification_success(MockAgentClass, MockShell, mock_confi
 @patch("ralph.ClaudeAgent")
 def test_execute_task_verification_fail(MockAgentClass, MockShell, mock_config):
     """Test flow: Agent claims success -> Tests Fail -> Loop Retries."""
-    
-    prd = {"userStories": [{"id": "T1", "description": "desc", "acceptanceCriteria": [], "status": "pending"}]}
+
+    prd = {
+        "featureBranch": "feature/task-002",
+        "userStories": [{"id": "T1", "description": "desc", "acceptanceCriteria": [], "status": "pending"}]
+    }
     mock_config.PRD_FILE.write_text(json.dumps(prd))
-    
+
     mock_agent_instance = MockAgentClass.return_value
     mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
-    
-    # 1. Fail -> 2. Success -> 3. Git Commit
+
+    # Sequence: detect_branch, checkout base, checkout -b feature, test (fail), test (pass), commit
     MockShell.side_effect = [
-        ("stdout", "Tests Failed", 1), 
-        ("stdout", "Tests Passed", 0),
-        ("stdout", "", 0)
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0),  # git checkout -b feature/task-002
+        ("stdout", "Tests Failed", 1),  # test fails
+        ("stdout", "Tests Passed", 0),  # test passes on retry
+        ("stdout", "", 0)  # git commit
     ]
 
     orchestrator = RalphOrchestrator()
     orchestrator.execute_loop()
-    
+
     # Check Archive
     archives = list(mock_config.ARCHIVE_DIR.glob("*.json"))
     assert len(archives) == 1
     archived_data = json.loads(archives[0].read_text())
     assert archived_data["userStories"][0]["status"] == "completed"
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+def test_execute_task_creates_feature_branch(MockAgentClass, MockShell, mock_config):
+    """Test that feature branch is created before task execution."""
+
+    prd = {
+        "featureBranch": "feature/task-002",
+        "userStories": [{"id": "T1", "description": "desc", "acceptanceCriteria": [], "status": "pending"}]
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
+
+    # Sequence: git symbolic-ref (detect branch), git checkout main, git checkout -b feature/task-002, pytest, git commit
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0),  # git checkout -b feature/task-002
+        ("Tests Passed", "", 0),  # pytest
+        ("", "", 0)  # git commit
+    ]
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.execute_loop()
+
+    # Verify the sequence included branch creation calls
+    shell_calls = [call[0][0] for call in MockShell.call_args_list]
+    assert any("git checkout main" in call for call in shell_calls)
+    assert any("git checkout -b feature/task-002" in call for call in shell_calls)

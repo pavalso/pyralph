@@ -22,6 +22,25 @@ Ralph detects the repository's default branch during initialization using the fo
 3. **Default**: Falls back to "main"
    - Used when all detection methods fail
 
+## Feature Branch Creation (TASK-002)
+
+**Implemented**: `GitUtils.create_feature_branch(base_branch: str, feature_branch_name: str) -> bool`
+
+Each task execution now creates a feature branch before agent task execution:
+
+1. **Checkout base branch** - ensures we're on the default branch
+2. **Create and checkout feature branch** - new branch named `feature/{featureBranch}` from PRD
+3. **Returns**: `True` if successful, `False` if either step fails
+
+### Naming Convention
+- Format: `feature/{featureBranch}` where `featureBranch` is from `.ralph/prd.json`
+- Example: `feature/git-workflow-prd`
+
+### Integration
+- Called at start of each task (retries share same branch)
+- Feature branch name stored in PRD JSON `featureBranch` field
+- Default fallback: `feature/task-002` if featureBranch not set
+
 ## Storage Location
 
 The detected default branch is:
@@ -38,5 +57,5 @@ The detected default branch is:
 ## Integration Points
 
 - **Architect Phase**: Detects and stores default branch
-- **Feature Branch Creation** (TASK-002): Uses detected branch as base
+- **Feature Branch Creation** (TASK-002 ✓): Creates feature branch at task start
 - **Workflow Management** (TASK-006): Reference for branch hierarchy
