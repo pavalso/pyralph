@@ -400,6 +400,16 @@ class RalphOrchestrator:
                 task_id = task['id']
                 description = task['description']
 
+            # Load prompt.md if it exists
+            prompt_md_content = ""
+            prompt_md_path = CONF.BASE_DIR / "prompt.md"
+            if prompt_md_path.exists():
+                try:
+                    prompt_md_content = prompt_md_path.read_text(encoding='utf-8')
+                    prompt_md_content = f"\n\n--- ADDITIONAL DIRECTIVES ---\n{prompt_md_content}"
+                except Exception as e:
+                    Logger.debug(f"Failed to read prompt.md: {e}")
+
             prompt = f"""
             ROLE: Developer (Ralph). TASK: {task['id']}
             DESC: {task['description']}
@@ -424,7 +434,7 @@ class RalphOrchestrator:
             - The file names MUST be unique and descriptive.
             - You can create directories under .ralph/memory/ if needed.
 
-            FEEDBACK: {prev_errors}
+            FEEDBACK: {prev_errors}{prompt_md_content}
             """
 
             success, output = self.agent.run(prompt, f"WORKER-{task['id']}")
