@@ -138,6 +138,72 @@ def test_create_feature_branch_create_fails(MockShellRun):
     result = GitUtils.create_feature_branch("main", "feature/task-002")
     assert result is False
 
+@patch("ralph.Shell.run")
+def test_create_task_branch_success(MockShellRun):
+    """Test successful task branch creation from PRD branch."""
+    MockShellRun.side_effect = [
+        ("", "", 0),  # git checkout prd_branch success
+        ("", "", 0),  # git checkout -b task_branch success
+    ]
+    success, branch_name = GitUtils.create_task_branch("feature/git-workflow-prd", "TASK-003", "Implement user story branches")
+    assert success is True
+    assert branch_name == "task/task-003-implement-user-story-branches"
+
+@patch("ralph.Shell.run")
+def test_create_task_branch_slug_generation(MockShellRun):
+    """Test slug generation with various special characters."""
+    MockShellRun.side_effect = [
+        ("", "", 0),  # git checkout prd_branch success
+        ("", "", 0),  # git checkout -b task_branch success
+    ]
+    success, branch_name = GitUtils.create_task_branch("feature/git-workflow-prd", "TASK-001", "Implement: Default Branch (Detection)")
+    assert success is True
+    # Verify slug handles special characters
+    assert branch_name == "task/task-001-implement-default-branch-detection"
+
+@patch("ralph.Shell.run")
+def test_create_task_branch_checkout_prd_fails(MockShellRun):
+    """Test task branch creation when checkout to PRD branch fails."""
+    MockShellRun.return_value = ("", "error", 1)
+    success, branch_name = GitUtils.create_task_branch("feature/git-workflow-prd", "TASK-003", "Implement user story branches")
+    assert success is False
+    assert branch_name == "task/task-003-implement-user-story-branches"
+
+@patch("ralph.Shell.run")
+def test_create_task_branch_create_fails(MockShellRun):
+    """Test task branch creation when creating new branch fails."""
+    MockShellRun.side_effect = [
+        ("", "", 0),  # git checkout prd_branch success
+        ("", "error", 1),  # git checkout -b task_branch fails
+    ]
+    success, branch_name = GitUtils.create_task_branch("feature/git-workflow-prd", "TASK-003", "Implement user story branches")
+    assert success is False
+    assert branch_name == "task/task-003-implement-user-story-branches"
+
+@patch("ralph.Shell.run")
+def test_create_task_branch_naming_convention(MockShellRun):
+    """Test that task branches follow naming convention: task/{TASK-ID}-{description-slug}"""
+    MockShellRun.side_effect = [
+        ("", "", 0),  # git checkout prd_branch success
+        ("", "", 0),  # git checkout -b task_branch success
+    ]
+
+    # Test with different task IDs and descriptions
+    test_cases = [
+        ("TASK-001", "Default branch detection", "task/task-001-default-branch-detection"),
+        ("TASK-002", "Feature branch creation", "task/task-002-feature-branch-creation"),
+        ("TASK-003", "User story branches", "task/task-003-user-story-branches"),
+    ]
+
+    for task_id, description, expected_branch in test_cases:
+        MockShellRun.side_effect = [
+            ("", "", 0),  # git checkout prd_branch success
+            ("", "", 0),  # git checkout -b task_branch success
+        ]
+        success, branch_name = GitUtils.create_task_branch("feature/git-workflow-prd", task_id, description)
+        assert success is True
+        assert branch_name == expected_branch
+
 # ==============================================================================
 # ORCHESTRATOR TESTS
 # ==============================================================================
@@ -174,11 +240,13 @@ def test_execute_task_verification_success(MockAgentClass, MockShell, mock_confi
     mock_agent_instance = MockAgentClass.return_value
     mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
 
-    # Sequence: detect_branch, checkout base, checkout -b feature, test, commit
+    # Sequence: detect_branch, checkout base, checkout -b feature, checkout feature (for task branch), checkout -b task branch, test, commit
     MockShell.side_effect = [
         ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
         ("", "", 0),  # git checkout main
         ("", "", 0),  # git checkout -b feature/task-002
+        ("", "", 0),  # git checkout feature/task-002 (for task branch)
+        ("", "", 0),  # git checkout -b task/t1-desc
         ("Tests Passed", "", 0),  # pytest
         ("", "", 0)  # git commit
     ]
@@ -207,11 +275,13 @@ def test_execute_task_verification_fail(MockAgentClass, MockShell, mock_config):
     mock_agent_instance = MockAgentClass.return_value
     mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
 
-    # Sequence: detect_branch, checkout base, checkout -b feature, test (fail), test (pass), commit
+    # Sequence: detect_branch, checkout base, checkout -b feature, checkout feature (for task), checkout -b task branch, test (fail), test (pass), commit
     MockShell.side_effect = [
         ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
         ("", "", 0),  # git checkout main
         ("", "", 0),  # git checkout -b feature/task-002
+        ("", "", 0),  # git checkout feature/task-002 (for task branch)
+        ("", "", 0),  # git checkout -b task/t1-desc
         ("stdout", "Tests Failed", 1),  # test fails
         ("stdout", "Tests Passed", 0),  # test passes on retry
         ("stdout", "", 0)  # git commit
@@ -240,11 +310,13 @@ def test_execute_task_creates_feature_branch(MockAgentClass, MockShell, mock_con
     mock_agent_instance = MockAgentClass.return_value
     mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
 
-    # Sequence: git symbolic-ref (detect branch), git checkout main, git checkout -b feature/task-002, pytest, git commit
+    # Sequence: git symbolic-ref, git checkout main, git checkout -b feature/task-002, git checkout feature/task-002 (for task), git checkout -b task, pytest, git commit
     MockShell.side_effect = [
         ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
         ("", "", 0),  # git checkout main
         ("", "", 0),  # git checkout -b feature/task-002
+        ("", "", 0),  # git checkout feature/task-002 (for task branch)
+        ("", "", 0),  # git checkout -b task/t1-desc
         ("Tests Passed", "", 0),  # pytest
         ("", "", 0)  # git commit
     ]
@@ -256,3 +328,57 @@ def test_execute_task_creates_feature_branch(MockAgentClass, MockShell, mock_con
     shell_calls = [call[0][0] for call in MockShell.call_args_list]
     assert any("git checkout main" in call for call in shell_calls)
     assert any("git checkout -b feature/task-002" in call for call in shell_calls)
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+def test_execute_task_creates_task_branch_from_prd(MockAgentClass, MockShell, mock_config):
+    """Test that task branch is created from PRD branch during task execution."""
+
+    prd = {
+        "featureBranch": "feature/git-workflow-prd",
+        "userStories": [{"id": "TASK-003", "description": "Implement user story branches", "acceptanceCriteria": [], "status": "pending"}]
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
+
+    # Sequence:
+    # 1. detect_default_branch
+    # 2. git checkout main (for feature branch)
+    # 3. git checkout -b feature/git-workflow-prd (create feature branch)
+    # 4. git checkout feature/git-workflow-prd (for task branch - checkout PRD)
+    # 5. git checkout -b task/task-003-implement-user-story-branches (create task branch)
+    # 6. pytest
+    # 7. git commit
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0),  # git checkout -b feature/git-workflow-prd
+        ("", "", 0),  # git checkout feature/git-workflow-prd (for task branch)
+        ("", "", 0),  # git checkout -b task/task-003-implement-user-story-branches
+        ("Tests Passed", "", 0),  # pytest
+        ("", "", 0)  # git commit
+    ]
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.execute_loop()
+
+    # Verify the sequence included task branch creation calls
+    shell_calls = [call[0][0] for call in MockShell.call_args_list]
+    assert any("git checkout feature/git-workflow-prd" in call for call in shell_calls)
+    assert any("git checkout -b task/task-003-implement-user-story-branches" in call for call in shell_calls)
+
+    # Verify task branch is created from PRD branch (not from main/default)
+    # The PRD branch should be checked out before creating the task branch
+    prd_checkout_idx = None
+    task_branch_creation_idx = None
+    for i, call in enumerate(shell_calls):
+        if "git checkout feature/git-workflow-prd" in call and "checkout -b" not in call:
+            prd_checkout_idx = i
+        if "git checkout -b task/task-003-implement-user-story-branches" in call:
+            task_branch_creation_idx = i
+
+    # PRD branch should be checked out before task branch creation
+    assert prd_checkout_idx is not None and task_branch_creation_idx is not None
+    assert prd_checkout_idx < task_branch_creation_idx

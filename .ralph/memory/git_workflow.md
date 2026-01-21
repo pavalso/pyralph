@@ -54,8 +54,36 @@ The detected default branch is:
 - **Local repositories**: Defaults to current branch
 - **Detached HEAD**: Falls back to "main"
 
+## Task Branch Creation (TASK-003)
+
+**Implemented**: `GitUtils.create_task_branch(prd_branch: str, task_id: str, description: str) -> Tuple[bool, str]`
+
+Each task now creates its own branch from the PRD feature branch:
+
+1. **Checkout PRD branch** - ensures we're on the PRD feature branch
+2. **Create and checkout task branch** - new branch named `task/{TASK-ID}-{description-slug}` from PRD
+3. **Returns**: Tuple of (success: bool, branch_name: str)
+
+### Naming Convention
+- Format: `task/{task-id}-{description-slug}` where description is converted to slug
+- Slug generation: lowercase, replace spaces with hyphens, remove special characters
+- Example: `task/task-003-implement-user-story-branches`
+
+### Integration
+- Called after feature branch creation for each task (retries share same branch)
+- Creates branch from the PRD feature branch (not from default branch)
+- Task branches are isolated workspaces for each user story within the feature
+
+### Execution Flow
+1. Create feature branch from default branch
+2. Create task branch from feature branch
+3. Agent executes on task branch
+4. Tests verify on task branch
+5. Commit created on task branch
+
 ## Integration Points
 
 - **Architect Phase**: Detects and stores default branch
 - **Feature Branch Creation** (TASK-002 ✓): Creates feature branch at task start
+- **Task Branch Creation** (TASK-003 ✓): Creates task-specific branch from PRD branch
 - **Workflow Management** (TASK-006): Reference for branch hierarchy

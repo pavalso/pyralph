@@ -119,6 +119,41 @@ class GitUtils:
         stdout, stderr, code = Shell.run(f"git checkout -b {feature_branch_name}")
         return code == 0
 
+    @staticmethod
+    def create_task_branch(prd_branch: str, task_id: str, description: str) -> Tuple[bool, str]:
+        """
+        Create and checkout a task-specific branch from the PRD branch.
+
+        Args:
+            prd_branch: The PRD feature branch to branch from (e.g., 'feature/git-workflow-prd')
+            task_id: The task ID (e.g., 'TASK-003')
+            description: The task description to convert to slug
+
+        Returns:
+            Tuple of (success: bool, branch_name: str)
+        """
+        # Convert description to slug (lowercase, replace spaces with hyphens)
+        slug = description.lower().replace(' ', '-').replace('_', '-')
+        # Remove any characters that aren't alphanumeric or hyphens
+        slug = re.sub(r'[^a-z0-9-]', '', slug)
+        # Remove duplicate hyphens
+        slug = re.sub(r'-+', '-', slug)
+        # Remove leading/trailing hyphens
+        slug = slug.strip('-')
+
+        task_branch = f"task/{task_id.lower()}-{slug}"
+
+        # Ensure we're on the PRD branch first
+        stdout, stderr, code = Shell.run(f"git checkout {prd_branch}")
+        if code != 0:
+            return False, task_branch
+
+        # Create and checkout the task branch
+        stdout, stderr, code = Shell.run(f"git checkout -b {task_branch}")
+        if code == 0:
+            return True, task_branch
+        return False, task_branch
+
 class Shell:
     """Safe wrapper for subprocess calls."""
 
@@ -344,7 +379,7 @@ This branch is detected at the start of the workflow and used as the base for fe
             memory_tree = self.memory.get_structure()
             prev_errors = CONF.PROGRESS_FILE.read_text(encoding='utf-8') if CONF.PROGRESS_FILE.exists() else ""
 
-            # On first retry (retries == 0), create feature branch
+            # On first retry (retries == 0), create feature branch and task branch
             if retries == 0:
                 prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
                 default_branch = GitUtils.detect_default_branch()
@@ -355,6 +390,18 @@ This branch is detected at the start of the workflow and used as the base for fe
                     Logger.info(f"   ✅ Feature branch created and checked out.", "GREEN")
                 else:
                     self._record_failure(retries, "Feature Branch Creation Failed", f"Failed to create {feature_branch}")
+                    retries += 1
+                    continue
+
+                # Create task-specific branch from PRD branch
+                task_id = task['id']
+                description = task['description']
+                Logger.info(f"   📦 Creating task branch from PRD branch: {feature_branch}", "CYAN")
+                success, task_branch = GitUtils.create_task_branch(feature_branch, task_id, description)
+                if success:
+                    Logger.info(f"   ✅ Task branch created and checked out: {task_branch}", "GREEN")
+                else:
+                    self._record_failure(retries, "Task Branch Creation Failed", f"Failed to create task branch from {feature_branch}")
                     retries += 1
                     continue
 
