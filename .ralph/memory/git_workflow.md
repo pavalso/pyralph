@@ -142,8 +142,8 @@ All core git workflow features have been implemented and tested:
 2. ✅ **TASK-002**: Feature branch creation from default branch
 3. ✅ **TASK-003**: Task branch creation from PRD feature branch
 4. ✅ **TASK-004**: Merge task branch to PRD with merge commits
-5. ✅ **TASK-005**: PRD branch merge to default branch (completed)
-6. ⏳ **TASK-006**: Orchestrator integration (pending)
+5. ✅ **TASK-005**: PRD branch merge to default branch
+6. ✅ **TASK-006**: Orchestrator integration (completed)
 
 ## Integration Points
 
@@ -161,3 +161,64 @@ All core git workflow features have been implemented and tested:
 - Commit message format: `Merge {TASK-ID}: {description}`
 - Task branch name is retained across retries for consistency
 - Merge only occurs if `task_branch` variable is successfully set during branch creation
+
+## Orchestrator Integration (TASK-006)
+
+### Branch Lifecycle in RalphOrchestrator
+
+The orchestrator manages the complete branch lifecycle through the `_execute_task()` and `execute_loop()` methods:
+
+#### Task Execution Flow (`_execute_task()`)
+
+1. **Branch Creation** (first retry only)
+   - Detects default branch using `GitUtils.detect_default_branch()`
+   - Creates feature branch from default branch: `GitUtils.create_feature_branch()`
+   - Creates task branch from feature branch: `GitUtils.create_task_branch()`
+   - Branch names are preserved across retries for idempotency
+
+2. **Agent Execution**
+   - Agent works on task branch (isolated workspace)
+   - All changes are committed to task branch
+
+3. **Verification & Merge**
+   - Tests are run to verify agent's work
+   - On success: task branch is merged to PRD with merge commit
+   - Merge uses `--no-ff` flag to preserve history
+   - Git commit created for task completion
+
+#### Loop Completion (`execute_loop()`)
+
+1. **All Tasks Processed**
+   - Each task creates its own branch and is merged to PRD
+   - PRD branch accumulates all completed task changes
+
+2. **Final Integration**
+   - After all tasks complete, PRD branch is merged to default branch
+   - Uses `--no-ff` flag to preserve feature branch history
+   - Merge commit message: `Merge PRD: {featureBranch}`
+
+### Branch Hierarchy
+
+```
+main (or default)
+    └── feature/{featureBranch}        # Created at task start
+            └── task/{TASK-ID}-{slug}  # Created for each task
+            └── task/{TASK-ID}-{slug}  # Created for each task
+            └── task/{TASK-ID}-{slug}  # etc...
+
+After completion, feature branch is merged back to main with final merge commit.
+```
+
+### Error Handling
+
+- Feature branch creation failure: Task execution stops
+- Task branch creation failure: Task execution stops
+- Merge failures: Logged as warning but task marked complete (verification already passed)
+- Retries share same branches for consistency
+
+### Key Variables
+
+- `task_branch`: Stored in `_execute_task()` across retries
+- `featureBranch`: Stored in PRD JSON for persistence
+- `default_branch`: Detected fresh for each major operation
+- `prd_branch`: Derived from PRD JSON
