@@ -38,7 +38,7 @@ def mock_config(tmp_path):
 
 @pytest.fixture(autouse=True)
 def mock_dependencies():
-    with patch("ralph.Shell.check_dependencies"):
+    with patch("ralph.Shell.check_dependencies"), patch("ralph.Logger.info"):
         yield
 
 # ==============================================================================

@@ -553,38 +553,57 @@ This branch is detected at the start of the workflow and used as the base for fe
     def start(self, phase: str = "all", accept_all: bool = False):
         Logger.info(f"🤖 Ralph Agent active in: {CONF.BASE_DIR}", "GREEN")
 
-        if not any(CONF.MEMORY_DIR.iterdir()) or not CONF.PRD_FILE.exists():
-            user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
-            if not user_intent: sys.exit(0)
-
-            if not any(CONF.MEMORY_DIR.iterdir()):
-                self.run_architect(user_intent)
-            if not CONF.PRD_FILE.exists():
-                self.run_planner(user_intent)
-
         # Handle phase-specific execution
         if phase == "architect":
             Logger.info("📋 Phase specified: architect only", "YELLOW")
-            if any(CONF.MEMORY_DIR.iterdir()):
-                Logger.info("⚠️ Memory already exists, skipping architect phase.", "YELLOW")
+            user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
+            if not user_intent: sys.exit(0)
+            self.run_architect(user_intent)
+            Logger.info("✅ Architect phase complete.", "GREEN")
             return
+
         elif phase == "planner":
             Logger.info("📋 Phase specified: planner only", "YELLOW")
             if not any(CONF.MEMORY_DIR.iterdir()):
                 Logger.info("❌ Memory does not exist. Run architect phase first.", "RED")
                 sys.exit(1)
-            if CONF.PRD_FILE.exists():
-                Logger.info("⚠️ PRD already exists, skipping planner phase.", "YELLOW")
+            user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
+            if not user_intent: sys.exit(0)
+            self.run_planner(user_intent)
+            Logger.info("✅ Planner phase complete.", "GREEN")
             return
+
         elif phase == "execute":
             Logger.info("📋 Phase specified: execute only", "YELLOW")
             if not CONF.PRD_FILE.exists():
                 Logger.info("❌ PRD does not exist. Run planner phase first.", "RED")
                 sys.exit(1)
             self.execute_loop()
+            Logger.info("✅ Execute phase complete.", "GREEN")
             return
+
         elif phase == "all":
+            Logger.info("📋 Running all phases...", "YELLOW")
+
+            # Step 1: Architect
+            if not any(CONF.MEMORY_DIR.iterdir()):
+                user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
+                if not user_intent: sys.exit(0)
+                self.run_architect(user_intent)
+            else:
+                Logger.info("📋 Memory already exists, skipping architect phase.", "YELLOW")
+
+            # Step 2: Planner
+            if not CONF.PRD_FILE.exists():
+                user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
+                if not user_intent: sys.exit(0)
+                self.run_planner(user_intent)
+            else:
+                Logger.info("📋 PRD already exists, skipping planner phase.", "YELLOW")
+
+            # Step 3: Execute
             self.execute_loop()
+            Logger.info("✅ All phases complete.", "GREEN")
             return
 
         # Invalid phase (should not reach here with argparse validation)
