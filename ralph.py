@@ -244,7 +244,7 @@ class Shell:
 
 class JsonUtils:
     """Robust JSON parsing for LLM outputs."""
-    
+
     @staticmethod
     def parse(text: str) -> dict:
         match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
@@ -253,6 +253,37 @@ class JsonUtils:
         if start != -1 and end != -1: text = text[start:end+1]
         text = re.sub(r"//.*", "", text)
         return json.loads(text)
+
+class EasterEggs:
+    """Easter egg messages for successful task completions."""
+
+    MESSAGES = [
+        "🥚 I didn't choose the task life, the task life chose me.",
+        "🥚 Ralph: The Gift That Keeps On Giving™",
+        "🥚 I'm making this up as I go along, but I'm really good at it.",
+        "🥚 Excellent work! Ralph is pleased.",
+        "🥚 Task complete. Have you tried debugging with ✨ crystals ✨?",
+        "🥚 Success! Ralph would give you a medal, but he's an AI.",
+        "🥚 📋 This task completion brought to you by trial and error.",
+        "🥚 Even I'm impressed! And I'm an AI.",
+        "🥚 One small task for Ralph, one giant leap for your codebase.",
+        "🥚 Why do programmers prefer dark mode? Because light attracts bugs!",
+    ]
+
+    @staticmethod
+    def get_random_message(seed_value: int = 0) -> str:
+        """
+        Get a random easter egg message.
+
+        Args:
+            seed_value: Optional seed for deterministic behavior (for testing)
+
+        Returns:
+            A random easter egg message string
+        """
+        import random as rand_module
+        rand_module.seed(seed_value)
+        return rand_module.choice(EasterEggs.MESSAGES)
 
 # ==============================================================================
 # CORE COMPONENTS
@@ -323,9 +354,10 @@ class ClaudeAgent:
 # ==============================================================================
 
 class RalphOrchestrator:
-    def __init__(self):
+    def __init__(self, easter_eggs: bool = True):
         self.agent = ClaudeAgent()
         self.memory = MemoryManager()
+        self.easter_eggs = easter_eggs
         CONF.ensure_directories()
         Shell.check_dependencies()
 
@@ -509,6 +541,11 @@ This branch is detected at the start of the workflow and used as the base for fe
                 if code == 0:
                     Logger.info(f"   ✅ Verified.", "GREEN")
 
+                    # Append easter egg message if enabled
+                    if self.easter_eggs:
+                        egg_message = EasterEggs.get_random_message(hash(task['id']) % 10000)
+                        Logger.info(f"   {egg_message}", "MAGENTA")
+
                     # Merge task branch to PRD branch (only if we have a task_branch)
                     if task_branch:
                         prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
@@ -657,8 +694,15 @@ def main():
         help="Skip user feedback prompts and proceed with all phases"
     )
 
+    parser.add_argument(
+        "--no-easter-eggs",
+        action="store_true",
+        help="Disable easter egg messages on successful task completion"
+    )
+
     args = parser.parse_args()
-    RalphOrchestrator().start(phase=args.phase, accept_all=args.accept_all)
+    easter_eggs = not args.no_easter_eggs
+    RalphOrchestrator(easter_eggs=easter_eggs).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
     main()

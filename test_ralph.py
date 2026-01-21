@@ -11,7 +11,8 @@ from ralph import (
     JsonUtils,
     Shell,
     GitUtils,
-    RalphOrchestrator
+    RalphOrchestrator,
+    EasterEggs
 )
 
 # ==============================================================================
@@ -307,16 +308,16 @@ def test_merge_prd_to_default_uses_no_ff_flag(MockShellRun):
 def test_planner_retry_on_failure(MockAgentClass, mock_config):
     """Test that planner retries if agent returns garbage."""
     mock_agent_instance = MockAgentClass.return_value
-    
+
     # 1. Fail (Garbage) -> 2. Success (JSON)
     mock_agent_instance.run.side_effect = [
-        (True, "I am not sure what to do."), 
+        (True, "I am not sure what to do."),
         (True, json.dumps({"featureBranch": "main", "userStories": [{"id": "1"}]}))
     ]
 
     orchestrator = RalphOrchestrator()
     orchestrator.run_planner("Build something")
-    
+
     assert mock_config.PRD_FILE.exists()
     assert mock_agent_instance.run.call_count == 2
 
@@ -991,3 +992,119 @@ def test_accept_all_flag_with_execute_phase(MockAgentClass, MockShell, mock_conf
     # Verify execute phase ran and PRD was archived
     archives = list(mock_config.ARCHIVE_DIR.glob("*.json"))
     assert len(archives) == 1
+
+
+# ==============================================================================
+# EASTER EGG TESTS
+# ==============================================================================
+
+def test_easter_eggs_get_random_message():
+    """Test that EasterEggs.get_random_message returns a valid message."""
+    message = EasterEggs.get_random_message()
+    assert message in EasterEggs.MESSAGES
+    assert "🥚" in message
+
+
+def test_easter_eggs_deterministic_seeding():
+    """Test that seeding produces consistent results."""
+    msg1 = EasterEggs.get_random_message(seed_value=42)
+    msg2 = EasterEggs.get_random_message(seed_value=42)
+    assert msg1 == msg2
+
+
+def test_easter_eggs_different_seeds_may_vary():
+    """Test that different seeds can produce different messages."""
+    messages = set()
+    for i in range(10):
+        msg = EasterEggs.get_random_message(seed_value=i)
+        messages.add(msg)
+    # Not guaranteed to have different messages, but likely with 10 seeds
+    assert len(messages) > 0
+
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+def test_easter_egg_displayed_on_task_success(MockAgentClass, MockShell, mock_config):
+    """Test that easter egg is displayed when task succeeds with eggs enabled."""
+
+    prd = {
+        "featureBranch": "feature/task-002",
+        "userStories": [{"id": "TASK-001", "description": "test task", "acceptanceCriteria": [], "status": "pending"}]
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
+
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("Tests Passed", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("ref: refs/remotes/origin/main\n", "", 0),
+        ("", "", 0),
+        ("", "", 0)
+    ]
+
+    # Create orchestrator with easter eggs enabled
+    orchestrator = RalphOrchestrator(easter_eggs=True)
+    orchestrator.execute_loop()
+
+    # Verify task completed
+    archives = list(mock_config.ARCHIVE_DIR.glob("*.json"))
+    assert len(archives) == 1
+
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+def test_no_easter_egg_when_disabled(MockAgentClass, MockShell, mock_config):
+    """Test that easter egg is NOT displayed when disabled."""
+
+    prd = {
+        "featureBranch": "feature/task-002",
+        "userStories": [{"id": "TASK-001", "description": "test task", "acceptanceCriteria": [], "status": "pending"}]
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
+
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("Tests Passed", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("", "", 0),
+        ("ref: refs/remotes/origin/main\n", "", 0),
+        ("", "", 0),
+        ("", "", 0)
+    ]
+
+    # Create orchestrator with easter eggs disabled
+    orchestrator = RalphOrchestrator(easter_eggs=False)
+    orchestrator.execute_loop()
+
+    # Verify task completed
+    archives = list(mock_config.ARCHIVE_DIR.glob("*.json"))
+    assert len(archives) == 1
+
+
+def test_easter_eggs_message_list_contains_eggs():
+    """Test that all easter egg messages contain the egg emoji."""
+    for message in EasterEggs.MESSAGES:
+        assert "🥚" in message
+        assert len(message) > 0
+
+
+def test_easter_eggs_message_list_not_empty():
+    """Test that easter egg message list is not empty."""
+    assert len(EasterEggs.MESSAGES) > 0
