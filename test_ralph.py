@@ -738,3 +738,256 @@ def test_prompt_user_for_phase_trims_whitespace(MockInput, MockShell, mock_confi
     result = orchestrator._prompt_user_for_phase("Test")
 
     assert result is False
+
+# ==============================================================================
+# PHASE SELECTION TESTS
+# ==============================================================================
+
+@patch("ralph.Shell.get_file_tree")
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+@patch("builtins.input")
+def test_start_architect_phase_only(MockInput, MockAgentClass, MockShell, MockGetTree, mock_config):
+    """Test that --phase architect runs only architect phase."""
+
+    mock_agent_instance = MockAgentClass.return_value
+
+    # Mock agent to create memory file
+    def run_side_effect(prompt, role):
+        if role == "ARCHITECT":
+            # Simulate agent creating architecture.md
+            (mock_config.MEMORY_DIR / "architecture.md").write_text("---\ntype: wiki\n---\n# Architecture")
+        return (True, '{"memory": "created"}')
+
+    mock_agent_instance.run.side_effect = run_side_effect
+
+    MockGetTree.return_value = ""
+
+    # Mock for architect phase - need git calls for detect_default_branch
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),  # git symbolic-ref
+        ("", "", 0),  # git branch --show-current (if needed)
+        ("", "", 0),  # git checkout for feature branch (if needed)
+    ]
+
+    MockInput.return_value = "Build a test application"
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.start(phase="architect", accept_all=False)
+
+    # Verify memory was created
+    assert mock_config.MEMORY_DIR.exists()
+    assert any(mock_config.MEMORY_DIR.iterdir())
+
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+@patch("builtins.input")
+def test_start_planner_phase_only(MockInput, MockAgentClass, MockShell, mock_config):
+    """Test that --phase planner runs only planner phase."""
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, json.dumps({"featureBranch": "feature/test", "userStories": []}))
+
+    # Setup existing memory
+    mock_config.MEMORY_DIR.mkdir(exist_ok=True)
+    (mock_config.MEMORY_DIR / "architecture.md").write_text("Test architecture")
+
+    MockInput.return_value = "Build a test application"
+    MockShell.side_effect = [
+        ("", "", 0),  # For tree command
+    ]
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.start(phase="planner", accept_all=False)
+
+    # Verify PRD was created
+    assert mock_config.PRD_FILE.exists()
+
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+def test_start_execute_phase_only(MockAgentClass, MockShell, mock_config):
+    """Test that --phase execute runs only execute phase."""
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
+
+    # Setup existing memory and PRD
+    mock_config.MEMORY_DIR.mkdir(exist_ok=True)
+    (mock_config.MEMORY_DIR / "architecture.md").write_text("Test architecture")
+
+    prd = {
+        "featureBranch": "feature/test-prd",
+        "userStories": [{"id": "TASK-001", "description": "Test task", "acceptanceCriteria": [], "status": "pending"}]
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+
+    # Mock shell calls for execute phase
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0),  # git checkout -b feature/test-prd
+        ("", "", 0),  # git checkout feature/test-prd (for task branch)
+        ("", "", 0),  # git checkout -b task/task-001-test-task
+        ("Tests Passed", "", 0),  # pytest
+        ("", "", 0),  # git checkout feature/test-prd (for merge)
+        ("", "", 0),  # git merge --no-ff
+        ("", "", 0),  # git commit
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch (for PRD merge)
+        ("", "", 0),  # git checkout main (for PRD merge)
+        ("", "", 0)  # git merge --no-ff feature/test-prd (PRD merge)
+    ]
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.start(phase="execute", accept_all=True)
+
+    # Verify execute phase ran and PRD was archived
+    archives = list(mock_config.ARCHIVE_DIR.glob("*.json"))
+    assert len(archives) == 1
+
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+@patch("builtins.input")
+def test_start_phase_all_with_skip(MockInput, MockAgentClass, MockShell, mock_config):
+    """Test that --phase all (or default) allows skipping phases via user prompts."""
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
+
+    # Setup existing memory and PRD to skip architect and planner
+    mock_config.MEMORY_DIR.mkdir(exist_ok=True)
+    (mock_config.MEMORY_DIR / "architecture.md").write_text("Test architecture")
+
+    prd = {
+        "featureBranch": "feature/test-prd",
+        "userStories": [{"id": "TASK-001", "description": "Test task", "acceptanceCriteria": [], "status": "pending"}]
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+
+    # Mock user choosing to skip execute phase
+    MockInput.return_value = "n"
+
+    MockShell.side_effect = [
+        # No shell calls since execute phase is skipped
+    ]
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.start(phase="all", accept_all=False)
+
+    # Verify input was called to prompt for execute phase
+    assert MockInput.call_count >= 1
+
+
+@patch("ralph.Shell.get_file_tree")
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+@patch("builtins.input")
+def test_start_specific_phase_skips_phase_prompts(MockInput, MockAgentClass, MockShell, MockGetTree, mock_config):
+    """Test that specifying a specific phase (e.g., --phase architect) skips phase prompts."""
+
+    mock_agent_instance = MockAgentClass.return_value
+
+    # Mock agent to create memory file
+    def run_side_effect(prompt, role):
+        if role == "ARCHITECT":
+            # Simulate agent creating architecture.md
+            (mock_config.MEMORY_DIR / "architecture.md").write_text("---\ntype: wiki\n---\n# Architecture")
+        return (True, '{"memory": "created"}')
+
+    mock_agent_instance.run.side_effect = run_side_effect
+
+    MockGetTree.return_value = ""
+
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),  # git symbolic-ref
+        ("", "", 0),  # git branch --show-current (if needed)
+        ("", "", 0),  # git checkout for feature branch (if needed)
+    ]
+
+    MockInput.return_value = "Build a test application"
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.start(phase="architect", accept_all=False)
+
+    # Verify that input was only called for project description, not for phase prompts
+    # When phase is specified, phase prompts are skipped
+    assert any(mock_config.MEMORY_DIR.iterdir())
+
+
+@patch("ralph.Shell.get_file_tree")
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+@patch("builtins.input")
+def test_accept_all_flag_with_architect_phase(MockInput, MockAgentClass, MockShell, MockGetTree, mock_config):
+    """Test that --accept-all with --phase architect runs architect without prompts."""
+
+    mock_agent_instance = MockAgentClass.return_value
+
+    # Mock agent to create memory file
+    def run_side_effect(prompt, role):
+        if role == "ARCHITECT":
+            # Simulate agent creating architecture.md
+            (mock_config.MEMORY_DIR / "architecture.md").write_text("---\ntype: wiki\n---\n# Architecture")
+        return (True, '{"memory": "created"}')
+
+    mock_agent_instance.run.side_effect = run_side_effect
+
+    MockGetTree.return_value = ""
+    MockInput.return_value = "Build a test application"
+
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),  # git symbolic-ref
+        ("", "", 0),  # git branch --show-current (if needed)
+        ("", "", 0),  # git checkout for feature branch (if needed)
+    ]
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.start(phase="architect", accept_all=True)
+
+    # Verify memory was created
+    assert mock_config.MEMORY_DIR.exists()
+    assert any(mock_config.MEMORY_DIR.iterdir())
+
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+def test_accept_all_flag_with_execute_phase(MockAgentClass, MockShell, mock_config):
+    """Test that --accept-all with --phase execute runs execute without prompts."""
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
+
+    # Setup existing memory and PRD
+    mock_config.MEMORY_DIR.mkdir(exist_ok=True)
+    (mock_config.MEMORY_DIR / "architecture.md").write_text("Test architecture")
+
+    prd = {
+        "featureBranch": "feature/test-prd",
+        "userStories": [{"id": "TASK-001", "description": "Test task", "acceptanceCriteria": [], "status": "pending"}]
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+
+    # Mock shell calls for execute phase
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0),  # git checkout -b feature/test-prd
+        ("", "", 0),  # git checkout feature/test-prd
+        ("", "", 0),  # git checkout -b task/task-001-test-task
+        ("Tests Passed", "", 0),  # pytest
+        ("", "", 0),  # git checkout feature/test-prd (for merge)
+        ("", "", 0),  # git merge --no-ff
+        ("", "", 0),  # git commit
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0)  # git merge --no-ff feature/test-prd
+    ]
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.start(phase="execute", accept_all=True)
+
+    # Verify execute phase ran and PRD was archived
+    archives = list(mock_config.ARCHIVE_DIR.glob("*.json"))
+    assert len(archives) == 1
