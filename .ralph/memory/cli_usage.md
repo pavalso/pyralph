@@ -40,7 +40,14 @@ ralph --accept-all
 ralph --phase execute --accept-all
 ```
 
-Skip user feedback prompts and proceed with all phases. Useful for unattended execution.
+Skip user feedback prompts before each phase and proceed automatically. When `phase='all'`, automatically runs all phases without asking for confirmation. When combined with `--phase`, skips the phase-specific prompt if applicable.
+
+**Behavior**:
+- `ralph --accept-all`: Skips prompts "Run Architect phase? (y/n)" and "Run Planner phase? (y/n)" and "Run Execute phase? (y/n)"
+- `ralph --phase execute --accept-all`: Runs execute phase without any prompts
+- `ralph --phase architect --accept-all`: Runs architect phase (no prompt applies to specific phases)
+
+Useful for unattended execution and CI/CD pipelines.
 
 ### Run Agent
 
@@ -123,7 +130,21 @@ Skips architect and planner, runs only the task execution loop. Requires existin
 ```bash
 ralph --accept-all
 ```
-Runs all three phases sequentially without any user feedback prompts.
+Runs all three phases sequentially without any user feedback prompts. When architect phase is needed, runs it automatically. When planner phase is needed, runs it automatically. When execute phase is reached, runs it automatically.
+
+### Interactive Phase Selection
+
+```bash
+ralph
+# or
+ralph --phase all
+```
+Runs all phases with user prompts before each phase execution:
+- "Run Architect phase? (y/n)" - if memory doesn't exist
+- "Run Planner phase? (y/n)" - if PRD doesn't exist
+- "Run Execute phase? (y/n)" - always asked
+
+User can answer 'n' to skip a phase without error.
 
 ### Executing with Full Automation
 

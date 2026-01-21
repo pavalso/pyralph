@@ -550,6 +550,13 @@ This branch is detected at the start of the workflow and used as the base for fe
         shutil.move(str(CONF.PRD_FILE), str(dest))
         Logger.info(f"📦 PRD Archived to {dest}", "MAGENTA")
 
+    def _prompt_user_for_phase(self, phase_name: str) -> bool:
+        """
+        Prompt user to confirm running a phase. Returns True if user confirms (y), False if user declines (n).
+        """
+        response = input(f"{Logger.COLORS['YELLOW']}Run {phase_name} phase? (y/n): {Logger.COLORS['RESET']}").strip().lower()
+        return response == 'y'
+
     def start(self, phase: str = "all", accept_all: bool = False):
         Logger.info(f"🤖 Ralph Agent active in: {CONF.BASE_DIR}", "GREEN")
 
@@ -587,22 +594,35 @@ This branch is detected at the start of the workflow and used as the base for fe
 
             # Step 1: Architect
             if not any(CONF.MEMORY_DIR.iterdir()):
-                user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
-                if not user_intent: sys.exit(0)
-                self.run_architect(user_intent)
+                # Prompt user before running architect phase (unless accept_all is True)
+                if not accept_all and not self._prompt_user_for_phase("Architect"):
+                    Logger.info("⏭️  Skipping architect phase.", "YELLOW")
+                else:
+                    user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
+                    if not user_intent: sys.exit(0)
+                    self.run_architect(user_intent)
             else:
                 Logger.info("📋 Memory already exists, skipping architect phase.", "YELLOW")
 
             # Step 2: Planner
             if not CONF.PRD_FILE.exists():
-                user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
-                if not user_intent: sys.exit(0)
-                self.run_planner(user_intent)
+                # Prompt user before running planner phase (unless accept_all is True)
+                if not accept_all and not self._prompt_user_for_phase("Planner"):
+                    Logger.info("⏭️  Skipping planner phase.", "YELLOW")
+                else:
+                    user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
+                    if not user_intent: sys.exit(0)
+                    self.run_planner(user_intent)
             else:
                 Logger.info("📋 PRD already exists, skipping planner phase.", "YELLOW")
 
             # Step 3: Execute
-            self.execute_loop()
+            # Prompt user before running execute phase (unless accept_all is True)
+            if not accept_all and not self._prompt_user_for_phase("Execute"):
+                Logger.info("⏭️  Skipping execute phase.", "YELLOW")
+            else:
+                self.execute_loop()
+
             Logger.info("✅ All phases complete.", "GREEN")
             return
 

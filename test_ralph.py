@@ -640,3 +640,101 @@ def test_execute_loop_merges_prd_to_default_after_all_tasks(MockAgentClass, Mock
     prd_merge_cmd = prd_merge_commands[0]
     assert "git merge --no-ff" in prd_merge_cmd
     assert "Merge PRD: feature/git-workflow-prd" in prd_merge_cmd
+
+# ==============================================================================
+# PROMPT BEHAVIOR TESTS
+# ==============================================================================
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+@patch("builtins.input")
+def test_start_all_phases_accept_all_flag_skips_prompts(MockInput, MockAgentClass, MockShell, mock_config):
+    """Test that accept_all flag skips all prompts."""
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
+
+    # When accept_all=True, input should not be called for prompts
+    MockInput.return_value = "Build a test app"
+
+    # Mock shell calls
+    MockShell.side_effect = [
+        ("", "", 0),  # For tree command
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0),  # git checkout -b feature/phase-control-prd
+        ("", "", 0),  # git checkout feature/phase-control-prd
+        ("", "", 0),  # git checkout -b task/task-001-test
+        ("Tests Passed", "", 0),  # pytest
+        ("", "", 0),  # git checkout feature/phase-control-prd
+        ("", "", 0),  # git merge --no-ff
+        ("", "", 0),  # git commit
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0),  # git merge --no-ff feature/phase-control-prd
+    ]
+
+    # Create memory and PRD with task (so we skip architect and planner phases)
+    mock_config.MEMORY_DIR.mkdir(exist_ok=True)
+    (mock_config.MEMORY_DIR / "architecture.md").write_text("Test architecture")
+
+    prd = {
+        "featureBranch": "feature/phase-control-prd",
+        "userStories": [{"id": "TASK-001", "description": "Test", "acceptanceCriteria": [], "status": "pending"}]
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.start(phase="all", accept_all=True)
+
+    # Verify input was not called for phase prompts (since accept_all=True)
+    # and memory/PRD already exist so architect/planner are skipped
+    assert MockInput.call_count == 0
+
+@patch("ralph.Shell.run")
+@patch("builtins.input")
+def test_prompt_user_for_phase_accepts_yes(MockInput, MockShell, mock_config):
+    """Test that prompt accepts 'y' response."""
+
+    MockInput.return_value = "y"
+
+    orchestrator = RalphOrchestrator()
+    result = orchestrator._prompt_user_for_phase("Test")
+
+    assert result is True
+
+@patch("ralph.Shell.run")
+@patch("builtins.input")
+def test_prompt_user_for_phase_accepts_no(MockInput, MockShell, mock_config):
+    """Test that prompt accepts 'n' response."""
+
+    MockInput.return_value = "n"
+
+    orchestrator = RalphOrchestrator()
+    result = orchestrator._prompt_user_for_phase("Test")
+
+    assert result is False
+
+@patch("ralph.Shell.run")
+@patch("builtins.input")
+def test_prompt_user_for_phase_case_insensitive(MockInput, MockShell, mock_config):
+    """Test that prompt is case insensitive."""
+
+    MockInput.return_value = "Y"
+
+    orchestrator = RalphOrchestrator()
+    result = orchestrator._prompt_user_for_phase("Test")
+
+    assert result is True
+
+@patch("ralph.Shell.run")
+@patch("builtins.input")
+def test_prompt_user_for_phase_trims_whitespace(MockInput, MockShell, mock_config):
+    """Test that prompt trims whitespace."""
+
+    MockInput.return_value = "  n  "
+
+    orchestrator = RalphOrchestrator()
+    result = orchestrator._prompt_user_for_phase("Test")
+
+    assert result is False
