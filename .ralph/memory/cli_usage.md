@@ -49,6 +49,15 @@ Skip user feedback prompts before each phase and proceed automatically. When `ph
 
 Useful for unattended execution and CI/CD pipelines.
 
+### Help Text
+
+```bash
+ralph --help
+ralph -h
+```
+
+Displays comprehensive help with all available options and usage examples.
+
 ### Run Agent
 
 ```bash
