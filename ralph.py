@@ -154,6 +154,31 @@ class GitUtils:
             return True, task_branch
         return False, task_branch
 
+    @staticmethod
+    def merge_task_to_prd(prd_branch: str, task_branch: str, task_id: str, description: str) -> bool:
+        """
+        Merge a task branch back to the PRD branch with --no-ff flag.
+
+        Args:
+            prd_branch: The PRD feature branch to merge into (e.g., 'feature/git-workflow-prd')
+            task_branch: The task branch to merge (e.g., 'task/task-003-describe')
+            task_id: The task ID for commit message (e.g., 'TASK-003')
+            description: The task description for commit message
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        # Checkout the PRD branch
+        stdout, stderr, code = Shell.run(f"git checkout {prd_branch}")
+        if code != 0:
+            return False
+
+        # Merge with --no-ff to create a merge commit
+        commit_message = f"Merge {task_id}: {description}"
+        cmd = f'git merge --no-ff {task_branch} -m "{commit_message}"'
+        stdout, stderr, code = Shell.run(cmd)
+        return code == 0
+
 class Shell:
     """Safe wrapper for subprocess calls."""
 
@@ -375,6 +400,8 @@ This branch is detected at the start of the workflow and used as the base for fe
 
     def _execute_task(self, task: dict, test_cmd: str):
         retries = 0
+        task_branch = None  # Store task branch name across retries
+
         while retries < CONF.MAX_RETRIES:
             memory_tree = self.memory.get_structure()
             prev_errors = CONF.PROGRESS_FILE.read_text(encoding='utf-8') if CONF.PROGRESS_FILE.exists() else ""
@@ -447,6 +474,20 @@ This branch is detected at the start of the workflow and used as the base for fe
 
                 if code == 0:
                     Logger.info(f"   ✅ Verified.", "GREEN")
+
+                    # Merge task branch to PRD branch (only if we have a task_branch)
+                    if task_branch:
+                        prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+                        prd_branch = prd.get('featureBranch', f"feature/task-002")
+                        task_id = task['id']
+                        description = task['description']
+
+                        Logger.info(f"   📦 Merging {task_branch} to {prd_branch}...", "CYAN")
+                        if GitUtils.merge_task_to_prd(prd_branch, task_branch, task_id, description):
+                            Logger.info(f"   ✅ Merged with merge commit.", "GREEN")
+                        else:
+                            Logger.info(f"   ⚠️ Merge failed, but task is verified.", "YELLOW")
+
                     task['status'] = 'completed'
                     Shell.run(f'git commit -am "Ralph: {task["id"]}" --allow-empty')
                     if CONF.PROGRESS_FILE.exists(): CONF.PROGRESS_FILE.unlink()

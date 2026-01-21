@@ -204,6 +204,47 @@ def test_create_task_branch_naming_convention(MockShellRun):
         assert success is True
         assert branch_name == expected_branch
 
+@patch("ralph.Shell.run")
+def test_merge_task_to_prd_success(MockShellRun):
+    """Test successful merge of task branch to PRD branch with --no-ff."""
+    MockShellRun.side_effect = [
+        ("", "", 0),  # git checkout prd_branch success
+        ("", "", 0),  # git merge --no-ff success
+    ]
+    result = GitUtils.merge_task_to_prd("feature/git-workflow-prd", "task/task-004-test", "TASK-004", "Test merge commit")
+    assert result is True
+
+@patch("ralph.Shell.run")
+def test_merge_task_to_prd_checkout_fails(MockShellRun):
+    """Test merge when checkout to PRD branch fails."""
+    MockShellRun.return_value = ("", "error", 1)
+    result = GitUtils.merge_task_to_prd("feature/git-workflow-prd", "task/task-004-test", "TASK-004", "Test merge commit")
+    assert result is False
+
+@patch("ralph.Shell.run")
+def test_merge_task_to_prd_merge_fails(MockShellRun):
+    """Test merge when merge command fails."""
+    MockShellRun.side_effect = [
+        ("", "", 0),  # git checkout prd_branch success
+        ("", "conflict", 1),  # git merge fails
+    ]
+    result = GitUtils.merge_task_to_prd("feature/git-workflow-prd", "task/task-004-test", "TASK-004", "Test merge commit")
+    assert result is False
+
+@patch("ralph.Shell.run")
+def test_merge_task_to_prd_commit_message_format(MockShellRun):
+    """Test that merge commit message follows correct format: 'Merge {TASK-ID}: {description}'"""
+    MockShellRun.side_effect = [
+        ("", "", 0),  # git checkout prd_branch success
+        ("", "", 0),  # git merge --no-ff success
+    ]
+    GitUtils.merge_task_to_prd("feature/git-workflow-prd", "task/task-004-implement-merge", "TASK-004", "Implement merge-commit strategy for user story branches to PRD branch")
+
+    # Verify the merge command contains the correct message format
+    merge_call = MockShellRun.call_args_list[1][0][0]
+    assert "git merge --no-ff" in merge_call
+    assert 'Merge TASK-004: Implement merge-commit strategy for user story branches to PRD branch' in merge_call
+
 # ==============================================================================
 # ORCHESTRATOR TESTS
 # ==============================================================================
@@ -228,7 +269,7 @@ def test_planner_retry_on_failure(MockAgentClass, mock_config):
 @patch("ralph.Shell.run")
 @patch("ralph.ClaudeAgent")
 def test_execute_task_verification_success(MockAgentClass, MockShell, mock_config):
-    """Test full flow: Agent writes code -> Tests Pass -> Commit -> Archive."""
+    """Test full flow: Agent writes code -> Tests Pass -> Merge -> Commit -> Archive."""
 
     # Setup PRD
     prd = {
@@ -240,7 +281,7 @@ def test_execute_task_verification_success(MockAgentClass, MockShell, mock_confi
     mock_agent_instance = MockAgentClass.return_value
     mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
 
-    # Sequence: detect_branch, checkout base, checkout -b feature, checkout feature (for task branch), checkout -b task branch, test, commit
+    # Sequence: detect_branch, checkout base, checkout -b feature, checkout feature (for task branch), checkout -b task branch, test, checkout for merge, merge, commit
     MockShell.side_effect = [
         ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
         ("", "", 0),  # git checkout main
@@ -248,6 +289,8 @@ def test_execute_task_verification_success(MockAgentClass, MockShell, mock_confi
         ("", "", 0),  # git checkout feature/task-002 (for task branch)
         ("", "", 0),  # git checkout -b task/t1-desc
         ("Tests Passed", "", 0),  # pytest
+        ("", "", 0),  # git checkout feature/task-002 (for merge)
+        ("", "", 0),  # git merge --no-ff
         ("", "", 0)  # git commit
     ]
 
@@ -275,7 +318,7 @@ def test_execute_task_verification_fail(MockAgentClass, MockShell, mock_config):
     mock_agent_instance = MockAgentClass.return_value
     mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
 
-    # Sequence: detect_branch, checkout base, checkout -b feature, checkout feature (for task), checkout -b task branch, test (fail), test (pass), commit
+    # Sequence: detect, checkout base, -b feature, checkout feature (for task), -b task, test (fail), test (pass), checkout for merge, merge, commit
     MockShell.side_effect = [
         ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
         ("", "", 0),  # git checkout main
@@ -284,7 +327,9 @@ def test_execute_task_verification_fail(MockAgentClass, MockShell, mock_config):
         ("", "", 0),  # git checkout -b task/t1-desc
         ("stdout", "Tests Failed", 1),  # test fails
         ("stdout", "Tests Passed", 0),  # test passes on retry
-        ("stdout", "", 0)  # git commit
+        ("", "", 0),  # git checkout feature/task-002 (for merge)
+        ("", "", 0),  # git merge --no-ff
+        ("", "", 0)  # git commit
     ]
 
     orchestrator = RalphOrchestrator()
@@ -310,7 +355,7 @@ def test_execute_task_creates_feature_branch(MockAgentClass, MockShell, mock_con
     mock_agent_instance = MockAgentClass.return_value
     mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
 
-    # Sequence: git symbolic-ref, git checkout main, git checkout -b feature/task-002, git checkout feature/task-002 (for task), git checkout -b task, pytest, git commit
+    # Sequence: detect, checkout main, -b feature, checkout feature (for task), -b task, pytest, checkout for merge, merge, commit
     MockShell.side_effect = [
         ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
         ("", "", 0),  # git checkout main
@@ -318,6 +363,8 @@ def test_execute_task_creates_feature_branch(MockAgentClass, MockShell, mock_con
         ("", "", 0),  # git checkout feature/task-002 (for task branch)
         ("", "", 0),  # git checkout -b task/t1-desc
         ("Tests Passed", "", 0),  # pytest
+        ("", "", 0),  # git checkout feature/task-002 (for merge)
+        ("", "", 0),  # git merge --no-ff
         ("", "", 0)  # git commit
     ]
 
@@ -350,7 +397,9 @@ def test_execute_task_creates_task_branch_from_prd(MockAgentClass, MockShell, mo
     # 4. git checkout feature/git-workflow-prd (for task branch - checkout PRD)
     # 5. git checkout -b task/task-003-implement-user-story-branches (create task branch)
     # 6. pytest
-    # 7. git commit
+    # 7. git checkout feature/git-workflow-prd (for merge)
+    # 8. git merge --no-ff
+    # 9. git commit
     MockShell.side_effect = [
         ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
         ("", "", 0),  # git checkout main
@@ -358,6 +407,8 @@ def test_execute_task_creates_task_branch_from_prd(MockAgentClass, MockShell, mo
         ("", "", 0),  # git checkout feature/git-workflow-prd (for task branch)
         ("", "", 0),  # git checkout -b task/task-003-implement-user-story-branches
         ("Tests Passed", "", 0),  # pytest
+        ("", "", 0),  # git checkout feature/git-workflow-prd (for merge)
+        ("", "", 0),  # git merge --no-ff
         ("", "", 0)  # git commit
     ]
 
@@ -374,11 +425,61 @@ def test_execute_task_creates_task_branch_from_prd(MockAgentClass, MockShell, mo
     prd_checkout_idx = None
     task_branch_creation_idx = None
     for i, call in enumerate(shell_calls):
-        if "git checkout feature/git-workflow-prd" in call and "checkout -b" not in call:
-            prd_checkout_idx = i
         if "git checkout -b task/task-003-implement-user-story-branches" in call:
             task_branch_creation_idx = i
+        if "git checkout feature/git-workflow-prd" in call and "checkout -b" not in call and prd_checkout_idx is None:
+            prd_checkout_idx = i
 
     # PRD branch should be checked out before task branch creation
-    assert prd_checkout_idx is not None and task_branch_creation_idx is not None
+    assert task_branch_creation_idx is not None
+    assert prd_checkout_idx is not None
     assert prd_checkout_idx < task_branch_creation_idx
+
+@patch("ralph.Shell.run")
+@patch("ralph.ClaudeAgent")
+def test_execute_task_merges_task_to_prd(MockAgentClass, MockShell, mock_config):
+    """Test that task branch is merged to PRD branch after successful verification."""
+
+    prd = {
+        "featureBranch": "feature/git-workflow-prd",
+        "userStories": [{"id": "TASK-004", "description": "Implement merge-commit strategy", "acceptanceCriteria": [], "status": "pending"}]
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+
+    mock_agent_instance = MockAgentClass.return_value
+    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
+
+    # Sequence:
+    # 1. detect_default_branch
+    # 2. git checkout main (for feature branch)
+    # 3. git checkout -b feature/git-workflow-prd (create feature branch)
+    # 4. git checkout feature/git-workflow-prd (for task branch)
+    # 5. git checkout -b task/task-004-implement-merge-commit-strategy (create task branch)
+    # 6. pytest (verification)
+    # 7. git checkout feature/git-workflow-prd (for merge)
+    # 8. git merge --no-ff task/task-004-... (merge to PRD)
+    # 9. git commit
+    MockShell.side_effect = [
+        ("ref: refs/remotes/origin/main\n", "", 0),  # detect_default_branch
+        ("", "", 0),  # git checkout main
+        ("", "", 0),  # git checkout -b feature/git-workflow-prd
+        ("", "", 0),  # git checkout feature/git-workflow-prd (for task branch)
+        ("", "", 0),  # git checkout -b task/task-004-implement-merge-commit-strategy
+        ("Tests Passed", "", 0),  # pytest (verification)
+        ("", "", 0),  # git checkout feature/git-workflow-prd (for merge)
+        ("", "", 0),  # git merge --no-ff
+        ("", "", 0)  # git commit
+    ]
+
+    orchestrator = RalphOrchestrator()
+    orchestrator.execute_loop()
+
+    # Verify merge commands were called
+    shell_calls = [call[0][0] for call in MockShell.call_args_list]
+    merge_commands = [call for call in shell_calls if "git merge --no-ff" in call]
+    assert len(merge_commands) > 0
+
+    # Verify merge command format
+    merge_cmd = merge_commands[0]
+    assert "git merge --no-ff" in merge_cmd
+    assert "Merge TASK-004: Implement merge-commit strategy" in merge_cmd

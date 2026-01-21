@@ -81,9 +81,56 @@ Each task now creates its own branch from the PRD feature branch:
 4. Tests verify on task branch
 5. Commit created on task branch
 
+## Task Branch Merge to PRD (TASK-004)
+
+**Implemented**: `GitUtils.merge_task_to_prd(prd_branch: str, task_branch: str, task_id: str, description: str) -> bool`
+
+After a task is successfully verified, the task branch is merged back to the PRD branch:
+
+1. **Checkout PRD branch** - switches to the PRD feature branch
+2. **Merge with --no-ff** - creates a merge commit using the `--no-ff` flag (no fast-forward)
+3. **Commit message format** - `Merge {TASK-ID}: {description}`
+4. **Returns**: True if successful, False otherwise
+
+### Integration
+
+- Called after task verification succeeds in `_execute_task()`
+- Ensures task branch is merged before marking task as completed
+- Preserves branch history with merge commits (not fast-forward)
+- Allows rollback/revert of entire task if needed
+
+### Merge Workflow
+
+1. Task branch is created and worked on
+2. Tests are run on task branch
+3. If tests pass, merge branch to PRD
+4. Task is marked completed
+5. Task branch remains available for historical reference
+
+## Implementation Status
+
+All core git workflow features have been implemented and tested:
+
+1. ✅ **TASK-001**: Default branch detection
+2. ✅ **TASK-002**: Feature branch creation from default branch
+3. ✅ **TASK-003**: Task branch creation from PRD feature branch
+4. ✅ **TASK-004**: Merge task branch to PRD with merge commits
+5. ⏳ **TASK-005**: PRD branch merge to default branch (pending)
+6. ⏳ **TASK-006**: Orchestrator integration (pending)
+
 ## Integration Points
 
 - **Architect Phase**: Detects and stores default branch
 - **Feature Branch Creation** (TASK-002 ✓): Creates feature branch at task start
 - **Task Branch Creation** (TASK-003 ✓): Creates task-specific branch from PRD branch
+- **Task Merge to PRD** (TASK-004 ✓): Merges task branch with merge commit after verification
 - **Workflow Management** (TASK-006): Reference for branch hierarchy
+
+## Key Implementation Details
+
+### Task Branch Merge (TASK-004)
+- After task verification passes, task branch is automatically merged to PRD
+- Merge uses `--no-ff` flag to preserve branch history
+- Commit message format: `Merge {TASK-ID}: {description}`
+- Task branch name is retained across retries for consistency
+- Merge only occurs if `task_branch` variable is successfully set during branch creation
