@@ -98,6 +98,7 @@ Controls what files are included in source distributions:
 ### MemoryManager
 - Lists files in `.ralph/memory/`
 - Extracts test command from wiki files
+- Validates memory files on startup (checks readability and emptiness)
 
 ### ClaudeAgent
 - Invokes Claude CLI with prompts
@@ -130,8 +131,10 @@ start() -> run_architect() -> run_planner() -> execute_loop()
 
 ## Test Suite
 
-7 unit tests in `test_ralph.py` covering:
-- `JsonUtils.parse()` - JSON extraction
-- `Shell.run()` - Timeout handling
-- `MemoryManager` - File structure and test command extraction
-- `RalphOrchestrator` - Planner retry, task verification success/failure flows
+37 unit tests in `test_ralph.py` covering:
+- JSON extraction and shell subprocess handling
+- Memory structure and test command extraction
+- Memory file validation (readability, emptiness, hidden files)
+- Planner retry logic and task verification flows
+- Phase selection and prompt handling
+- Easter egg display logic

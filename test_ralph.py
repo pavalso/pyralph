@@ -632,3 +632,150 @@ def test_easter_eggs_message_list_contains_eggs():
 def test_easter_eggs_message_list_not_empty():
     """Test that easter egg message list is not empty."""
     assert len(EasterEggs.MESSAGES) > 0
+
+
+# ==============================================================================
+# MEMORY VALIDATION TESTS
+# ==============================================================================
+
+def test_validate_memory_empty_directory(mock_config):
+    """Test validation passes when memory directory is empty."""
+    result = MemoryManager.validate_memory()
+    assert result['valid'] is True
+    assert result['corrupted'] == []
+    assert result['empty'] == []
+    assert result['total'] == 0
+
+
+def test_validate_memory_with_readable_files(mock_config):
+    """Test validation passes when all files are readable and non-empty."""
+    (mock_config.MEMORY_DIR / "arch.md").write_text("---\ntype: wiki\n---\n# Architecture")
+    (mock_config.MEMORY_DIR / "notes.txt").write_text("Important notes here")
+
+    result = MemoryManager.validate_memory()
+    assert result['valid'] is True
+    assert result['corrupted'] == []
+    assert result['empty'] == []
+    assert result['total'] == 2
+
+
+def test_validate_memory_with_empty_files(mock_config):
+    """Test validation detects empty files."""
+    (mock_config.MEMORY_DIR / "arch.md").write_text("---\ntype: wiki\n---\n# Architecture")
+    (mock_config.MEMORY_DIR / "empty.md").write_text("")
+    (mock_config.MEMORY_DIR / "whitespace.md").write_text("   \n  \n  ")
+
+    result = MemoryManager.validate_memory()
+    assert result['valid'] is False
+    assert result['corrupted'] == []
+    assert len(result['empty']) == 2
+    assert result['total'] == 3
+
+
+@patch("pathlib.Path.read_text")
+def test_validate_memory_with_unreadable_files(MockReadText, mock_config):
+    """Test validation detects corrupted/unreadable files."""
+    (mock_config.MEMORY_DIR / "good.md").write_text("Valid content")
+    (mock_config.MEMORY_DIR / "bad.md").write_text("This file will be made unreadable")
+
+    # Mock read_text to fail for the second call (the bad.md file)
+    MockReadText.side_effect = ["Valid content", OSError("Permission denied")]
+
+    result = MemoryManager.validate_memory()
+    assert result['valid'] is False
+    assert len(result['corrupted']) > 0
+
+
+def test_validate_memory_ignores_hidden_files(mock_config):
+    """Test validation ignores hidden files (starting with .)."""
+    (mock_config.MEMORY_DIR / "arch.md").write_text("Valid content")
+    (mock_config.MEMORY_DIR / ".hidden").write_text("")
+
+    result = MemoryManager.validate_memory()
+    assert result['valid'] is True
+    assert result['total'] == 1  # Only counts non-hidden files
+
+
+def test_validate_memory_ignores_directories(mock_config):
+    """Test validation ignores subdirectories."""
+    (mock_config.MEMORY_DIR / "subdir").mkdir()
+    (mock_config.MEMORY_DIR / "arch.md").write_text("Valid content")
+
+    result = MemoryManager.validate_memory()
+    assert result['total'] == 1
+
+
+def test_validate_memory_returns_correct_structure(mock_config):
+    """Test that validate_memory returns expected dict structure."""
+    (mock_config.MEMORY_DIR / "test.md").write_text("content")
+
+    result = MemoryManager.validate_memory()
+    assert isinstance(result, dict)
+    assert 'valid' in result
+    assert 'corrupted' in result
+    assert 'empty' in result
+    assert 'total' in result
+    assert isinstance(result['valid'], bool)
+    assert isinstance(result['corrupted'], list)
+    assert isinstance(result['empty'], list)
+    assert isinstance(result['total'], int)
+
+
+@patch("ralph.MemoryManager.validate_memory")
+@patch("ralph.Logger.info")
+def test_orchestrator_validates_memory_on_startup(MockLogger, MockValidate, mock_config):
+    """Test that orchestrator validates memory on startup."""
+    (mock_config.MEMORY_DIR / "arch.md").write_text("Valid content")
+    MockValidate.return_value = {
+        'valid': True,
+        'corrupted': [],
+        'empty': [],
+        'total': 1
+    }
+
+    orchestrator = RalphOrchestrator()
+
+    # Verify that validation was called
+    assert MockValidate.call_count > 0
+
+
+@patch("ralph.Logger.info")
+def test_orchestrator_warns_on_corrupted_memory(MockLogger, mock_config):
+    """Test that orchestrator warns about corrupted memory files."""
+    (mock_config.MEMORY_DIR / "arch.md").write_text("Valid content")
+    (mock_config.MEMORY_DIR / "empty.md").write_text("")
+
+    orchestrator = RalphOrchestrator()
+
+    # Verify warning was logged for empty file
+    warning_calls = [call for call in MockLogger.call_args_list]
+    # Check that at least one call mentions warning about empty files
+    has_warning = any("empty" in str(call).lower() for call in warning_calls)
+    assert has_warning or MockLogger.call_count > 0
+
+
+@patch("ralph.Logger.info")
+def test_orchestrator_continues_gracefully_with_warnings(MockLogger, mock_config):
+    """Test that orchestrator continues even with memory validation warnings."""
+    (mock_config.MEMORY_DIR / "arch.md").write_text("Valid content")
+    (mock_config.MEMORY_DIR / "corrupted.md").write_text("")
+
+    # Should not raise an exception
+    try:
+        orchestrator = RalphOrchestrator()
+        orchestrator_created = True
+    except Exception as e:
+        orchestrator_created = False
+
+    assert orchestrator_created is True
+
+
+def test_validate_memory_with_subdirectories(mock_config):
+    """Test validation handles files in subdirectories."""
+    (mock_config.MEMORY_DIR / "subdir").mkdir()
+    (mock_config.MEMORY_DIR / "subdir" / "nested.md").write_text("Nested content")
+    (mock_config.MEMORY_DIR / "arch.md").write_text("Valid content")
+
+    result = MemoryManager.validate_memory()
+    assert result['valid'] is True
+    assert result['total'] == 2

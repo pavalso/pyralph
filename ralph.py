@@ -42,11 +42,19 @@ CONF = Config()
 
 class Logger:
     """Handles console output and persistent file logging."""
-    
+
     COLORS = {
         "RESET": "\033[0m", "GREEN": "\033[92m", "RED": "\033[91m",
         "CYAN": "\033[96m", "YELLOW": "\033[93m", "MAGENTA": "\033[95m"
     }
+
+    # Class-level verbose flag
+    verbose = False
+
+    @staticmethod
+    def set_verbose(enabled: bool):
+        """Enable or disable verbose mode."""
+        Logger.verbose = enabled
 
     @staticmethod
     def info(msg: str, color: str = "RESET"):
@@ -54,11 +62,18 @@ class Logger:
         print(f"{c_code}{msg}{Logger.COLORS['RESET']}")
 
     @staticmethod
+    def debug(msg: str, color: str = "RESET"):
+        """Print debug message only in verbose mode."""
+        if Logger.verbose:
+            c_code = Logger.COLORS.get(color, Logger.COLORS["RESET"])
+            print(f"{c_code}[DEBUG] {msg}{Logger.COLORS['RESET']}")
+
+    @staticmethod
     def file_log(content: str, type: str, tag: str = "UNKNOWN"):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         icons = {"PROMPT": "➡️", "RESPONSE": "⬅️", "ERROR": "❌", "INFO": "ℹ️"}
         icon = icons.get(type, "❓")
-        
+
         entry = (
             f"\n{'='*60}\n"
             f"{icon} [{timestamp}] TYPE: {type} | TAG: {tag}\n"
@@ -160,10 +175,49 @@ class MemoryManager:
     """Manages the agent's wiki and context window."""
 
     @staticmethod
+    def validate_memory() -> dict:
+        """
+        Validate all memory files are readable and not empty.
+
+        Returns:
+            dict with keys:
+                - 'valid': bool (all files readable)
+                - 'corrupted': list of file paths that failed to read
+                - 'empty': list of file paths that are empty
+                - 'total': int (total files checked)
+        """
+        result = {
+            'valid': True,
+            'corrupted': [],
+            'empty': [],
+            'total': 0
+        }
+
+        if not CONF.MEMORY_DIR.exists():
+            return result
+
+        for path in CONF.MEMORY_DIR.rglob('*'):
+            if not path.is_file() or path.name.startswith('.'):
+                continue
+
+            result['total'] += 1
+
+            try:
+                content = path.read_text(encoding='utf-8')
+                if not content.strip():
+                    result['empty'].append(str(path.relative_to(CONF.BASE_DIR)))
+                    result['valid'] = False
+            except Exception as e:
+                result['corrupted'].append(str(path.relative_to(CONF.BASE_DIR)))
+                result['valid'] = False
+
+        return result
+
+    @staticmethod
     def get_structure() -> str:
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
             return "(Memory Empty)"
-        
+
         files = []
         for p in CONF.MEMORY_DIR.rglob('*'):
             if p.is_file() and not p.name.startswith('.'):
@@ -182,7 +236,7 @@ class MemoryManager:
              if path.suffix in ['.md', '.txt']:
                  try: full_text += path.read_text(encoding='utf-8')
                  except: continue
-        
+
         match = re.search(r"Test Command.*?`([^`]+)`", full_text, re.IGNORECASE)
         if match: return match.group(1)
         if (CONF.BASE_DIR / "package.json").exists(): return "npm test"
@@ -190,30 +244,54 @@ class MemoryManager:
 
 class ClaudeAgent:
     """The Interface to the AI Model."""
-    
+
     def run(self, prompt: str, tag: str) -> Tuple[bool, str]:
         Logger.file_log(prompt, "PROMPT", tag)
+
+        # Display prompt in verbose mode
+        if Logger.verbose:
+            Logger.debug(f"=== CLAUDE PROMPT [{tag}] ===", "CYAN")
+            Logger.debug(prompt, "CYAN")
+            Logger.debug("=" * 40, "CYAN")
+
         cmd_str = "claude -p --dangerously-skip-permissions"
-        
+
         try:
             result = subprocess.run(
                 cmd_str, input=prompt, capture_output=True, text=True,
                 encoding='utf-8', shell=(sys.platform == 'win32'), timeout=CONF.TIMEOUT_SECONDS
             )
-            
+
             log_content = result.stdout
             if result.stderr.strip():
                 log_content += f"\n\n--- [CLI STDERR] ---\n{result.stderr}"
 
             if result.returncode != 0:
                 Logger.file_log(log_content, "ERROR", tag)
+                # Display error in verbose mode
+                if Logger.verbose:
+                    Logger.debug(f"=== CLAUDE ERROR [{tag}] ===", "RED")
+                    Logger.debug(f"STDOUT:\n{result.stdout}", "RED")
+                    Logger.debug(f"STDERR:\n{result.stderr}", "RED")
+                    Logger.debug("=" * 40, "RED")
                 return False, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-                
+
             Logger.file_log(log_content, "RESPONSE", tag)
+
+            # Display response in verbose mode
+            if Logger.verbose:
+                Logger.debug(f"=== CLAUDE RESPONSE [{tag}] ===", "GREEN")
+                Logger.debug(result.stdout, "GREEN")
+                Logger.debug("=" * 40, "GREEN")
+
             return True, result.stdout
-            
+
         except Exception as e:
             Logger.file_log(str(e), "SYSTEM_EXCEPTION", tag)
+            if Logger.verbose:
+                Logger.debug(f"=== CLAUDE EXCEPTION [{tag}] ===", "RED")
+                Logger.debug(str(e), "RED")
+                Logger.debug("=" * 40, "RED")
             return False, str(e)
 
 # ==============================================================================
@@ -227,6 +305,7 @@ class RalphOrchestrator:
         self.easter_eggs = easter_eggs
         CONF.ensure_directories()
         Shell.check_dependencies()
+        self._validate_memory_on_startup()
 
     def run_architect(self, user_intent: str):
         Logger.info("\n🕵️  Architect: Initializing Memory...", "CYAN")
@@ -396,6 +475,38 @@ class RalphOrchestrator:
         shutil.move(str(CONF.PRD_FILE), str(dest))
         Logger.info(f"📦 PRD Archived to {dest}", "MAGENTA")
 
+    def _validate_memory_on_startup(self):
+        """
+        Validate all memory files on startup.
+        Warns user about corrupted or empty files, but continues gracefully.
+        """
+        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
+            return
+
+        result = self.memory.validate_memory()
+
+        if result['total'] == 0:
+            return
+
+        if result['corrupted']:
+            Logger.info(
+                f"⚠️ Memory Validation: {len(result['corrupted'])} file(s) corrupted or unreadable:",
+                "YELLOW"
+            )
+            for file_path in result['corrupted']:
+                Logger.info(f"   - {file_path}", "YELLOW")
+
+        if result['empty']:
+            Logger.info(
+                f"⚠️ Memory Validation: {len(result['empty'])} file(s) empty:",
+                "YELLOW"
+            )
+            for file_path in result['empty']:
+                Logger.info(f"   - {file_path}", "YELLOW")
+
+        if result['valid']:
+            Logger.debug(f"✅ Memory validation passed ({result['total']} files)", "GREEN")
+
     def _prompt_user_for_phase(self, phase_name: str) -> bool:
         """
         Prompt user to confirm running a phase. Returns True if user confirms (y), False if user declines (n).
@@ -476,6 +587,21 @@ class RalphOrchestrator:
         Logger.info(f"❌ Unknown phase: {phase}", "RED")
         sys.exit(1)
 
+def get_version() -> str:
+    """Extract version from pyproject.toml."""
+    try:
+        pyproject_path = Path(__file__).parent / "pyproject.toml"
+        with open(pyproject_path, "r") as f:
+            for line in f:
+                if line.startswith("version"):
+                    # Extract version from line like: version = "0.1.0"
+                    match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
+                    if match:
+                        return match.group(1)
+    except Exception:
+        pass
+    return "unknown"
+
 def main():
     """Entry point for the ralph CLI."""
     parser = argparse.ArgumentParser(
@@ -488,6 +614,12 @@ def main():
                "  ralph --accept-all             # Run all phases without prompts\n"
                "  ralph --phase execute --accept-all  # Execute with no prompts",
         formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"Ralph {get_version()}"
     )
 
     parser.add_argument(
@@ -509,8 +641,15 @@ def main():
         help="Disable easter egg messages on successful task completion"
     )
 
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable debug-level logging and display Claude CLI prompts and responses"
+    )
+
     args = parser.parse_args()
     easter_eggs = not args.no_easter_eggs
+    Logger.set_verbose(args.verbose)
     RalphOrchestrator(easter_eggs=easter_eggs).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

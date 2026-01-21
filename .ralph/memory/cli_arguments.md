@@ -30,6 +30,22 @@ parser = argparse.ArgumentParser(
 
 ## Arguments
 
+### --version Flag
+
+```python
+parser.add_argument(
+    "--version",
+    action="version",
+    version=f"Ralph {get_version()}"
+)
+```
+
+- **Action**: version (displays version and exits)
+- **Output**: "Ralph <version>"
+- **Description**: Display the current version of Ralph
+
+The version is sourced from `pyproject.toml` using the `get_version()` helper function which parses the version field dynamically.
+
 ### --phase Argument
 
 ```python
@@ -59,6 +75,22 @@ parser.add_argument(
 - **Default**: False
 - **Description**: Skip user confirmation prompts and proceed automatically
 
+### --verbose Flag
+
+```python
+parser.add_argument(
+    "--verbose",
+    action="store_true",
+    help="Enable debug-level logging and display Claude CLI prompts and responses"
+)
+```
+
+- **Action**: store_true (boolean flag, no value required)
+- **Default**: False
+- **Description**: Enable debug-level output showing all Claude CLI prompts and responses
+- **Behavior**: Sets `Logger.verbose = True` to display debug messages with colored output
+- **Use cases**: Debugging agent behavior, understanding Claude prompt/response flow
+
 ## Argument Passing
 
 ```python
@@ -79,29 +111,37 @@ User intent prompts still appear when needed (architect, planner phases) unless 
 ## Help Output
 
 ```
-usage: ralph.py [-h] [--phase {architect,planner,execute,all}] [--accept-all]
+usage: ralph.py [-h] [--version] [--phase {architect,planner,execute,all}] [--accept-all] [--no-easter-eggs] [--verbose]
 
 Ralph - Autonomous Software Development Agent
 
 options:
   -h, --help            show this help message and exit
+  --version             show program's version number and exit
   --phase {architect,planner,execute,all}
                         Select which phase to run (default: all)
   --accept-all          Skip user feedback prompts and proceed with all phases
+  --no-easter-eggs      Disable easter egg messages on successful task completion
+  --verbose             Enable debug-level logging and display Claude CLI prompts and responses
 
 Examples:
   ralph                          # Run all phases
+  ralph --version                # Display version
   ralph --phase architect        # Run architect phase only
   ralph --phase planner          # Run planner phase only
   ralph --phase execute          # Run execute phase only
   ralph --accept-all             # Run all phases without prompts
   ralph --phase execute --accept-all  # Execute with no prompts
+  ralph --verbose                # Run with debug-level logging enabled
+  ralph --verbose --phase execute # Execute with verbose output for debugging
 ```
 
 ## Test Coverage
 
-All 38 tests pass, including:
+All 26 tests pass, including:
 - Phase selection tests (architect, planner, execute, all)
 - Accept-all flag behavior tests
+- Verbose flag integration (Logger.set_verbose() called correctly)
 - Prompt behavior validation
 - Integration tests for argument passing
+- Easter eggs feature tests

@@ -49,6 +49,30 @@ Skip user feedback prompts before each phase and proceed automatically. When `ph
 
 Useful for unattended execution and CI/CD pipelines.
 
+### Verbose Flag
+
+```bash
+ralph --verbose
+ralph --verbose --phase execute
+ralph --phase planner --verbose
+```
+
+Enable debug-level logging to see all Claude CLI prompts and responses. Displays:
+- `[DEBUG]` messages with Claude prompts in cyan
+- Claude responses in green
+- Errors in red
+- All prompts and responses are still logged to `.ralph/ralph_log.txt`
+
+Useful for debugging agent behavior and understanding how prompts flow through Claude.
+
+### Version
+
+```bash
+ralph --version
+```
+
+Displays the current version of Ralph in format: `Ralph <version>`
+
 ### Help Text
 
 ```bash
@@ -161,6 +185,18 @@ User can answer 'n' to skip a phase without error.
 ralph --phase execute --accept-all
 ```
 Runs only the execute phase without prompts. Ideal for CI/CD pipelines.
+
+### Debugging Agent Behavior
+
+```bash
+ralph --verbose
+```
+Runs all phases with debug-level logging enabled. Shows:
+- All Claude prompts sent (with `[DEBUG]` prefix in cyan)
+- All Claude responses received (in green)
+- Any errors or exceptions (in red)
+
+Perfect for understanding why tasks fail or how the agent interprets instructions.
 
 ## Knowledge Injection
 
