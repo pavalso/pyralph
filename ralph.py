@@ -386,55 +386,50 @@ class RalphOrchestrator:
 
     def _execute_task(self, task: dict, test_cmd: str):
         retries = 0
-        task_branch = None  # Store task branch name across retries
+        
+        # 1. Setup Branch Name (Python still handles the heavy lifting)
+        safe_task_id = "".join(c for c in task['id'] if c.isalnum() or c in ('-', '_'))
+        branch_name = f"feature/{safe_task_id}"
 
         while retries < CONF.MAX_RETRIES:
             memory_tree = self.memory.get_structure()
             prev_errors = CONF.PROGRESS_FILE.read_text(encoding='utf-8') if CONF.PROGRESS_FILE.exists() else ""
 
-            # On first retry (retries == 0), create feature branch and task branch
-            if retries == 0:
-                prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
-
-                # Create task-specific branch from PRD branch
-                task_id = task['id']
-                description = task['description']
-
-            # Load prompt.md if it exists
-            prompt_md_content = ""
+            # 2. Load and Prepare User Context (Soft Guidelines)
+            user_context = "No specific user preferences provided."
             prompt_md_path = CONF.BASE_DIR / "prompt.md"
+            
             if prompt_md_path.exists():
-                try:
-                    prompt_md_content = prompt_md_path.read_text(encoding='utf-8')
-                    prompt_md_content = f"\n\n--- ADDITIONAL DIRECTIVES ---\n{prompt_md_content}"
-                except Exception as e:
-                    Logger.debug(f"Failed to read prompt.md: {e}")
+                raw_text = prompt_md_path.read_text(encoding='utf-8')
+                # Inject variables so the user can reference them if they want to
+                user_context = raw_text.replace("{{TASK_ID}}", task['id'])
+                user_context = user_context.replace("{{DESCRIPTION}}", task['description'])
+                user_context = user_context.replace("{{BRANCH_NAME}}", branch_name)
+                user_context = user_context.replace("{{TEST_CMD}}", test_cmd)
 
+            # 3. Construct the Prompt (Sandwich Method)
             prompt = f"""
-            ROLE: Developer (Ralph). TASK: {task['id']}
-            DESC: {task['description']}
-            CRITERIA: {task['acceptanceCriteria']}
-
-            CONTEXT:
-            You have access to documentation in:
+            ROLE: Developer (Ralph). 
+            TASK: {task['id']}
+            OBJECTIVE: {task['description']}
+            
+            CONTEXT FILES:
             {memory_tree}
 
-            INSTRUCTIONS:
-            1. PLAN your approach.
-            2. IMPLEMENT the code.
-            3. RUN '{test_cmd}' to verify.
-            4. Only output "STATUS: SUCCESS" if tests pass.
-            5. Update the relevant .ralph/memory/ for the next agent.
+            --- USER PREFERENCES & WORKFLOW (IMPORTANT) ---
+            {user_context}
+            -----------------------------------------------
 
-            MEMORY RULES:
-            - You MUST keep up-to-date documentation.
-            - Keep the documentation concise. Keep task references minimal.
-            - Split your knowledge into the appropriate markdown files.
-            - Use YAML frontmatter with type: wiki.
-            - The file names MUST be unique and descriptive.
-            - You can create directories under .ralph/memory/ if needed.
+            --- CORE EXECUTION STEPS ---
+            1. CHECKOUT: Ensure you are on branch '{branch_name}'.
+            2. PLAN: Analyze the requirements and user preferences.
+            3. IMPLEMENT: Write the code. Adhere to the preferences above.
+            4. VERIFY: Run '{test_cmd}'.
+            5. COMMIT: If tests pass, commit with message "{task['id']}: {task['description']}" (unless user preferences say otherwise).
+            6. FINALIZE: Only output "STATUS: SUCCESS" if tests pass.
 
-            FEEDBACK: {prev_errors}{prompt_md_content}
+            FEEDBACK FROM PREVIOUS ATTEMPT:
+            {prev_errors}
             """
 
             success, output = self.agent.run(prompt, f"WORKER-{task['id']}")
