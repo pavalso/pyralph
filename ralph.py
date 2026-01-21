@@ -69,9 +69,38 @@ class Logger:
         except Exception as e:
             print(f"⚠️ Log Error: {e}")
 
+class GitUtils:
+    """Git-related utilities for workflow management."""
+
+    @staticmethod
+    def detect_default_branch() -> str:
+        """
+        Detect the default branch of the repository.
+
+        First tries to get the remote HEAD, falls back to current branch.
+        Returns branch name without 'origin/' prefix (e.g., 'main', 'master').
+        """
+        # Try to get remote HEAD
+        stdout, stderr, code = Shell.run("git symbolic-ref refs/remotes/origin/HEAD")
+        if code == 0:
+            # Output format: "ref: refs/remotes/origin/main"
+            match = re.search(r'refs/remotes/origin/(.+)$', stdout.strip())
+            if match:
+                return match.group(1)
+
+        # Fallback: get current branch
+        stdout, stderr, code = Shell.run("git rev-parse --abbrev-ref HEAD")
+        if code == 0:
+            branch = stdout.strip()
+            if branch != "HEAD":  # Not detached
+                return branch
+
+        # Last resort default
+        return "main"
+
 class Shell:
     """Safe wrapper for subprocess calls."""
-    
+
     @staticmethod
     def check_dependencies():
         if not shutil.which("claude"):
@@ -201,18 +230,36 @@ class RalphOrchestrator:
         ROLE: Senior Architect. TASK: Initialize .ralph/memory/
         INTENT: "{user_intent}"
         FILES: {Shell.get_file_tree()}
-        
+
         STRICT RULES:
         1. Output ONLY markdown.
         2. Define Tech Stack & Test Command.
         3. Use YAML frontmatter with type: wiki.
-        
+
         ACTION: Create `architecture.md` in .ralph/memory/.
         """
         success, _ = self.agent.run(prompt, "ARCHITECT")
         if not success or not any(CONF.MEMORY_DIR.iterdir()):
             Logger.info("⚠️ Architect failed.", "RED")
             sys.exit(1)
+
+        # Detect and store default branch
+        default_branch = GitUtils.detect_default_branch()
+        git_workflow_content = f"""---
+type: wiki
+title: Git Workflow Context
+created: {datetime.datetime.now().strftime('%Y-%m-%d')}
+---
+
+# Git Workflow
+
+## Default Branch
+- **Name**: `{default_branch}`
+
+This branch is detected at the start of the workflow and used as the base for feature development.
+"""
+        (CONF.MEMORY_DIR / "git_workflow.md").write_text(git_workflow_content, encoding='utf-8')
+
         Logger.info("✅ Memory Initialized.", "GREEN")
 
     def run_planner(self, user_intent: str):

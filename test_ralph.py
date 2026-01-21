@@ -7,9 +7,10 @@ from unittest.mock import MagicMock, patch
 
 # Ensure your main script is named 'ralph.py'
 from ralph import (
-    MemoryManager, 
-    JsonUtils, 
-    Shell, 
+    MemoryManager,
+    JsonUtils,
+    Shell,
+    GitUtils,
     RalphOrchestrator
 )
 
@@ -64,6 +65,51 @@ def test_extract_test_command_from_file(mock_config):
     (mock_config.MEMORY_DIR / "meta.md").write_text("Test Command: `yarn test`")
     cmd = MemoryManager.extract_test_command()
     assert cmd == "yarn test"
+
+# ==============================================================================
+# GIT UTILITIES TESTS
+# ==============================================================================
+
+@patch("ralph.Shell.run")
+def test_detect_default_branch_from_remote(MockShellRun):
+    """Test detecting default branch from remote HEAD."""
+    MockShellRun.return_value = ("ref: refs/remotes/origin/main\n", "", 0)
+    branch = GitUtils.detect_default_branch()
+    assert branch == "main"
+
+@patch("ralph.Shell.run")
+def test_detect_default_branch_master(MockShellRun):
+    """Test detecting 'master' as default branch."""
+    MockShellRun.return_value = ("ref: refs/remotes/origin/master\n", "", 0)
+    branch = GitUtils.detect_default_branch()
+    assert branch == "master"
+
+@patch("ralph.Shell.run")
+def test_detect_default_branch_fallback_to_current(MockShellRun):
+    """Test fallback to current branch when remote HEAD fails."""
+    MockShellRun.side_effect = [
+        ("", "", 1),  # symbolic-ref fails
+        ("develop\n", "", 0),  # current branch is develop
+    ]
+    branch = GitUtils.detect_default_branch()
+    assert branch == "develop"
+
+@patch("ralph.Shell.run")
+def test_detect_default_branch_fallback_default(MockShellRun):
+    """Test default fallback when both methods fail."""
+    MockShellRun.return_value = ("", "", 1)
+    branch = GitUtils.detect_default_branch()
+    assert branch == "main"
+
+@patch("ralph.Shell.run")
+def test_detect_default_branch_detached_head(MockShellRun):
+    """Test fallback when in detached HEAD state."""
+    MockShellRun.side_effect = [
+        ("", "", 1),  # symbolic-ref fails
+        ("HEAD\n", "", 0),  # in detached HEAD state
+    ]
+    branch = GitUtils.detect_default_branch()
+    assert branch == "main"
 
 # ==============================================================================
 # ORCHESTRATOR TESTS
