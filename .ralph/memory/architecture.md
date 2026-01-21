@@ -119,8 +119,6 @@ start() -> run_architect() -> run_planner() -> execute_loop()
                                           _execute_task() [max 3 retries]
                                                     |
                                           verify with test command
-                                                    |
-                                          git commit on success
 ```
 
 ## Key Design Decisions

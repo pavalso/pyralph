@@ -70,139 +70,6 @@ class Logger:
         except Exception as e:
             print(f"⚠️ Log Error: {e}")
 
-class GitUtils:
-    """Git-related utilities for workflow management."""
-
-    @staticmethod
-    def detect_default_branch() -> str:
-        """
-        Detect the default branch of the repository.
-
-        First tries to get the remote HEAD, falls back to current branch.
-        Returns branch name without 'origin/' prefix (e.g., 'main', 'master').
-        """
-        # Try to get remote HEAD
-        stdout, stderr, code = Shell.run("git symbolic-ref refs/remotes/origin/HEAD")
-        if code == 0:
-            # Output format: "ref: refs/remotes/origin/main"
-            match = re.search(r'refs/remotes/origin/(.+)$', stdout.strip())
-            if match:
-                return match.group(1)
-
-        # Fallback: get current branch
-        stdout, stderr, code = Shell.run("git rev-parse --abbrev-ref HEAD")
-        if code == 0:
-            branch = stdout.strip()
-            if branch != "HEAD":  # Not detached
-                return branch
-
-        # Last resort default
-        return "main"
-
-    @staticmethod
-    def create_feature_branch(base_branch: str, feature_branch_name: str) -> bool:
-        """
-        Create and checkout a new feature branch from the specified base branch.
-
-        Args:
-            base_branch: The branch to branch from (e.g., 'main', 'master')
-            feature_branch_name: The name for the new feature branch (e.g., 'feature/task-001')
-
-        Returns:
-            True if successful, False otherwise.
-        """
-        # Ensure we're on the base branch first
-        stdout, stderr, code = Shell.run(f"git checkout {base_branch}")
-        if code != 0:
-            return False
-
-        # Create and checkout the feature branch
-        stdout, stderr, code = Shell.run(f"git checkout -b {feature_branch_name}")
-        return code == 0
-
-    @staticmethod
-    def create_task_branch(prd_branch: str, task_id: str, description: str) -> Tuple[bool, str]:
-        """
-        Create and checkout a task-specific branch from the PRD branch.
-
-        Args:
-            prd_branch: The PRD feature branch to branch from (e.g., 'feature/git-workflow-prd')
-            task_id: The task ID (e.g., 'TASK-003')
-            description: The task description to convert to slug
-
-        Returns:
-            Tuple of (success: bool, branch_name: str)
-        """
-        # Convert description to slug (lowercase, replace spaces with hyphens)
-        slug = description.lower().replace(' ', '-').replace('_', '-')
-        # Remove any characters that aren't alphanumeric or hyphens
-        slug = re.sub(r'[^a-z0-9-]', '', slug)
-        # Remove duplicate hyphens
-        slug = re.sub(r'-+', '-', slug)
-        # Remove leading/trailing hyphens
-        slug = slug.strip('-')
-
-        task_branch = f"task/{task_id.lower()}-{slug}"
-
-        # Ensure we're on the PRD branch first
-        stdout, stderr, code = Shell.run(f"git checkout {prd_branch}")
-        if code != 0:
-            return False, task_branch
-
-        # Create and checkout the task branch
-        stdout, stderr, code = Shell.run(f"git checkout -b {task_branch}")
-        if code == 0:
-            return True, task_branch
-        return False, task_branch
-
-    @staticmethod
-    def merge_task_to_prd(prd_branch: str, task_branch: str, task_id: str, description: str) -> bool:
-        """
-        Merge a task branch back to the PRD branch with --no-ff flag.
-
-        Args:
-            prd_branch: The PRD feature branch to merge into (e.g., 'feature/git-workflow-prd')
-            task_branch: The task branch to merge (e.g., 'task/task-003-describe')
-            task_id: The task ID for commit message (e.g., 'TASK-003')
-            description: The task description for commit message
-
-        Returns:
-            True if successful, False otherwise.
-        """
-        # Checkout the PRD branch
-        stdout, stderr, code = Shell.run(f"git checkout {prd_branch}")
-        if code != 0:
-            return False
-
-        # Merge with --no-ff to create a merge commit
-        commit_message = f"Merge {task_id}: {description}"
-        cmd = f'git merge --no-ff {task_branch} -m "{commit_message}"'
-        stdout, stderr, code = Shell.run(cmd)
-        return code == 0
-
-    @staticmethod
-    def merge_prd_to_default(default_branch: str, prd_branch: str) -> bool:
-        """
-        Merge the PRD feature branch to the default branch with --no-ff flag.
-
-        Args:
-            default_branch: The default branch (e.g., 'main', 'master')
-            prd_branch: The PRD feature branch to merge (e.g., 'feature/git-workflow-prd')
-
-        Returns:
-            True if successful, False otherwise.
-        """
-        # Checkout the default branch
-        stdout, stderr, code = Shell.run(f"git checkout {default_branch}")
-        if code != 0:
-            return False
-
-        # Merge with --no-ff to create a merge commit
-        commit_message = f"Merge PRD: {prd_branch}"
-        cmd = f'git merge --no-ff {prd_branch} -m "{commit_message}"'
-        stdout, stderr, code = Shell.run(cmd)
-        return code == 0
-
 class Shell:
     """Safe wrapper for subprocess calls."""
 
@@ -380,23 +247,6 @@ class RalphOrchestrator:
             Logger.info("⚠️ Architect failed.", "RED")
             sys.exit(1)
 
-        # Detect and store default branch
-        default_branch = GitUtils.detect_default_branch()
-        git_workflow_content = f"""---
-type: wiki
-title: Git Workflow Context
-created: {datetime.datetime.now().strftime('%Y-%m-%d')}
----
-
-# Git Workflow
-
-## Default Branch
-- **Name**: `{default_branch}`
-
-This branch is detected at the start of the workflow and used as the base for feature development.
-"""
-        (CONF.MEMORY_DIR / "git_workflow.md").write_text(git_workflow_content, encoding='utf-8')
-
         Logger.info("✅ Memory Initialized.", "GREEN")
 
     def run_planner(self, user_intent: str):
@@ -453,15 +303,6 @@ This branch is detected at the start of the workflow and used as the base for fe
 
         Logger.info("\n🎉 All Tasks Complete.", "GREEN")
 
-        # Merge PRD branch to default branch
-        default_branch = GitUtils.detect_default_branch()
-        prd_branch = prd.get('featureBranch', 'feature/task-002')
-        Logger.info(f"\n📦 Merging {prd_branch} to {default_branch}...", "CYAN")
-        if GitUtils.merge_prd_to_default(default_branch, prd_branch):
-            Logger.info(f"✅ PRD merged to default branch with merge commit.", "GREEN")
-        else:
-            Logger.info(f"⚠️ PRD merge failed, but all tasks completed.", "YELLOW")
-
         self._archive_prd()
 
     def _execute_task(self, task: dict, test_cmd: str):
@@ -475,28 +316,10 @@ This branch is detected at the start of the workflow and used as the base for fe
             # On first retry (retries == 0), create feature branch and task branch
             if retries == 0:
                 prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
-                default_branch = GitUtils.detect_default_branch()
-                feature_branch = prd.get('featureBranch', f"feature/task-002")
-
-                Logger.info(f"   📦 Creating feature branch: {feature_branch}", "CYAN")
-                if GitUtils.create_feature_branch(default_branch, feature_branch):
-                    Logger.info(f"   ✅ Feature branch created and checked out.", "GREEN")
-                else:
-                    self._record_failure(retries, "Feature Branch Creation Failed", f"Failed to create {feature_branch}")
-                    retries += 1
-                    continue
 
                 # Create task-specific branch from PRD branch
                 task_id = task['id']
                 description = task['description']
-                Logger.info(f"   📦 Creating task branch from PRD branch: {feature_branch}", "CYAN")
-                success, task_branch = GitUtils.create_task_branch(feature_branch, task_id, description)
-                if success:
-                    Logger.info(f"   ✅ Task branch created and checked out: {task_branch}", "GREEN")
-                else:
-                    self._record_failure(retries, "Task Branch Creation Failed", f"Failed to create task branch from {feature_branch}")
-                    retries += 1
-                    continue
 
             prompt = f"""
             ROLE: Developer (Ralph). TASK: {task['id']}
@@ -546,21 +369,7 @@ This branch is detected at the start of the workflow and used as the base for fe
                         egg_message = EasterEggs.get_random_message(hash(task['id']) % 10000)
                         Logger.info(f"   {egg_message}", "MAGENTA")
 
-                    # Merge task branch to PRD branch (only if we have a task_branch)
-                    if task_branch:
-                        prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
-                        prd_branch = prd.get('featureBranch', f"feature/task-002")
-                        task_id = task['id']
-                        description = task['description']
-
-                        Logger.info(f"   📦 Merging {task_branch} to {prd_branch}...", "CYAN")
-                        if GitUtils.merge_task_to_prd(prd_branch, task_branch, task_id, description):
-                            Logger.info(f"   ✅ Merged with merge commit.", "GREEN")
-                        else:
-                            Logger.info(f"   ⚠️ Merge failed, but task is verified.", "YELLOW")
-
                     task['status'] = 'completed'
-                    Shell.run(f'git commit -am "Ralph: {task["id"]}" --allow-empty')
                     if CONF.PROGRESS_FILE.exists(): CONF.PROGRESS_FILE.unlink()
                     return
                 else:
