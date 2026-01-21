@@ -5,6 +5,7 @@ import sys
 import re
 import shutil
 import datetime
+import argparse
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Tuple
@@ -549,23 +550,76 @@ This branch is detected at the start of the workflow and used as the base for fe
         shutil.move(str(CONF.PRD_FILE), str(dest))
         Logger.info(f"📦 PRD Archived to {dest}", "MAGENTA")
 
-    def start(self):
+    def start(self, phase: str = "all", accept_all: bool = False):
         Logger.info(f"🤖 Ralph Agent active in: {CONF.BASE_DIR}", "GREEN")
-        
+
         if not any(CONF.MEMORY_DIR.iterdir()) or not CONF.PRD_FILE.exists():
             user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
             if not user_intent: sys.exit(0)
-            
+
             if not any(CONF.MEMORY_DIR.iterdir()):
                 self.run_architect(user_intent)
             if not CONF.PRD_FILE.exists():
                 self.run_planner(user_intent)
-        
-        self.execute_loop()
+
+        # Handle phase-specific execution
+        if phase == "architect":
+            Logger.info("📋 Phase specified: architect only", "YELLOW")
+            if any(CONF.MEMORY_DIR.iterdir()):
+                Logger.info("⚠️ Memory already exists, skipping architect phase.", "YELLOW")
+            return
+        elif phase == "planner":
+            Logger.info("📋 Phase specified: planner only", "YELLOW")
+            if not any(CONF.MEMORY_DIR.iterdir()):
+                Logger.info("❌ Memory does not exist. Run architect phase first.", "RED")
+                sys.exit(1)
+            if CONF.PRD_FILE.exists():
+                Logger.info("⚠️ PRD already exists, skipping planner phase.", "YELLOW")
+            return
+        elif phase == "execute":
+            Logger.info("📋 Phase specified: execute only", "YELLOW")
+            if not CONF.PRD_FILE.exists():
+                Logger.info("❌ PRD does not exist. Run planner phase first.", "RED")
+                sys.exit(1)
+            self.execute_loop()
+            return
+        elif phase == "all":
+            self.execute_loop()
+            return
+
+        # Invalid phase (should not reach here with argparse validation)
+        Logger.info(f"❌ Unknown phase: {phase}", "RED")
+        sys.exit(1)
 
 def main():
     """Entry point for the ralph CLI."""
-    RalphOrchestrator().start()
+    parser = argparse.ArgumentParser(
+        description="Ralph - Autonomous Software Development Agent",
+        epilog="Examples:\n"
+               "  ralph                          # Run all phases\n"
+               "  ralph --phase architect        # Run architect phase only\n"
+               "  ralph --phase planner          # Run planner phase only\n"
+               "  ralph --phase execute          # Run execute phase only\n"
+               "  ralph --accept-all             # Run all phases without prompts\n"
+               "  ralph --phase execute --accept-all  # Execute with no prompts",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        "--phase",
+        choices=["architect", "planner", "execute", "all"],
+        default="all",
+        help="Select which phase to run (default: all)"
+    )
+
+    parser.add_argument(
+        "--accept-all",
+        action="store_true",
+        help="Skip user feedback prompts and proceed with all phases"
+    )
+
+    args = parser.parse_args()
+    RalphOrchestrator().start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
     main()

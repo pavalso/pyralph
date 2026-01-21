@@ -10,6 +10,38 @@ Assumes `ralph` is available in `$PATH`.
 
 ## Commands
 
+### Run All Phases (Default)
+
+```bash
+ralph
+```
+
+Starts or resumes the agent loop with all three phases (architect, planner, execute). If no PRD exists, prompts for project description first.
+
+### Phase Selection
+
+```bash
+ralph --phase architect
+ralph --phase planner
+ralph --phase execute
+ralph --phase all
+```
+
+Run specific phases individually:
+- `architect`: Initialize memory with project context
+- `planner`: Generate PRD with user stories
+- `execute`: Run task execution loop
+- `all`: Run all three phases sequentially (default)
+
+### Accept-All Flag
+
+```bash
+ralph --accept-all
+ralph --phase execute --accept-all
+```
+
+Skip user feedback prompts and proceed with all phases. Useful for unattended execution.
+
 ### Run Agent
 
 ```bash
@@ -62,6 +94,43 @@ View recent log entries:
 ```bash
 tail -n 50 .ralph/ralph_log.txt
 ```
+
+## Examples
+
+### Starting Fresh
+
+```bash
+ralph
+```
+Prompts for project description, runs architect, planner, and execute phases.
+
+### Running Only Architect Phase
+
+```bash
+ralph --phase architect
+```
+Initializes memory structure without running planner or execute.
+
+### Running Only Execute Phase
+
+```bash
+ralph --phase execute
+```
+Skips architect and planner, runs only the task execution loop. Requires existing PRD.
+
+### Running All Phases Without Prompts
+
+```bash
+ralph --accept-all
+```
+Runs all three phases sequentially without any user feedback prompts.
+
+### Executing with Full Automation
+
+```bash
+ralph --phase execute --accept-all
+```
+Runs only the execute phase without prompts. Ideal for CI/CD pipelines.
 
 ## Knowledge Injection
 
