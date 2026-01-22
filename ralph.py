@@ -10,6 +10,9 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Tuple
 
+# Import agents
+from agents import get_agent, list_agents
+
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
@@ -209,65 +212,33 @@ class MemoryManager:
         if (CONF.BASE_DIR / "package.json").exists(): return "npm test"
         return "pytest"
 
-class ClaudeAgent:
-    """The Interface to the AI Model."""
-
-    def run(self, prompt: str, tag: str) -> Tuple[bool, str]:
-        Logger.file_log(prompt, "PROMPT", tag)
-
-        # Display prompt in verbose mode
-        if Logger.verbose:
-            Logger.debug(f"=== CLAUDE PROMPT [{tag}] ===", "CYAN")
-            Logger.debug(prompt, "CYAN")
-            Logger.debug("=" * 40, "CYAN")
-
-        cmd_str = "claude -p --dangerously-skip-permissions"
-
-        try:
-            result = subprocess.run(
-                cmd_str, input=prompt, capture_output=True, text=True,
-                encoding='utf-8', shell=(sys.platform == 'win32'), timeout=CONF.TIMEOUT_SECONDS
-            )
-
-            log_content = result.stdout
-            if result.stderr.strip():
-                log_content += f"\n\n--- [CLI STDERR] ---\n{result.stderr}"
-
-            if result.returncode != 0:
-                Logger.file_log(log_content, "ERROR", tag)
-                # Display error in verbose mode
-                if Logger.verbose:
-                    Logger.debug(f"=== CLAUDE ERROR [{tag}] ===", "RED")
-                    Logger.debug(f"STDOUT:\n{result.stdout}", "RED")
-                    Logger.debug(f"STDERR:\n{result.stderr}", "RED")
-                    Logger.debug("=" * 40, "RED")
-                return False, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-
-            Logger.file_log(log_content, "RESPONSE", tag)
-
-            # Display response in verbose mode
-            if Logger.verbose:
-                Logger.debug(f"=== CLAUDE RESPONSE [{tag}] ===", "GREEN")
-                Logger.debug(result.stdout, "GREEN")
-                Logger.debug("=" * 40, "GREEN")
-
-            return True, result.stdout
-
-        except Exception as e:
-            Logger.file_log(str(e), "SYSTEM_EXCEPTION", tag)
-            if Logger.verbose:
-                Logger.debug(f"=== CLAUDE EXCEPTION [{tag}] ===", "RED")
-                Logger.debug(str(e), "RED")
-                Logger.debug("=" * 40, "RED")
-            return False, str(e)
 
 # ==============================================================================
 # ORCHESTRATOR
 # ==============================================================================
 
 class RalphOrchestrator:
-    def __init__(self):
-        self.agent = ClaudeAgent()
+    def __init__(self, agent_name: str = "claude"):
+        """
+        Initialize the Ralph orchestrator.
+
+        Args:
+            agent_name: Name of the agent to use (e.g., "claude")
+        """
+        # Initialize agent
+        self.agent = get_agent(agent_name, timeout_seconds=CONF.TIMEOUT_SECONDS)
+
+        # Set logger and config for the agent (if supported)
+        if hasattr(self.agent, 'set_logger'):
+            self.agent.set_logger(Logger)
+        if hasattr(self.agent, 'set_config'):
+            self.agent.set_config(CONF)
+
+        # Check agent dependencies
+        if not self.agent.check_dependencies():
+            Logger.info(f"❌ Error: Agent '{self.agent.get_name()}' dependencies not satisfied.", "RED")
+            sys.exit(1)
+
         self.memory = MemoryManager()
         CONF.ensure_directories()
         Shell.check_dependencies()
@@ -548,7 +519,7 @@ RETRY CONTEXT (from previous attempt, if any):
         return response == 'y'
 
     def start(self, phase: str = "all", accept_all: bool = False):
-        Logger.info(f"🤖 Ralph Agent active in: {CONF.BASE_DIR}", "GREEN")
+        Logger.info(f"🤖 Ralph {self.agent.get_name()} Agent active in: {CONF.BASE_DIR}", "GREEN")
 
         # Handle phase-specific execution
         if phase == "architect":
@@ -652,6 +623,8 @@ def main():
     parser.add_argument(
         "phase",
         choices=["architect", "planner", "execute", "all"],
+        default="all",
+        nargs="?",
         help="Select which phase to run"
     )
 
@@ -673,9 +646,16 @@ def main():
         help="Enable debug-level logging and display Claude CLI prompts and responses"
     )
 
+    parser.add_argument(
+        "--agent",
+        choices=list_agents(),
+        default="claude",
+        help="Select which agent to use (default: claude)"
+    )
+
     args = parser.parse_args()
     Logger.set_verbose(args.verbose)
-    RalphOrchestrator().start(phase=args.phase, accept_all=args.accept_all)
+    RalphOrchestrator(agent_name=args.agent).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
     main()

@@ -17,4 +17,9 @@ dependencies = []
 ralph = "ralph:main"
 
 [tool.setuptools]
+packages = ["agents"]
 py-modules = ["ralph"]
+
+[tool.setuptools.package-data]
+agents = ["*.py"]
+
