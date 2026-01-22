@@ -56,16 +56,17 @@ class GithubAgent(BaseAgent):
                 self._logger.debug("=" * 40, "CYAN")
 
         cmd = [
-            "copilot",
+            shutil.which("copilot"),
             "--allow-all-tools",
             "--add-dir", ".",
-            "-p", prompt
+            "--no-ask-user",
+            "-s"
         ]
 
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                encoding='utf-8', shell=False, timeout=self.timeout_seconds
+                cmd, input=prompt, capture_output=True, text=True,
+                encoding='utf-8', timeout=self.timeout_seconds
             )
 
             log_content = result.stdout

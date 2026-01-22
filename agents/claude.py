@@ -57,12 +57,16 @@ class ClaudeAgent(BaseAgent):
                 self._logger.debug(prompt, "CYAN")
                 self._logger.debug("=" * 40, "CYAN")
 
-        cmd_str = "claude -p --dangerously-skip-permissions"
+        cmd = [
+            shutil.which("claude"),
+            "-p",
+            "--dangerously-skip-permissions"
+        ]
 
         try:
             result = subprocess.run(
-                cmd_str, input=prompt, capture_output=True, text=True,
-                encoding='utf-8', shell=(sys.platform == 'win32'), timeout=self.timeout_seconds
+                cmd, input=prompt, capture_output=True, text=True,
+                encoding='utf-8', timeout=self.timeout_seconds
             )
 
             log_content = result.stdout

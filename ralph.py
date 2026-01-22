@@ -90,15 +90,6 @@ class Shell:
     """Safe wrapper for subprocess calls."""
 
     @staticmethod
-    def check_dependencies():
-        if not shutil.which("claude"):
-            Logger.info("❌ Error: 'claude' CLI not found.", "RED")
-            sys.exit(1)
-        if not shutil.which("git"):
-            Logger.info("❌ Error: 'git' not found.", "RED")
-            sys.exit(1)
-
-    @staticmethod
     def run(command: str, timeout: int = 30) -> Tuple[str, str, int]:
         try:
             # shell=True defaults to CWD, which is what we want
@@ -241,7 +232,6 @@ class RalphOrchestrator:
 
         self.memory = MemoryManager()
         CONF.ensure_directories()
-        Shell.check_dependencies()
         self._validate_memory_on_startup()
 
     def run_architect(self, user_intent: str):
