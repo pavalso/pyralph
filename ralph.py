@@ -16,8 +16,6 @@ from typing import Tuple
 
 @dataclass
 class Config:
-    # CRITICAL CHANGE: Use Path.cwd() so it works on the folder you are IN,
-    # not the folder where the script IS.
     BASE_DIR: Path = Path.cwd()
     ROOT_DIR: Path = BASE_DIR / ".ralph"
     MEMORY_DIR: Path = ROOT_DIR / "memory"
@@ -135,37 +133,6 @@ class JsonUtils:
         if start != -1 and end != -1: text = text[start:end+1]
         text = re.sub(r"//.*", "", text)
         return json.loads(text)
-
-class EasterEggs:
-    """Easter egg messages for successful task completions."""
-
-    MESSAGES = [
-        "🥚 I didn't choose the task life, the task life chose me.",
-        "🥚 Ralph: The Gift That Keeps On Giving™",
-        "🥚 I'm making this up as I go along, but I'm really good at it.",
-        "🥚 Excellent work! Ralph is pleased.",
-        "🥚 Task complete. Have you tried debugging with ✨ crystals ✨?",
-        "🥚 Success! Ralph would give you a medal, but he's an AI.",
-        "🥚 📋 This task completion brought to you by trial and error.",
-        "🥚 Even I'm impressed! And I'm an AI.",
-        "🥚 One small task for Ralph, one giant leap for your codebase.",
-        "🥚 Why do programmers prefer dark mode? Because light attracts bugs!",
-    ]
-
-    @staticmethod
-    def get_random_message(seed_value: int = 0) -> str:
-        """
-        Get a random easter egg message.
-
-        Args:
-            seed_value: Optional seed for deterministic behavior (for testing)
-
-        Returns:
-            A random easter egg message string
-        """
-        import random as rand_module
-        rand_module.seed(seed_value)
-        return rand_module.choice(EasterEggs.MESSAGES)
 
 # ==============================================================================
 # CORE COMPONENTS
@@ -450,11 +417,11 @@ SCHEMA (example shape, not a template):
             if prompt_md_path.exists():
                 raw_text = prompt_md_path.read_text(encoding='utf-8')
                 # Inject variables so the user can reference them if they want to
-                user_context = user_context.replace("{{PRD_ID}}", safe_prd_id)
-                user_context = user_context.replace("{{PRD_DESCRIPTION}}", prd['description'])
+                user_context = raw_text.replace("{{PRD_ID}}", safe_prd_id)
+                user_context = raw_text.replace("{{PRD_DESCRIPTION}}", prd['description'])
                 user_context = raw_text.replace("{{TASK_ID}}", safe_task_id)
-                user_context = user_context.replace("{{TASK_DESCRIPTION}}", task['description'])
-                user_context = user_context.replace("{{TEST_CMD}}", test_cmd)
+                user_context = raw_text.replace("{{TASK_DESCRIPTION}}", task['description'])
+                user_context = raw_text.replace("{{TEST_CMD}}", test_cmd)
 
             # 3. Construct the Prompt
             prompt = f"""
@@ -513,9 +480,6 @@ RETRY CONTEXT (from previous attempt, if any):
 
                 if code == 0:
                     Logger.info(f"   ✅ Verified.", "GREEN")
-
-                    egg_message = EasterEggs.get_random_message(hash(task['id']) % 10000)
-                    Logger.info(f"   {egg_message}", "MAGENTA")
 
                     task['status'] = 'completed'
                     if CONF.PROGRESS_FILE.exists(): CONF.PROGRESS_FILE.unlink()
@@ -677,19 +641,18 @@ def main():
         description="Ralph - Autonomous Software Development Agent",
         epilog="Examples:\n"
                "  ralph                          # Run all phases\n"
-               "  ralph --phase architect        # Run architect phase only\n"
-               "  ralph --phase planner          # Run planner phase only\n"
-               "  ralph --phase execute          # Run execute phase only\n"
+               "  ralph architect        # Run architect phase only\n"
+               "  ralph planner          # Run planner phase only\n"
+               "  ralph execute          # Run execute phase only\n"
                "  ralph --accept-all             # Run all phases without prompts\n"
-               "  ralph --phase execute --accept-all  # Execute with no prompts",
+               "  ralph execute --accept-all  # Execute with no prompts",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
     parser.add_argument(
         "phase",
         choices=["architect", "planner", "execute", "all"],
-        default="all",
-        help="Select which phase to run (default: all)"
+        help="Select which phase to run"
     )
 
     parser.add_argument(
