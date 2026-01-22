@@ -4,3 +4,6 @@ __pycache__/
 .claude/
 dist/
 *.egg-info/
+*venv/
+coverage.xml
+.coverage

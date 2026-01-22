@@ -34,21 +34,9 @@ class EasterEggs:
         return rand_module.choice(EasterEggs.MESSAGES)
 ```
 
-### CLI Flag Support
-
-**--no-easter-eggs**: Disables easter egg messages
-
-Usage:
-```bash
-ralph --no-easter-eggs                    # Disable easter eggs for all phases
-ralph --phase execute --no-easter-eggs    # Disable for execute phase only
-```
-
 ### Integration Points
 
-1. **RalphOrchestrator.__init__()** (line 358): Accepts `easter_eggs` parameter (default: True)
-2. **_execute_task()** (line 545-547): Displays message on success if enabled
-3. **main()** (line 707-710): Parses --no-easter-eggs flag and creates orchestrator
+1. **_execute_task()** (line 545-547): Displays message on success if enabled
 
 ### Deterministic Behavior
 
@@ -70,7 +58,6 @@ This ensures:
 - `test_easter_eggs_deterministic_seeding()` - Seed consistency
 - `test_easter_eggs_different_seeds_may_vary()` - Seed variation
 - `test_easter_egg_displayed_on_task_success()` - Integration with success flow
-- `test_no_easter_egg_when_disabled()` - Flag disables messages
 - `test_easter_eggs_message_list_contains_eggs()` - Message format validation
 - `test_easter_eggs_message_list_not_empty()` - Message list sanity check
 
@@ -93,27 +80,12 @@ All 52 tests pass (45 original + 7 new).
 
 ## Usage Examples
 
-### Enable easter eggs (default):
-```bash
-ralph
-ralph --phase execute
-ralph --accept-all
-```
-
-### Disable easter eggs:
-```bash
-ralph --no-easter-eggs
-ralph --phase execute --no-easter-eggs
-ralph --accept-all --no-easter-eggs
-```
-
 ## Design Decisions
 
 1. **Seed-based randomness**: Uses task ID hash to ensure deterministic selection while appearing random
 2. **Emoji prefix**: 🥚 provides visual consistency and easter egg theme
 3. **Contextual messages**: Mix of humor, metaphors, and technical references
-4. **Optional feature**: Respects user preference via --no-easter-eggs flag
-5. **Non-intrusive**: Only displays on success, doesn't affect core functionality
+4. **Non-intrusive**: Only displays on success, doesn't affect core functionality
 
 ## File Locations
 

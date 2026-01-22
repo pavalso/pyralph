@@ -1,15 +1,19 @@
 import json
 import pytest
 import subprocess
+import builtins
+import types
 from unittest.mock import patch
-
-# Ensure your main script is named 'ralph.py'
 from ralph import (
     MemoryManager,
     JsonUtils,
     Shell,
     RalphOrchestrator,
-    EasterEggs
+    EasterEggs,
+    Logger,
+    ClaudeAgent,
+    get_version,
+    main as ralph_main,
 )
 
 # ==============================================================================
@@ -35,7 +39,18 @@ def mock_config(tmp_path):
         yield mock_conf
 
 @pytest.fixture(autouse=True)
-def mock_dependencies():
+def mock_dependencies(request):
+    """
+    Por defecto parchea Shell.check_dependencies y Logger.info para no depender
+    del entorno real. Si el test lleva el marker 'real_check_deps', no se
+    parchea check_dependencies para poder cubrir los branches de sys.exit(1).
+    """
+    if request.node.get_closest_marker("real_check_deps"):
+        # Solo silenciamos logs
+        with patch("ralph.Logger.info"):
+            yield
+        return
+
     with patch("ralph.Shell.check_dependencies"), patch("ralph.Logger.info"):
         yield
 
@@ -92,7 +107,7 @@ def test_execute_task_verification_success(MockAgentClass, MockShell, mock_confi
 
     # Setup PRD
     prd = {
-        "featureBranch": "feature/task-002",
+        "id": "P1", "description": "desc",
         "userStories": [{"id": "T1", "description": "desc", "acceptanceCriteria": [], "status": "pending"}]
     }
     mock_config.PRD_FILE.write_text(json.dumps(prd))
@@ -132,7 +147,7 @@ def test_execute_task_verification_fail(MockAgentClass, MockShell, mock_config):
     """Test flow: Agent claims success -> Tests Fail -> Loop Retries."""
 
     prd = {
-        "featureBranch": "feature/task-002",
+        "id": "P1", "description": "desc",
         "userStories": [{"id": "T1", "description": "desc", "acceptanceCriteria": [], "status": "pending"}]
     }
     mock_config.PRD_FILE.write_text(json.dumps(prd))
@@ -204,7 +219,7 @@ def test_start_all_phases_accept_all_flag_skips_prompts(MockInput, MockAgentClas
     (mock_config.MEMORY_DIR / "architecture.md").write_text("Test architecture")
 
     prd = {
-        "featureBranch": "feature/phase-control-prd",
+        "id": "P1", "description": "desc",
         "userStories": [{"id": "TASK-001", "description": "Test", "acceptanceCriteria": [], "status": "pending"}]
     }
     mock_config.PRD_FILE.write_text(json.dumps(prd))
@@ -343,7 +358,7 @@ def test_start_execute_phase_only(MockAgentClass, MockShell, mock_config):
     (mock_config.MEMORY_DIR / "architecture.md").write_text("Test architecture")
 
     prd = {
-        "featureBranch": "feature/test-prd",
+        "id": "P1", "description": "desc",
         "userStories": [{"id": "TASK-001", "description": "Test task", "acceptanceCriteria": [], "status": "pending"}]
     }
     mock_config.PRD_FILE.write_text(json.dumps(prd))
@@ -489,7 +504,7 @@ def test_accept_all_flag_with_execute_phase(MockAgentClass, MockShell, mock_conf
     (mock_config.MEMORY_DIR / "architecture.md").write_text("Test architecture")
 
     prd = {
-        "featureBranch": "feature/test-prd",
+        "id": "P1", "description": "desc",
         "userStories": [{"id": "TASK-001", "description": "Test task", "acceptanceCriteria": [], "status": "pending"}]
     }
     mock_config.PRD_FILE.write_text(json.dumps(prd))
@@ -552,7 +567,7 @@ def test_easter_egg_displayed_on_task_success(MockAgentClass, MockShell, mock_co
     """Test that easter egg is displayed when task succeeds with eggs enabled."""
 
     prd = {
-        "featureBranch": "feature/task-002",
+        "id": "P1", "description": "desc",
         "userStories": [{"id": "TASK-001", "description": "test task", "acceptanceCriteria": [], "status": "pending"}]
     }
     mock_config.PRD_FILE.write_text(json.dumps(prd))
@@ -575,46 +590,8 @@ def test_easter_egg_displayed_on_task_success(MockAgentClass, MockShell, mock_co
         ("", "", 0)
     ]
 
-    # Create orchestrator with easter eggs enabled
-    orchestrator = RalphOrchestrator(easter_eggs=True)
-    orchestrator.execute_loop()
-
-    # Verify task completed
-    archives = list(mock_config.ARCHIVE_DIR.glob("*.json"))
-    assert len(archives) == 1
-
-
-@patch("ralph.Shell.run")
-@patch("ralph.ClaudeAgent")
-def test_no_easter_egg_when_disabled(MockAgentClass, MockShell, mock_config):
-    """Test that easter egg is NOT displayed when disabled."""
-
-    prd = {
-        "featureBranch": "feature/task-002",
-        "userStories": [{"id": "TASK-001", "description": "test task", "acceptanceCriteria": [], "status": "pending"}]
-    }
-    mock_config.PRD_FILE.write_text(json.dumps(prd))
-
-    mock_agent_instance = MockAgentClass.return_value
-    mock_agent_instance.run.return_value = (True, "STATUS: SUCCESS")
-
-    MockShell.side_effect = [
-        ("ref: refs/remotes/origin/main\n", "", 0),
-        ("", "", 0),
-        ("", "", 0),
-        ("", "", 0),
-        ("", "", 0),
-        ("Tests Passed", "", 0),
-        ("", "", 0),
-        ("", "", 0),
-        ("", "", 0),
-        ("ref: refs/remotes/origin/main\n", "", 0),
-        ("", "", 0),
-        ("", "", 0)
-    ]
-
-    # Create orchestrator with easter eggs disabled
-    orchestrator = RalphOrchestrator(easter_eggs=False)
+    # Create orchestrator
+    orchestrator = RalphOrchestrator()
     orchestrator.execute_loop()
 
     # Verify task completed
@@ -779,3 +756,195 @@ def test_validate_memory_with_subdirectories(mock_config):
     result = MemoryManager.validate_memory()
     assert result['valid'] is True
     assert result['total'] == 2
+
+# ---------- Logger ----------
+
+def test_logger_debug_respects_verbose(capsys):
+    Logger.set_verbose(False)
+    Logger.debug("hidden")
+    out = capsys.readouterr().out
+    assert out == ""
+
+    Logger.set_verbose(True)
+    Logger.debug("shown", color="GREEN")
+    out = capsys.readouterr().out
+    assert "[DEBUG] shown" in out
+    Logger.set_verbose(False)  # reset
+
+def test_logger_file_log_exception(monkeypatch):
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(builtins, "open", boom)
+    # Should not raise; should print a warning
+    Logger.file_log("x", "PROMPT", "TAG")
+
+# ---------- Shell ----------
+
+@pytest.mark.real_check_deps
+def test_shell_check_dependencies_claude_missing(monkeypatch):
+    # Simulamos: 'claude' ausente, 'git' presente
+    monkeypatch.setattr("shutil.which",
+                        lambda cmd: None if cmd == "claude" else "/usr/bin/git")
+    with pytest.raises(SystemExit) as e:
+        Shell.check_dependencies()
+    assert e.value.code == 1
+
+@pytest.mark.real_check_deps
+def test_shell_check_dependencies_git_missing(monkeypatch):
+    # Simulamos: 'claude' presente, 'git' ausente
+    monkeypatch.setattr("shutil.which",
+                        lambda cmd: "/usr/bin/claude" if cmd == "claude" else None)
+    with pytest.raises(SystemExit) as e:
+        Shell.check_dependencies()
+    assert e.value.code == 1
+
+@patch("subprocess.run", side_effect=OSError("boom"))
+def test_shell_run_other_exception(_mock_run):
+    out, err, code = Shell.run("echo hi")
+    assert code == 1 and "boom" in err
+
+def test_get_file_tree_fallback(mock_config):
+    # Force 'tree' command to look like it failed so we hit the Python fallback
+    with patch("ralph.Shell.run", return_value=("", "", 1)):
+        (mock_config.BASE_DIR / "file1.txt").write_text("x")
+        # Make sure the excluded dirs don't interfere
+        (mock_config.BASE_DIR / ".ralph").mkdir(exist_ok=True)
+        out = Shell.get_file_tree()
+        assert "file1.txt" in out
+
+# ---------- Json parsing & memory ----------
+
+@pytest.mark.parametrize("text, expect", [
+    ("```json\n{\"a\": 1}\n```", {"a": 1}),
+    ("{ \"a\": 1, // comment\n  \"b\": 2 }", {"a": 1, "b": 2}),
+    ("noise before {\"k\": 3} and after", {"k": 3}),
+])
+def test_jsonutils_parse_variants(text, expect):
+    assert JsonUtils.parse(text) == expect
+
+def test_extract_test_command_npm(mock_config):
+    (mock_config.BASE_DIR / "package.json").write_text("{}")
+    assert MemoryManager.extract_test_command() == "npm test"
+
+def test_extract_test_command_default_pytest(mock_config):
+    # No Test Command in files and no package.json
+    assert MemoryManager.extract_test_command() == "pytest"
+
+# ---------- Claude agent ----------
+
+def _cp(stdout, stderr, code):
+    m = types.SimpleNamespace()
+    m.stdout, m.stderr, m.returncode = stdout, stderr, code
+    return m
+
+def test_claudeagent_nonzero_return(monkeypatch):
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _cp("out", "err", 5))
+    ok, msg = ClaudeAgent().run("p", "TAG")
+    assert ok is False and "STDOUT:" in msg and "STDERR:" in msg
+
+def test_claudeagent_exception(monkeypatch):
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("oops")))
+    ok, msg = ClaudeAgent().run("p", "TAG")
+    assert ok is False and "oops" in msg
+
+def test_claudeagent_verbose_path(monkeypatch, capsys):
+    Logger.set_verbose(True)
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _cp("hello", "", 0))
+    ok, msg = ClaudeAgent().run("p", "TAG")
+    assert ok is True and msg == "hello"
+    out = capsys.readouterr().out
+    assert "CLAUDE PROMPT" in out and "CLAUDE RESPONSE" in out
+    Logger.set_verbose(False)
+
+# ---------- Orchestrator branches ----------
+
+@patch("ralph.ClaudeAgent.run", return_value=(False, "nope"))
+def test_run_architect_fails_when_agent_fails(_MockAgent, mock_config):
+    orch = RalphOrchestrator()
+    with pytest.raises(SystemExit) as e:
+        orch.run_architect("build X")
+    assert e.value.code == 1
+
+@patch("ralph.ClaudeAgent.run", return_value=(True, "ok"))
+def test_run_architect_fails_when_memory_stays_empty(_MockAgent, mock_config):
+    # Simulate agent success BUT no files created in memory dir
+    # run_architect should still fail if memory dir is empty
+    orch = RalphOrchestrator()
+    # Ensure directory exists but is empty
+    for p in list(mock_config.MEMORY_DIR.glob("*")):
+        p.unlink()
+    with pytest.raises(SystemExit):
+        orch.run_architect("build X")
+
+@patch("ralph.ClaudeAgent.run", return_value=(True, "not json"))
+def test_run_planner_gives_up_after_three_attempts(_MockAgent, mock_config):
+    orch = RalphOrchestrator()
+    with pytest.raises(SystemExit) as e:
+        orch.run_planner("Build Y")
+    assert e.value.code == 1
+
+@patch("ralph.ClaudeAgent.run", return_value=(True, "STATUS: SUCCESS"))
+@patch("ralph.Shell.run", return_value=("ok", "", 0))
+def test_execute_loop_skips_completed_then_executes(_MockShell, _MockAgent, mock_config):
+    prd = {
+        "id": "P1",
+        "description": "desc",
+        "userStories": [
+            {"id": "DONE", "description": "d", "acceptanceCriteria": [], "status": "completed"},
+            {"id": "T2", "description": "todo", "acceptanceCriteria": [], "status": "pending"},
+        ],
+    }
+    mock_config.PRD_FILE.write_text(json.dumps(prd))
+    orch = RalphOrchestrator()
+    orch.execute_loop()  # should only work on T2
+    # archived file created and T2 set completed
+    archives = list(mock_config.ARCHIVE_DIR.glob("*.json"))
+    assert len(archives) == 1
+    archived = json.loads(archives[0].read_text())
+    t2 = next(x for x in archived["userStories"] if x["id"] == "T2")
+    assert t2["status"] == "completed"
+
+def test_record_failure_writes_progress(mock_config):
+    orch = RalphOrchestrator()
+    orch._record_failure(0, "reason", "detail")
+    s = mock_config.PROGRESS_FILE.read_text()
+    assert "Attempt 1 Failed: reason" in s and "detail" in s
+
+@patch("ralph.MemoryManager.validate_memory", return_value={
+    "valid": True, "corrupted": [], "empty": [], "total": 2
+})
+def test_validate_on_startup_valid_branch_hits_debug(_MockValidate, mock_config, monkeypatch):
+    Logger.set_verbose(True)
+    with patch("ralph.Logger.debug") as dbg:
+        orch = RalphOrchestrator()
+        # Create at least one file so the check runs
+        (mock_config.MEMORY_DIR / "a.md").write_text("x")
+        orch._validate_memory_on_startup()
+        assert dbg.call_count >= 1
+    Logger.set_verbose(False)
+
+# ---------- Version & CLI ----------
+
+def test_get_version_happy_path(monkeypatch, tmp_path):
+    # Pretend ralph.py lives in tmp_path, create a pyproject.toml there
+    import ralph as ralph_mod
+    fake_file = tmp_path / "ralph.py"
+    fake_file.write_text("# here")
+    (tmp_path / "pyproject.toml").write_text('version = "1.2.3"')
+    monkeypatch.setattr(ralph_mod, "__file__", str(fake_file))
+    assert get_version() == "1.2.3"
+
+def test_get_version_unknown(monkeypatch, tmp_path):
+    import ralph as ralph_mod
+    fake_file = tmp_path / "ralph.py"
+    fake_file.write_text("# here")
+    # no pyproject.toml
+    monkeypatch.setattr(ralph_mod, "__file__", str(fake_file))
+    assert get_version() == "unknown"
+
+@patch("ralph.RalphOrchestrator.start")
+def test_main_parses_args_and_calls_start(MockStart, monkeypatch):
+    # Positional phase argument + flag
+    monkeypatch.setattr("sys.argv", ["ralph", "execute", "--accept-all"])
+    ralph_main()
+    MockStart.assert_called_once_with(phase="execute", accept_all=True)

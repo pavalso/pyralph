@@ -299,55 +299,28 @@ class ClaudeAgent:
 # ==============================================================================
 
 class RalphOrchestrator:
-    def __init__(self):
+    def __init__(self, easter_eggs: bool = True):
         self.agent = ClaudeAgent()
         self.memory = MemoryManager()
+        self.easter_eggs = easter_eggs
         CONF.ensure_directories()
         Shell.check_dependencies()
         self._validate_memory_on_startup()
 
     def run_architect(self, user_intent: str):
         Logger.info("\n🕵️  Architect: Initializing Memory...", "CYAN")
-
         prompt = f"""
-ROLE: Senior Architect
-OBJECTIVE: Initialize the project wiki in .ralph/memory/ for the intent below and ensure a deterministic test command is discoverable.
+        ROLE: Senior Architect. TASK: Initialize .ralph/memory/
+        INTENT: "{user_intent}"
+        FILES: {Shell.get_file_tree()}
 
-INTENT:
-{user_intent}
+        STRICT RULES:
+        1. Output ONLY markdown.
+        2. Define Tech Stack & Test Command.
+        3. Use YAML frontmatter with type: wiki.
 
-PROJECT FILE TREE (depth 2):
-{Shell.get_file_tree()}
-
-CAPABILITIES & EXECUTION ENV:
-- You can read/write files and run shell commands in the current working directory.
-- All file paths are relative to the project root (CWD).
-- Create files directly on disk; do not rely on stdout for file content.
-
-DELIVERABLE:
-- Create the file: .ralph/memory/architecture.md
-
-CONTENT REQUIREMENTS for architecture.md:
-- Use YAML frontmatter:
-  ---
-  type: wiki
-  title: Architecture
-  ---
-- Include sections:
-  1) Tech Stack
-  2) Overview
-  3) Key Components
-  4) Risks & Assumptions
-  5) **Test Command** — MUST include a literal line of the form:
-     Test Command: `YOUR_TEST_COMMAND_HERE`
-     (Exactly this label and backtick format so an automated regex can extract it.)
-- Keep content concise and actionable.
-
-OUTPUT RULES:
-- Do NOT print the file content to stdout.
-- You may print a one-line confirmation like:
-  STATUS: CREATED .ralph/memory/architecture.md"""
-
+        ACTION: Create `architecture.md` in .ralph/memory/.
+        """
         success, _ = self.agent.run(prompt, "ARCHITECT")
         if not success or not any(CONF.MEMORY_DIR.iterdir()):
             Logger.info("⚠️ Architect failed.", "RED")
@@ -358,45 +331,23 @@ OUTPUT RULES:
     def run_planner(self, user_intent: str):
         Logger.info("\n🧠 Planner: Creating PRD...", "CYAN")
         memory_map = self.memory.get_structure()
-
+        
         prompt = f"""
-ROLE: Product Manager
-TASK: Create a PRD for the intent below.
-
-INTENT:
-{user_intent}
-
-AVAILABLE WIKI/MEMORY FILES (paths only):
-{memory_map}
-
-PROCESS:
-1) EXPLORE: Infer the scope from available artifacts and the intent.
-2) THINK: Define minimal, testable user stories that can be validated by an automated test command.
-3) ACT: Output the PRD as strict JSON adhering to the schema below.
-
-STRICT OUTPUT RULES:
-- Output ONLY raw JSON (no markdown fences, no comments, no prose).
-- Ensure the JSON is syntactically valid and UTF-8 safe.
-- All IDs must be unique.
-- Each user story MUST have a non-empty description, at least 3 objective acceptance criteria, and "status": "pending".
-
-SCHEMA (example shape, not a template):
-{{
-  "id": "PRD-001",
-  "description": "Short summary of the product or feature.",
-  "userStories": [
-    {{
-      "id": "TASK-001",
-      "description": "As a <user>, I want <capability> so that <outcome>.",
-      "acceptanceCriteria": [
-        "Given <context>, when <action>, then <verifiable outcome>",
-        "Non-ambiguous criteria 2",
-        "Non-ambiguous criteria 3"
-      ],
-      "status": "pending"
-    }}
-  ]
-}}"""
+        ROLE: Product Manager. 
+        TASK: Create PRD JSON for "{user_intent}".
+        
+        AVAILABLE FILES:
+        {memory_map}
+        
+        INSTRUCTIONS:
+        1. EXPLORE: Understand the project.
+        2. THINK: Plan user stories.
+        3. ACT: Output the PRD JSON.
+        
+        STRICT RULES:
+        1. Output ONLY valid JSON.
+        2. Schema: {{ "featureBranch": "str", "userStories": [ {{ "id": "TASK-001", "description": "...", "acceptanceCriteria": ["..."], "status": "pending" }} ] }}
+        """
         
         for attempt in range(3):
             success, raw = self.agent.run(prompt, "PLANNER")
@@ -424,7 +375,7 @@ SCHEMA (example shape, not a template):
             if task.get('status') == 'completed': continue
 
             Logger.info(f"\n▶️  Task {task['id']}: {task['description']}", "CYAN")
-            self._execute_task(prd, task, test_cmd)
+            self._execute_task(task, test_cmd)
 
             # Save state
             CONF.PRD_FILE.write_text(json.dumps(prd, indent=2), encoding='utf-8')
@@ -433,11 +384,12 @@ SCHEMA (example shape, not a template):
 
         self._archive_prd()
 
-    def _execute_task(self, prd: dict, task: dict, test_cmd: str):
+    def _execute_task(self, task: dict, test_cmd: str):
         retries = 0
-
-        safe_prd_id = "".join(c for c in prd['id'] if c.isalnum() or c in ('-', '_'))
+        
+        # 1. Setup Branch Name (Python still handles the heavy lifting)
         safe_task_id = "".join(c for c in task['id'] if c.isalnum() or c in ('-', '_'))
+        branch_name = f"feature/{safe_task_id}"
 
         while retries < CONF.MAX_RETRIES:
             memory_tree = self.memory.get_structure()
@@ -450,53 +402,35 @@ SCHEMA (example shape, not a template):
             if prompt_md_path.exists():
                 raw_text = prompt_md_path.read_text(encoding='utf-8')
                 # Inject variables so the user can reference them if they want to
-                user_context = user_context.replace("{{PRD_ID}}", safe_prd_id)
-                user_context = user_context.replace("{{PRD_DESCRIPTION}}", prd['description'])
-                user_context = raw_text.replace("{{TASK_ID}}", safe_task_id)
-                user_context = user_context.replace("{{TASK_DESCRIPTION}}", task['description'])
+                user_context = raw_text.replace("{{TASK_ID}}", task['id'])
+                user_context = user_context.replace("{{DESCRIPTION}}", task['description'])
+                user_context = user_context.replace("{{BRANCH_NAME}}", branch_name)
                 user_context = user_context.replace("{{TEST_CMD}}", test_cmd)
 
-            # 3. Construct the Prompt
+            # 3. Construct the Prompt (Sandwich Method)
             prompt = f"""
-ROLE: Developer (Ralph)
-TASK ID: {task['id']}
-OBJECTIVE: {task['description']}
+            ROLE: Developer (Ralph). 
+            TASK: {task['id']}
+            OBJECTIVE: {task['description']}
+            
+            CONTEXT FILES:
+            {memory_tree}
 
-CONTEXT FILES (paths only, under .ralph/memory/):
-{memory_tree}
+            --- USER PREFERENCES & WORKFLOW (IMPORTANT) ---
+            {user_context}
+            -----------------------------------------------
 
-USER PREFERENCES & WORKFLOW (soft constraints; overrides defaults):
-{user_context}
+            --- CORE EXECUTION STEPS ---
+            1. CHECKOUT: Ensure you are on branch '{branch_name}'.
+            2. PLAN: Analyze the requirements and user preferences.
+            3. IMPLEMENT: Write the code. Adhere to the preferences above.
+            4. VERIFY: Run '{test_cmd}'.
+            5. COMMIT: If tests pass, commit with message "{task['id']}: {task['description']}" (unless user preferences say otherwise).
+            6. FINALIZE: Only output "STATUS: SUCCESS" if tests pass.
 
-DEFAULT CAPABILITIES:
-- You may read and write files within the current working directory (project root).
-- You may run local build/test commands as part of verification.
-- Do NOT perform any version control (e.g., git), networking, or package installation
-  unless explicitly requested in USER PREFERENCES & WORKFLOW above.
-
-EXECUTION FLOW (follow exactly):
-1) PLAN:
-   - Summarize the minimal, concrete code changes required to satisfy the task’s acceptance criteria.
-2) IMPLEMENT:
-   - Apply the necessary file edits to implement the plan.
-3) VERIFY:
-   - Run the test command:
-     {test_cmd}
-   - Only proceed if the command exits with code 0.
-4) FINALIZE:
-   - If and only if verification passed, print exactly:
-     STATUS: SUCCESS
-   - Otherwise, print exactly one line:
-     STATUS: FAILURE - <brief reason>
-
-NOTES:
-- Keep output minimal and task-focused.
-- If USER PREFERENCES & WORKFLOW requires special steps (e.g., git actions, environment setup),
-  follow them explicitly; otherwise do not perform them.
-- Do not include code fences around shell commands or file contents.
-
-RETRY CONTEXT (from previous attempt, if any):
-{prev_errors}"""
+            FEEDBACK FROM PREVIOUS ATTEMPT:
+            {prev_errors}
+            """
 
             success, output = self.agent.run(prompt, f"WORKER-{task['id']}")
 
@@ -514,8 +448,10 @@ RETRY CONTEXT (from previous attempt, if any):
                 if code == 0:
                     Logger.info(f"   ✅ Verified.", "GREEN")
 
-                    egg_message = EasterEggs.get_random_message(hash(task['id']) % 10000)
-                    Logger.info(f"   {egg_message}", "MAGENTA")
+                    # Append easter egg message if enabled
+                    if self.easter_eggs:
+                        egg_message = EasterEggs.get_random_message(hash(task['id']) % 10000)
+                        Logger.info(f"   {egg_message}", "MAGENTA")
 
                     task['status'] = 'completed'
                     if CONF.PROGRESS_FILE.exists(): CONF.PROGRESS_FILE.unlink()
@@ -686,16 +622,16 @@ def main():
     )
 
     parser.add_argument(
-        "phase",
-        choices=["architect", "planner", "execute", "all"],
-        default="all",
-        help="Select which phase to run (default: all)"
-    )
-
-    parser.add_argument(
         "--version",
         action="version",
         version=f"Ralph {get_version()}"
+    )
+
+    parser.add_argument(
+        "--phase",
+        choices=["architect", "planner", "execute", "all"],
+        default="all",
+        help="Select which phase to run (default: all)"
     )
 
     parser.add_argument(
@@ -705,14 +641,21 @@ def main():
     )
 
     parser.add_argument(
+        "--no-easter-eggs",
+        action="store_true",
+        help="Disable easter egg messages on successful task completion"
+    )
+
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug-level logging and display Claude CLI prompts and responses"
     )
 
     args = parser.parse_args()
+    easter_eggs = not args.no_easter_eggs
     Logger.set_verbose(args.verbose)
-    RalphOrchestrator().start(phase=args.phase, accept_all=args.accept_all)
+    RalphOrchestrator(easter_eggs=easter_eggs).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
     main()
