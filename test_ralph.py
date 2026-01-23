@@ -4198,5 +4198,210 @@ class TestStatusCheckJSONOutput(TempConfigTestCase):
         self.assertEqual(data['exit_code'], 2)
 
 
+# ==============================================================================
+# PERFORMANCE AND DETERMINISM FLAGS TESTS (TASK-010)
+# ==============================================================================
+
+
+class TestPerformanceFlagsArgumentParsing(unittest.TestCase):
+    """Tests for --concurrency, --rate-limit, and --backoff CLI flag parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
+        self.parser.add_argument("--concurrency", type=int, metavar="N")
+        self.parser.add_argument("--rate-limit", type=float, metavar="RPS")
+        self.parser.add_argument("--backoff", type=float, metavar="SECS")
+
+    def test_concurrency_flag_parses_integer(self):
+        """Test --concurrency parses an integer value."""
+        args = self.parser.parse_args(["--concurrency", "4"])
+        self.assertEqual(args.concurrency, 4)
+
+    def test_rate_limit_flag_parses_float(self):
+        """Test --rate-limit parses a float value."""
+        args = self.parser.parse_args(["--rate-limit", "2.5"])
+        self.assertEqual(args.rate_limit, 2.5)
+
+    def test_backoff_flag_parses_float(self):
+        """Test --backoff parses a float value."""
+        args = self.parser.parse_args(["--backoff", "1.5"])
+        self.assertEqual(args.backoff, 1.5)
+
+    def test_all_performance_flags_combined(self):
+        """Test all performance flags can be used together."""
+        args = self.parser.parse_args(["--concurrency", "8", "--rate-limit", "10.0", "--backoff", "2.0", "execute"])
+        self.assertEqual(args.concurrency, 8)
+        self.assertEqual(args.rate_limit, 10.0)
+        self.assertEqual(args.backoff, 2.0)
+        self.assertEqual(args.phase, "execute")
+
+    def test_performance_flags_default_to_none(self):
+        """Test performance flags default to None when not specified."""
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.concurrency)
+        self.assertIsNone(args.rate_limit)
+        self.assertIsNone(args.backoff)
+
+    def test_concurrency_with_zero_value(self):
+        """Test --concurrency accepts zero value."""
+        args = self.parser.parse_args(["--concurrency", "0"])
+        self.assertEqual(args.concurrency, 0)
+
+    def test_rate_limit_with_integer_value(self):
+        """Test --rate-limit accepts integer-like float (e.g., 5)."""
+        args = self.parser.parse_args(["--rate-limit", "5"])
+        self.assertEqual(args.rate_limit, 5.0)
+
+    def test_backoff_with_small_value(self):
+        """Test --backoff accepts small float value."""
+        args = self.parser.parse_args(["--backoff", "0.1"])
+        self.assertEqual(args.backoff, 0.1)
+
+
+class TestOrchestratorPerformanceFlags(TempConfigTestCase):
+    """Tests for RalphOrchestrator performance and determinism flag handling."""
+
+    def test_init_stores_concurrency_flag(self):
+        """Test __init__ stores concurrency flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", concurrency=4)
+        self.assertEqual(orch._concurrency, 4)
+
+    def test_init_stores_rate_limit_flag(self):
+        """Test __init__ stores rate_limit flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", rate_limit=2.5)
+        self.assertEqual(orch._rate_limit, 2.5)
+
+    def test_init_stores_backoff_flag(self):
+        """Test __init__ stores backoff flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", backoff=1.5)
+        self.assertEqual(orch._backoff, 1.5)
+
+    def test_init_defaults_performance_flags_to_none(self):
+        """Test performance flags default to None when not specified."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+        self.assertIsNone(orch._concurrency)
+        self.assertIsNone(orch._rate_limit)
+        self.assertIsNone(orch._backoff)
+
+    def test_init_stores_all_performance_flags(self):
+        """Test __init__ stores all performance flags together."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(
+                agent_name="mock",
+                concurrency=8,
+                rate_limit=10.0,
+                backoff=2.0
+            )
+        self.assertEqual(orch._concurrency, 8)
+        self.assertEqual(orch._rate_limit, 10.0)
+        self.assertEqual(orch._backoff, 2.0)
+
+    def test_init_accepts_concurrency_zero(self):
+        """Test __init__ accepts concurrency value of 0."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", concurrency=0)
+        self.assertEqual(orch._concurrency, 0)
+
+    def test_init_accepts_small_rate_limit(self):
+        """Test __init__ accepts small rate_limit value."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", rate_limit=0.1)
+        self.assertEqual(orch._rate_limit, 0.1)
+
+    def test_init_accepts_small_backoff(self):
+        """Test __init__ accepts small backoff value."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", backoff=0.1)
+        self.assertEqual(orch._backoff, 0.1)
+
+
+class TestPerformanceFlagsCLI(unittest.TestCase):
+    """Tests for performance and determinism flags CLI integration."""
+
+    def setUp(self):
+        self._original_logger_settings = {
+            'verbosity': Logger.verbosity,
+            'verbose': Logger.verbose,
+            'quiet': Logger.quiet,
+            'no_emoji': Logger.no_emoji,
+            'no_color': Logger.no_color,
+            'log_level': Logger.log_level,
+            'json_output': Logger.json_output,
+            'ndjson_output': Logger.ndjson_output,
+            'non_interactive': Logger.non_interactive,
+        }
+
+    def tearDown(self):
+        for attr, value in self._original_logger_settings.items():
+            setattr(Logger, attr, value)
+
+    def test_cli_passes_concurrency_to_orchestrator(self):
+        """Test CLI passes --concurrency to RalphOrchestrator."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--concurrency', '4', 'execute']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertEqual(call_kwargs['concurrency'], 4)
+
+    def test_cli_passes_rate_limit_to_orchestrator(self):
+        """Test CLI passes --rate-limit to RalphOrchestrator."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--rate-limit', '2.5', 'execute']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertEqual(call_kwargs['rate_limit'], 2.5)
+
+    def test_cli_passes_backoff_to_orchestrator(self):
+        """Test CLI passes --backoff to RalphOrchestrator."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--backoff', '1.5', 'execute']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertEqual(call_kwargs['backoff'], 1.5)
+
+    def test_cli_passes_all_performance_flags_to_orchestrator(self):
+        """Test CLI passes all performance flags to RalphOrchestrator."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--concurrency', '8', '--rate-limit', '10.0', '--backoff', '2.0', 'execute']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertEqual(call_kwargs['concurrency'], 8)
+            self.assertEqual(call_kwargs['rate_limit'], 10.0)
+            self.assertEqual(call_kwargs['backoff'], 2.0)
+
+    def test_cli_passes_none_when_performance_flags_not_specified(self):
+        """Test CLI passes None when performance flags not specified."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'execute']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertIsNone(call_kwargs['concurrency'])
+            self.assertIsNone(call_kwargs['rate_limit'])
+            self.assertIsNone(call_kwargs['backoff'])
+
+
 if __name__ == "__main__":
     unittest.main()
