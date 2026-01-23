@@ -78,6 +78,19 @@ class EventType(Enum):
     # Error events
     ERROR = auto()
 
+    # IssueWatcher events
+    WATCHER_START = auto()
+    WATCHER_STOP = auto()
+    ISSUE_DETECTED = auto()
+    ISSUE_STORED = auto()
+    ISSUE_QUEUED = auto()
+    ISSUE_PROCESSING_START = auto()
+    ISSUE_PROCESSING_SUCCESS = auto()
+    ISSUE_PROCESSING_FAILURE = auto()
+    POLL_START = auto()
+    POLL_SUCCESS = auto()
+    POLL_ERROR = auto()
+
 
 # ==============================================================================
 # EVENT PAYLOAD
@@ -98,6 +111,11 @@ class Event:
     verification_command: Optional[str] = None
     verification_exit_code: Optional[int] = None
     prd_path: Optional[str] = None
+    # IssueWatcher-related fields
+    issue_number: Optional[int] = None
+    issue_title: Optional[str] = None
+    issue_url: Optional[str] = None
+    issues_count: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def _serialize_error(self) -> Optional[str]:
@@ -120,6 +138,10 @@ class Event:
             "verification_command": self.verification_command,
             "verification_exit_code": self.verification_exit_code,
             "prd_path": self.prd_path,
+            "issue_number": self.issue_number,
+            "issue_title": self.issue_title,
+            "issue_url": self.issue_url,
+            "issues_count": self.issues_count,
             "metadata": self.metadata,
         }
 
@@ -278,6 +300,10 @@ class ExecutableHook(Hook):
                 verification_command=data.get('verification_command', original.verification_command),
                 verification_exit_code=data.get('verification_exit_code', original.verification_exit_code),
                 prd_path=data.get('prd_path', original.prd_path),
+                issue_number=data.get('issue_number', original.issue_number),
+                issue_title=data.get('issue_title', original.issue_title),
+                issue_url=data.get('issue_url', original.issue_url),
+                issues_count=data.get('issues_count', original.issues_count),
                 metadata=data.get('metadata', original.metadata),
             )
         except (json.JSONDecodeError, TypeError):

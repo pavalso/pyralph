@@ -880,7 +880,8 @@ class TestEvent(unittest.TestCase):
     def test_event_types_exist(self):
         for name in self.EVENTS:
             self.assertTrue(hasattr(EventType, name))
-        self.assertEqual(len(EventType), 20)
+        # 20 original + 11 IssueWatcher events
+        self.assertEqual(len(EventType), 31)
 
     def test_event_creation_serialization(self):
         event = Event(EventType.TASK_SUCCESS, phase="execute", task_id="T-001", metadata={"k": "v"})
@@ -1655,6 +1656,164 @@ class TestQueueItem(IssueWatcherTestCase):
         item = QueueItem(issue_number=42)
         self.assertIsNotNone(item.added_at)
         self.assertNotEqual(item.added_at, "")
+
+
+class TestIssueWatcherHooks(IssueWatcherTestCase):
+    """Tests for IssueWatcher hook event emission."""
+
+    def setUp(self):
+        super().setUp()
+        self.hooks_dir = str(self.temp_path / "hooks")
+        Path(self.hooks_dir).mkdir(parents=True, exist_ok=True)
+        self.emitted_events = []
+
+        # Create a mock HookManager that records emitted events
+        from hooks import HookManager, Event, EventType
+        self.hook_manager = HookManager(Path(self.hooks_dir))
+
+        # Register a function hook to capture events
+        def capture_event(event):
+            self.emitted_events.append(event)
+
+        # Subscribe to all watcher events
+        watcher_events = [
+            "WATCHER_START", "WATCHER_STOP",
+            "ISSUE_DETECTED", "ISSUE_STORED", "ISSUE_QUEUED",
+            "ISSUE_PROCESSING_START", "ISSUE_PROCESSING_SUCCESS", "ISSUE_PROCESSING_FAILURE",
+            "POLL_START", "POLL_SUCCESS", "POLL_ERROR"
+        ]
+        self.hook_manager.register_hook(
+            "test_capture",
+            capture_event,
+            watcher_events
+        )
+
+    def test_watcher_has_hooks_property(self):
+        """IssueWatcher should expose hooks property."""
+        config = WatcherConfig(
+            store_dir=self.store_dir,
+            queue_dir=self.queue_dir,
+            hooks_dir=self.hooks_dir
+        )
+        watcher = IssueWatcher(config, hooks=self.hook_manager)
+        self.assertIsNotNone(watcher.hooks)
+        self.assertEqual(watcher.hooks, self.hook_manager)
+
+    def test_watcher_init_with_hooks_disabled(self):
+        """IssueWatcher should have None hooks when disabled."""
+        config = WatcherConfig(
+            store_dir=self.store_dir,
+            queue_dir=self.queue_dir,
+            enable_hooks=False
+        )
+        watcher = IssueWatcher(config)
+        self.assertIsNone(watcher.hooks)
+
+    def test_watcher_init_creates_hook_manager(self):
+        """IssueWatcher should create HookManager when enabled."""
+        config = WatcherConfig(
+            store_dir=self.store_dir,
+            queue_dir=self.queue_dir,
+            hooks_dir=self.hooks_dir,
+            enable_hooks=True
+        )
+        watcher = IssueWatcher(config)
+        self.assertIsNotNone(watcher.hooks)
+
+    def test_on_new_issues_emits_events(self):
+        """_on_new_issues should emit ISSUE_DETECTED, ISSUE_STORED, ISSUE_QUEUED events."""
+        from hooks import EventType
+
+        config = WatcherConfig(
+            store_dir=self.store_dir,
+            queue_dir=self.queue_dir,
+            auto_process=False  # Disable auto-processing for this test
+        )
+        watcher = IssueWatcher(config, hooks=self.hook_manager)
+
+        # Call _on_new_issues directly
+        issue = self.create_sample_issue(number=42, title="Test Issue")
+        watcher._on_new_issues([issue])
+
+        # Check emitted events
+        event_types = [e.event_type for e in self.emitted_events]
+        self.assertIn(EventType.ISSUE_DETECTED, event_types)
+        self.assertIn(EventType.ISSUE_STORED, event_types)
+        self.assertIn(EventType.ISSUE_QUEUED, event_types)
+
+        # Check event details
+        detected_event = next(e for e in self.emitted_events if e.event_type == EventType.ISSUE_DETECTED)
+        self.assertEqual(detected_event.issue_number, 42)
+        self.assertEqual(detected_event.issue_title, "Test Issue")
+        self.assertEqual(detected_event.issues_count, 1)
+
+    def test_on_poll_error_emits_event(self):
+        """_on_poll_error should emit POLL_ERROR event."""
+        from hooks import EventType
+
+        config = WatcherConfig(
+            store_dir=self.store_dir,
+            queue_dir=self.queue_dir
+        )
+        watcher = IssueWatcher(config, hooks=self.hook_manager)
+
+        # Call _on_poll_error directly
+        watcher._on_poll_error(Exception("Test error"))
+
+        # Check emitted event
+        event_types = [e.event_type for e in self.emitted_events]
+        self.assertIn(EventType.POLL_ERROR, event_types)
+
+        error_event = next(e for e in self.emitted_events if e.event_type == EventType.POLL_ERROR)
+        self.assertEqual(error_event.error, "Test error")
+
+    def test_emit_with_disabled_hooks(self):
+        """_emit should do nothing when hooks is None."""
+        config = WatcherConfig(
+            store_dir=self.store_dir,
+            queue_dir=self.queue_dir,
+            enable_hooks=False
+        )
+        watcher = IssueWatcher(config)
+
+        # This should not raise
+        from hooks import Event, EventType
+        watcher._emit(Event(EventType.WATCHER_START))
+
+    def test_event_has_issue_fields(self):
+        """Events should include issue-related fields."""
+        from hooks import Event, EventType
+
+        event = Event(
+            EventType.ISSUE_DETECTED,
+            issue_number=42,
+            issue_title="Test",
+            issue_url="https://example.com",
+            issues_count=1
+        )
+
+        d = event.to_dict()
+        self.assertEqual(d["issue_number"], 42)
+        self.assertEqual(d["issue_title"], "Test")
+        self.assertEqual(d["issue_url"], "https://example.com")
+        self.assertEqual(d["issues_count"], 1)
+
+    def test_watcher_event_types_exist(self):
+        """All IssueWatcher event types should exist in EventType enum."""
+        from hooks import EventType
+
+        expected_events = [
+            "WATCHER_START", "WATCHER_STOP",
+            "ISSUE_DETECTED", "ISSUE_STORED", "ISSUE_QUEUED",
+            "ISSUE_PROCESSING_START", "ISSUE_PROCESSING_SUCCESS", "ISSUE_PROCESSING_FAILURE",
+            "POLL_START", "POLL_SUCCESS", "POLL_ERROR"
+        ]
+
+        for event_name in expected_events:
+            self.assertTrue(
+                hasattr(EventType, event_name),
+                f"EventType.{event_name} should exist"
+            )
 
 
 if __name__ == '__main__':

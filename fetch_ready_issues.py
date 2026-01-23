@@ -27,7 +27,10 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hooks import HookManager
 
 
 @dataclass
@@ -2200,6 +2203,7 @@ class WatcherConfig:
         poll_interval: Polling interval in seconds. Defaults to 60.
         store_dir: Directory for storing issues. Defaults to ".ralph/issues".
         queue_dir: Directory for queue state. Defaults to ".ralph/queue".
+        hooks_dir: Directory for hooks. Defaults to ".ralph/hooks".
         pid_file: Path to the PID file for daemon management. Defaults to ".ralph/watcher.pid".
         log_file: Path to the watcher log file. Defaults to ".ralph/watcher.log".
         agent_name: The AI agent to use for planning. Defaults to "claude".
@@ -2211,6 +2215,7 @@ class WatcherConfig:
     poll_interval: float = 60.0
     store_dir: str = ".ralph/issues"
     queue_dir: str = ".ralph/queue"
+    hooks_dir: str = ".ralph/hooks"
     pid_file: str = ".ralph/watcher.pid"
     log_file: str = ".ralph/watcher.log"
     agent_name: str = "claude"
@@ -2281,12 +2286,14 @@ class IssueWatcher:
         >>> print(f"Pending: {status.issues_pending}")
     """
 
-    def __init__(self, config: Optional[WatcherConfig] = None):
+    def __init__(self, config: Optional[WatcherConfig] = None, hooks: Optional["HookManager"] = None):
         """Initialize the IssueWatcher.
 
         Args:
             config: Optional WatcherConfig with watcher settings. If None,
                 uses default configuration.
+            hooks: Optional HookManager for emitting events. If None and
+                enable_hooks is True, creates one from hooks_dir.
         """
         self._config = config or WatcherConfig()
         self._store = IssueStore(self._config.store_dir)
@@ -2303,6 +2310,15 @@ class IssueWatcher:
         self._stop_event = threading.Event()
         self._pid_path = Path(self._config.pid_file)
         self._log_path = Path(self._config.log_file)
+
+        # Initialize HookManager
+        if hooks is not None:
+            self._hooks = hooks
+        elif self._config.enable_hooks:
+            from hooks import HookManager
+            self._hooks = HookManager(Path(self._config.hooks_dir))
+        else:
+            self._hooks = None
 
     @property
     def config(self) -> WatcherConfig:
@@ -2323,6 +2339,20 @@ class IssueWatcher:
     def is_running(self) -> bool:
         """Check if the watcher is currently running."""
         return self._running
+
+    @property
+    def hooks(self) -> Optional["HookManager"]:
+        """Get the hook manager."""
+        return self._hooks
+
+    def _emit(self, event: "Event") -> None:
+        """Emit an event if hooks are enabled.
+
+        Args:
+            event: The event to emit.
+        """
+        if self._hooks is not None:
+            self._hooks.emit(event)
 
     def _log(self, message: str) -> None:
         """Write a log message to the watcher log file.
@@ -2400,13 +2430,31 @@ class IssueWatcher:
         Args:
             issues: List of newly detected Issue objects.
         """
+        from hooks import Event, EventType
+
         self._log(f"Detected {len(issues)} new issue(s)")
 
         for issue in issues:
+            # Emit ISSUE_DETECTED event
+            self._emit(Event(
+                EventType.ISSUE_DETECTED,
+                issue_number=issue.number,
+                issue_title=issue.title,
+                issue_url=issue.url,
+                issues_count=len(issues)
+            ))
+
             # Store the issue
             try:
                 self._store.save(issue, status="pending")
                 self._log(f"Stored issue #{issue.number}: {issue.title}")
+                # Emit ISSUE_STORED event
+                self._emit(Event(
+                    EventType.ISSUE_STORED,
+                    issue_number=issue.number,
+                    issue_title=issue.title,
+                    issue_url=issue.url
+                ))
             except IssueStoreError as e:
                 self._log(f"Failed to store issue #{issue.number}: {e}")
                 continue
@@ -2415,6 +2463,13 @@ class IssueWatcher:
             try:
                 self._queue.enqueue(issue.number)
                 self._log(f"Enqueued issue #{issue.number} for processing")
+                # Emit ISSUE_QUEUED event
+                self._emit(Event(
+                    EventType.ISSUE_QUEUED,
+                    issue_number=issue.number,
+                    issue_title=issue.title,
+                    issue_url=issue.url
+                ))
             except ProcessingQueueError as e:
                 self._log(f"Failed to enqueue issue #{issue.number}: {e}")
 
@@ -2428,10 +2483,18 @@ class IssueWatcher:
         Args:
             error: The exception that occurred.
         """
+        from hooks import Event, EventType
+
         self._log(f"Polling error: {error}")
+        self._emit(Event(
+            EventType.POLL_ERROR,
+            error=str(error)
+        ))
 
     def _process_pending(self) -> None:
         """Process all pending issues in the queue."""
+        from hooks import Event, EventType
+
         self._log("Processing pending issues...")
 
         while not self._stop_event.is_set():
@@ -2439,10 +2502,27 @@ class IssueWatcher:
             if result is None:
                 break
 
+            # Emit ISSUE_PROCESSING_START event
+            self._emit(Event(
+                EventType.ISSUE_PROCESSING_START,
+                issue_number=result.issue_number
+            ))
+
             if result.success:
                 self._log(f"Successfully processed issue #{result.issue_number}")
+                # Emit ISSUE_PROCESSING_SUCCESS event
+                self._emit(Event(
+                    EventType.ISSUE_PROCESSING_SUCCESS,
+                    issue_number=result.issue_number
+                ))
             else:
                 self._log(f"Failed to process issue #{result.issue_number}: {result.error}")
+                # Emit ISSUE_PROCESSING_FAILURE event
+                self._emit(Event(
+                    EventType.ISSUE_PROCESSING_FAILURE,
+                    issue_number=result.issue_number,
+                    error=result.error
+                ))
 
         self._log("Finished processing pending issues")
 
@@ -2486,6 +2566,8 @@ class IssueWatcher:
         Raises:
             IssueWatcherError: If starting the watcher fails.
         """
+        from hooks import Event, EventType
+
         # Check if already running
         status = self.get_status()
         if status.running:
@@ -2495,6 +2577,9 @@ class IssueWatcher:
         self._stop_event.clear()
         self._write_pid()
         self._log("Watcher started")
+
+        # Emit WATCHER_START event
+        self._emit(Event(EventType.WATCHER_START))
 
         # Reset any stale processing items from previous crashes
         reset_count = self._queue.reset_processing()
@@ -2540,6 +2625,8 @@ class IssueWatcher:
 
     def _cleanup(self) -> None:
         """Clean up resources when stopping."""
+        from hooks import Event, EventType
+
         if self._poller is not None:
             self._poller.stop(timeout=5.0)
             self._poller = None
@@ -2547,6 +2634,9 @@ class IssueWatcher:
         self._running = False
         self._remove_pid()
         self._log("Watcher stopped")
+
+        # Emit WATCHER_STOP event
+        self._emit(Event(EventType.WATCHER_STOP))
 
     def stop(self) -> bool:
         """Stop the watcher daemon.
@@ -2590,10 +2680,17 @@ class IssueWatcher:
         Returns:
             List of new issues that were detected and stored.
         """
+        from hooks import Event, EventType
+
+        # Emit POLL_START event
+        self._emit(Event(EventType.POLL_START))
+
         try:
             issues = fetch_ready_issues(label=self._config.label)
         except GitHubCLIError as e:
             self._log(f"Poll failed: {e}")
+            # Emit POLL_ERROR event
+            self._emit(Event(EventType.POLL_ERROR, error=str(e)))
             raise
 
         new_issues: List[Issue] = []
@@ -2603,6 +2700,12 @@ class IssueWatcher:
 
         if new_issues:
             self._on_new_issues(new_issues)
+
+        # Emit POLL_SUCCESS event
+        self._emit(Event(
+            EventType.POLL_SUCCESS,
+            issues_count=len(new_issues)
+        ))
 
         return new_issues
 
