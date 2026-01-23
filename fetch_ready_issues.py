@@ -8,7 +8,7 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -160,6 +160,129 @@ def issues_to_prompts(issues: List[Issue]) -> List[str]:
         List of formatted prompt strings, one per issue.
     """
     return [issue_to_prompt(issue) for issue in issues]
+
+
+class PlannerError(Exception):
+    """Raised when the planner phase fails."""
+    pass
+
+
+def invoke_planner(
+    user_intent: str,
+    agent_name: str = "claude",
+    enable_hooks: bool = True
+) -> bool:
+    """Invoke Ralph's planner phase programmatically for a given user intent.
+
+    Creates a RalphOrchestrator instance and runs the planner phase to generate
+    a PRD (Product Requirements Document) with user stories.
+
+    Args:
+        user_intent: The description of what needs to be planned (typically
+            a transformed issue prompt from issue_to_prompt).
+        agent_name: The AI agent to use for planning. Defaults to "claude".
+        enable_hooks: Whether to enable hook execution. Defaults to True.
+
+    Returns:
+        True if the planner phase completed successfully, False otherwise.
+
+    Raises:
+        PlannerError: If the planner phase fails due to missing dependencies
+            or other critical errors.
+    """
+    # Import here to avoid circular dependencies and allow the module
+    # to be used without ralph.py being available
+    try:
+        from ralph import RalphOrchestrator, CONF
+    except ImportError as e:
+        raise PlannerError(f"Failed to import Ralph components: {e}")
+
+    # Check that memory exists (architect phase must have run)
+    if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
+        raise PlannerError(
+            "Memory directory is missing or empty. "
+            "Run the architect phase first."
+        )
+
+    try:
+        orchestrator = RalphOrchestrator(
+            agent_name=agent_name,
+            enable_hooks=enable_hooks
+        )
+        orchestrator.run_planner(user_intent)
+        return True
+    except SystemExit:
+        # run_planner calls sys.exit(1) on failure
+        return False
+
+
+@dataclass
+class PlannerResult:
+    """Result of a planner invocation for a single issue."""
+    issue_number: int
+    success: bool
+    error: Optional[str] = None
+
+
+def process_ready_issues(
+    issues: List[Issue],
+    agent_name: str = "claude",
+    enable_hooks: bool = True
+) -> Tuple[List[PlannerResult], int, int]:
+    """Process a list of ready issues by invoking the planner for each.
+
+    Iterates over the provided issues, transforms each to a prompt, and
+    invokes Ralph's planner phase. Processing continues even if individual
+    issues fail.
+
+    Args:
+        issues: List of Issue objects to process.
+        agent_name: The AI agent to use for planning. Defaults to "claude".
+        enable_hooks: Whether to enable hook execution. Defaults to True.
+
+    Returns:
+        A tuple containing:
+            - List of PlannerResult objects with status for each issue
+            - Count of successfully processed issues
+            - Count of failed issues
+    """
+    results: List[PlannerResult] = []
+    success_count = 0
+    failure_count = 0
+
+    for issue in issues:
+        prompt = issue_to_prompt(issue)
+
+        try:
+            success = invoke_planner(
+                user_intent=prompt,
+                agent_name=agent_name,
+                enable_hooks=enable_hooks
+            )
+
+            if success:
+                results.append(PlannerResult(
+                    issue_number=issue.number,
+                    success=True
+                ))
+                success_count += 1
+            else:
+                results.append(PlannerResult(
+                    issue_number=issue.number,
+                    success=False,
+                    error="Planner phase did not complete successfully"
+                ))
+                failure_count += 1
+
+        except PlannerError as e:
+            results.append(PlannerResult(
+                issue_number=issue.number,
+                success=False,
+                error=str(e)
+            ))
+            failure_count += 1
+
+    return results, success_count, failure_count
 
 
 if __name__ == "__main__":

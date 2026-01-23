@@ -8,11 +8,15 @@ from unittest.mock import MagicMock, patch
 from fetch_ready_issues import (
     Issue,
     GitHubCLIError,
+    PlannerError,
+    PlannerResult,
     check_gh_cli,
     fetch_ready_issues,
     main,
     issue_to_prompt,
     issues_to_prompts,
+    invoke_planner,
+    process_ready_issues,
 )
 
 
@@ -419,6 +423,295 @@ class TestIssuesToPrompts(unittest.TestCase):
         self.assertIn("TASK-099", result[0])
         self.assertIn("TASK-001", result[1])
         self.assertIn("TASK-050", result[2])
+
+
+class TestPlannerError(unittest.TestCase):
+    """Tests for PlannerError exception."""
+
+    def test_exception_message(self):
+        """Test PlannerError stores message correctly."""
+        error = PlannerError("Test message")
+        self.assertEqual(str(error), "Test message")
+
+    def test_exception_inheritance(self):
+        """Test PlannerError inherits from Exception."""
+        error = PlannerError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestPlannerResult(unittest.TestCase):
+    """Tests for PlannerResult dataclass."""
+
+    def test_successful_result(self):
+        """Test PlannerResult for successful invocation."""
+        result = PlannerResult(issue_number=42, success=True)
+        self.assertEqual(result.issue_number, 42)
+        self.assertTrue(result.success)
+        self.assertIsNone(result.error)
+
+    def test_failed_result_with_error(self):
+        """Test PlannerResult for failed invocation with error message."""
+        result = PlannerResult(
+            issue_number=10,
+            success=False,
+            error="Memory directory missing"
+        )
+        self.assertEqual(result.issue_number, 10)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "Memory directory missing")
+
+
+class TestInvokePlanner(unittest.TestCase):
+    """Tests for invoke_planner function."""
+
+    def test_invoke_planner_import_error(self):
+        """Test invoke_planner raises PlannerError when ralph cannot be imported."""
+        with patch.dict('sys.modules', {'ralph': None}):
+            with patch('builtins.__import__', side_effect=ImportError("No module")):
+                with self.assertRaises(PlannerError) as context:
+                    invoke_planner("Test intent")
+        self.assertIn("Failed to import", str(context.exception))
+
+    def test_invoke_planner_missing_memory(self):
+        """Test invoke_planner raises PlannerError when memory is missing."""
+        mock_conf = MagicMock()
+        mock_conf.MEMORY_DIR.exists.return_value = False
+
+        mock_ralph_module = MagicMock()
+        mock_ralph_module.CONF = mock_conf
+        mock_ralph_module.RalphOrchestrator = MagicMock()
+
+        with patch.dict('sys.modules', {'ralph': mock_ralph_module}):
+            with self.assertRaises(PlannerError) as context:
+                invoke_planner("Test intent")
+        self.assertIn("Memory directory is missing", str(context.exception))
+
+    def test_invoke_planner_empty_memory(self):
+        """Test invoke_planner raises PlannerError when memory is empty."""
+        mock_conf = MagicMock()
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter([])
+
+        mock_ralph_module = MagicMock()
+        mock_ralph_module.CONF = mock_conf
+        mock_ralph_module.RalphOrchestrator = MagicMock()
+
+        with patch.dict('sys.modules', {'ralph': mock_ralph_module}):
+            with self.assertRaises(PlannerError) as context:
+                invoke_planner("Test intent")
+        self.assertIn("empty", str(context.exception))
+
+    def test_invoke_planner_success(self):
+        """Test invoke_planner returns True on successful planning."""
+        mock_conf = MagicMock()
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+
+        mock_orchestrator = MagicMock()
+        mock_orchestrator_class = MagicMock(return_value=mock_orchestrator)
+
+        mock_ralph_module = MagicMock()
+        mock_ralph_module.CONF = mock_conf
+        mock_ralph_module.RalphOrchestrator = mock_orchestrator_class
+
+        with patch.dict('sys.modules', {'ralph': mock_ralph_module}):
+            result = invoke_planner("Test intent")
+
+        self.assertTrue(result)
+        mock_orchestrator.run_planner.assert_called_once_with("Test intent")
+
+    def test_invoke_planner_failure_returns_false(self):
+        """Test invoke_planner returns False when planner fails with SystemExit."""
+        mock_conf = MagicMock()
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.run_planner.side_effect = SystemExit(1)
+        mock_orchestrator_class = MagicMock(return_value=mock_orchestrator)
+
+        mock_ralph_module = MagicMock()
+        mock_ralph_module.CONF = mock_conf
+        mock_ralph_module.RalphOrchestrator = mock_orchestrator_class
+
+        with patch.dict('sys.modules', {'ralph': mock_ralph_module}):
+            result = invoke_planner("Test intent")
+
+        self.assertFalse(result)
+
+    def test_invoke_planner_uses_custom_agent(self):
+        """Test invoke_planner passes agent_name to orchestrator."""
+        mock_conf = MagicMock()
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+
+        mock_orchestrator = MagicMock()
+        mock_orchestrator_class = MagicMock(return_value=mock_orchestrator)
+
+        mock_ralph_module = MagicMock()
+        mock_ralph_module.CONF = mock_conf
+        mock_ralph_module.RalphOrchestrator = mock_orchestrator_class
+
+        with patch.dict('sys.modules', {'ralph': mock_ralph_module}):
+            invoke_planner("Test", agent_name="copilot")
+
+        mock_orchestrator_class.assert_called_once_with(agent_name="copilot", enable_hooks=True)
+
+    def test_invoke_planner_disables_hooks(self):
+        """Test invoke_planner passes enable_hooks=False to orchestrator."""
+        mock_conf = MagicMock()
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+
+        mock_orchestrator = MagicMock()
+        mock_orchestrator_class = MagicMock(return_value=mock_orchestrator)
+
+        mock_ralph_module = MagicMock()
+        mock_ralph_module.CONF = mock_conf
+        mock_ralph_module.RalphOrchestrator = mock_orchestrator_class
+
+        with patch.dict('sys.modules', {'ralph': mock_ralph_module}):
+            invoke_planner("Test", enable_hooks=False)
+
+        mock_orchestrator_class.assert_called_once_with(agent_name="claude", enable_hooks=False)
+
+
+class TestProcessReadyIssues(unittest.TestCase):
+    """Tests for process_ready_issues function."""
+
+    def test_empty_issues_list(self):
+        """Test process_ready_issues with empty list."""
+        results, success, failure = process_ready_issues([])
+        self.assertEqual(results, [])
+        self.assertEqual(success, 0)
+        self.assertEqual(failure, 0)
+
+    def test_single_successful_issue(self):
+        """Test process_ready_issues with one successful issue."""
+        issues = [
+            Issue(number=1, title="Test", body="Body", url="http://url", labels=[])
+        ]
+
+        with patch('fetch_ready_issues.invoke_planner', return_value=True):
+            results, success, failure = process_ready_issues(issues)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].issue_number, 1)
+        self.assertTrue(results[0].success)
+        self.assertIsNone(results[0].error)
+        self.assertEqual(success, 1)
+        self.assertEqual(failure, 0)
+
+    def test_single_failed_issue(self):
+        """Test process_ready_issues with one failed issue."""
+        issues = [
+            Issue(number=2, title="Test", body="Body", url="http://url", labels=[])
+        ]
+
+        with patch('fetch_ready_issues.invoke_planner', return_value=False):
+            results, success, failure = process_ready_issues(issues)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].issue_number, 2)
+        self.assertFalse(results[0].success)
+        self.assertIn("did not complete successfully", results[0].error)
+        self.assertEqual(success, 0)
+        self.assertEqual(failure, 1)
+
+    def test_planner_error_is_caught(self):
+        """Test process_ready_issues catches PlannerError."""
+        issues = [
+            Issue(number=3, title="Test", body="Body", url="http://url", labels=[])
+        ]
+
+        with patch('fetch_ready_issues.invoke_planner') as mock_invoke:
+            mock_invoke.side_effect = PlannerError("Memory missing")
+            results, success, failure = process_ready_issues(issues)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].issue_number, 3)
+        self.assertFalse(results[0].success)
+        self.assertEqual(results[0].error, "Memory missing")
+        self.assertEqual(success, 0)
+        self.assertEqual(failure, 1)
+
+    def test_multiple_issues_mixed_results(self):
+        """Test process_ready_issues with mixed success/failure results."""
+        issues = [
+            Issue(number=1, title="First", body="Body", url="http://url", labels=[]),
+            Issue(number=2, title="Second", body="Body", url="http://url", labels=[]),
+            Issue(number=3, title="Third", body="Body", url="http://url", labels=[]),
+        ]
+
+        # First succeeds, second fails, third has error
+        def mock_invoke(user_intent, agent_name="claude", enable_hooks=True):
+            if "TASK-001" in user_intent:
+                return True
+            elif "TASK-002" in user_intent:
+                return False
+            else:
+                raise PlannerError("Simulated error")
+
+        with patch('fetch_ready_issues.invoke_planner', side_effect=mock_invoke):
+            results, success, failure = process_ready_issues(issues)
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(success, 1)
+        self.assertEqual(failure, 2)
+
+        self.assertTrue(results[0].success)
+        self.assertFalse(results[1].success)
+        self.assertFalse(results[2].success)
+
+    def test_passes_agent_name(self):
+        """Test process_ready_issues passes agent_name to invoke_planner."""
+        issues = [
+            Issue(number=1, title="Test", body="Body", url="http://url", labels=[])
+        ]
+
+        with patch('fetch_ready_issues.invoke_planner', return_value=True) as mock_invoke:
+            process_ready_issues(issues, agent_name="copilot")
+
+        mock_invoke.assert_called_once()
+        call_kwargs = mock_invoke.call_args[1]
+        self.assertEqual(call_kwargs["agent_name"], "copilot")
+
+    def test_passes_enable_hooks(self):
+        """Test process_ready_issues passes enable_hooks to invoke_planner."""
+        issues = [
+            Issue(number=1, title="Test", body="Body", url="http://url", labels=[])
+        ]
+
+        with patch('fetch_ready_issues.invoke_planner', return_value=True) as mock_invoke:
+            process_ready_issues(issues, enable_hooks=False)
+
+        mock_invoke.assert_called_once()
+        call_kwargs = mock_invoke.call_args[1]
+        self.assertFalse(call_kwargs["enable_hooks"])
+
+    def test_continues_after_failure(self):
+        """Test process_ready_issues continues processing after a failure."""
+        issues = [
+            Issue(number=1, title="First", body="Body", url="http://url", labels=[]),
+            Issue(number=2, title="Second", body="Body", url="http://url", labels=[]),
+        ]
+
+        # First fails, second succeeds
+        call_count = [0]
+        def mock_invoke(user_intent, agent_name="claude", enable_hooks=True):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise PlannerError("First failed")
+            return True
+
+        with patch('fetch_ready_issues.invoke_planner', side_effect=mock_invoke):
+            results, success, failure = process_ready_issues(issues)
+
+        # Both issues were processed
+        self.assertEqual(len(results), 2)
+        self.assertEqual(call_count[0], 2)
+        self.assertEqual(success, 1)
+        self.assertEqual(failure, 1)
 
 
 if __name__ == "__main__":
