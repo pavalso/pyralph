@@ -2187,5 +2187,743 @@ class PlannerInvoker:
         return self.count_pending() > 0
 
 
+# ==============================================================================
+# ISSUE WATCHER - Daemon orchestration
+# ==============================================================================
+
+@dataclass
+class WatcherConfig:
+    """Configuration for the IssueWatcher daemon.
+
+    Attributes:
+        label: The label to filter issues by. Defaults to "ready".
+        poll_interval: Polling interval in seconds. Defaults to 60.
+        store_dir: Directory for storing issues. Defaults to ".ralph/issues".
+        queue_dir: Directory for queue state. Defaults to ".ralph/queue".
+        pid_file: Path to the PID file for daemon management. Defaults to ".ralph/watcher.pid".
+        log_file: Path to the watcher log file. Defaults to ".ralph/watcher.log".
+        agent_name: The AI agent to use for planning. Defaults to "claude".
+        enable_hooks: Whether to enable Ralph hook execution. Defaults to True.
+        mark_github_issues: Whether to update GitHub issue labels after processing. Defaults to False.
+        auto_process: Whether to automatically process issues after detection. Defaults to True.
+    """
+    label: str = "ready"
+    poll_interval: float = 60.0
+    store_dir: str = ".ralph/issues"
+    queue_dir: str = ".ralph/queue"
+    pid_file: str = ".ralph/watcher.pid"
+    log_file: str = ".ralph/watcher.log"
+    agent_name: str = "claude"
+    enable_hooks: bool = True
+    mark_github_issues: bool = False
+    auto_process: bool = True
+
+
+class IssueWatcherError(Exception):
+    """Raised when issue watcher operations fail."""
+    pass
+
+
+@dataclass
+class WatcherStatus:
+    """Status information for the IssueWatcher daemon.
+
+    Attributes:
+        running: Whether the watcher is currently running.
+        pid: Process ID if running, None otherwise.
+        issues_stored: Number of issues in the store.
+        issues_pending: Number of pending issues in the queue.
+        issues_processing: Number of issues currently being processed.
+        issues_completed: Number of completed issues in the queue.
+        issues_failed: Number of failed issues in the queue.
+    """
+    running: bool
+    pid: Optional[int] = None
+    issues_stored: int = 0
+    issues_pending: int = 0
+    issues_processing: int = 0
+    issues_completed: int = 0
+    issues_failed: int = 0
+
+    def to_dict(self) -> dict:
+        """Convert status to dictionary."""
+        return {
+            "running": self.running,
+            "pid": self.pid,
+            "issues_stored": self.issues_stored,
+            "issues_pending": self.issues_pending,
+            "issues_processing": self.issues_processing,
+            "issues_completed": self.issues_completed,
+            "issues_failed": self.issues_failed,
+        }
+
+
+class IssueWatcher:
+    """Orchestrates the issue watching daemon that polls GitHub, stores issues,
+    queues them for processing, and invokes the planner to generate PRDs.
+
+    This class ties together all the previously implemented components:
+    - GitHubPoller: Polls GitHub for new issues with the specified label
+    - IssueStore: Persists issues locally for audit and recovery
+    - ProcessingQueue: Maintains ordered processing queue with state tracking
+    - PromptTransformer: Transforms issues into Ralph-compatible prompts
+    - PlannerInvoker: Invokes Ralph's planner phase to generate PRDs
+
+    The watcher can be started as a foreground process or controlled via
+    CLI commands for daemon management.
+
+    Example:
+        >>> config = WatcherConfig(label="ready", poll_interval=30.0)
+        >>> watcher = IssueWatcher(config)
+        >>> watcher.start()  # Blocks and runs polling loop
+        >>> # Or check status
+        >>> status = watcher.get_status()
+        >>> print(f"Pending: {status.issues_pending}")
+    """
+
+    def __init__(self, config: Optional[WatcherConfig] = None):
+        """Initialize the IssueWatcher.
+
+        Args:
+            config: Optional WatcherConfig with watcher settings. If None,
+                uses default configuration.
+        """
+        self._config = config or WatcherConfig()
+        self._store = IssueStore(self._config.store_dir)
+        self._queue = ProcessingQueue(self._config.queue_dir)
+        self._transformer = PromptTransformer(self._queue, self._store)
+        self._invoker = PlannerInvoker(
+            self._transformer,
+            agent_name=self._config.agent_name,
+            enable_hooks=self._config.enable_hooks,
+            mark_github_issues=self._config.mark_github_issues
+        )
+        self._poller: Optional[GitHubPoller] = None
+        self._running = False
+        self._stop_event = threading.Event()
+        self._pid_path = Path(self._config.pid_file)
+        self._log_path = Path(self._config.log_file)
+
+    @property
+    def config(self) -> WatcherConfig:
+        """Get the watcher configuration."""
+        return self._config
+
+    @property
+    def store(self) -> IssueStore:
+        """Get the issue store."""
+        return self._store
+
+    @property
+    def queue(self) -> ProcessingQueue:
+        """Get the processing queue."""
+        return self._queue
+
+    @property
+    def is_running(self) -> bool:
+        """Check if the watcher is currently running."""
+        return self._running
+
+    def _log(self, message: str) -> None:
+        """Write a log message to the watcher log file.
+
+        Args:
+            message: The message to log.
+        """
+        from datetime import datetime, timezone
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        log_line = f"[{timestamp}] {message}\n"
+
+        try:
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._log_path, 'a', encoding='utf-8') as f:
+                f.write(log_line)
+        except OSError:
+            pass  # Silently ignore log errors
+
+    def _write_pid(self) -> None:
+        """Write the current process ID to the PID file."""
+        import os
+
+        try:
+            self._pid_path.parent.mkdir(parents=True, exist_ok=True)
+            self._pid_path.write_text(str(os.getpid()), encoding='utf-8')
+        except OSError as e:
+            raise IssueWatcherError(f"Failed to write PID file: {e}")
+
+    def _remove_pid(self) -> None:
+        """Remove the PID file."""
+        try:
+            if self._pid_path.exists():
+                self._pid_path.unlink()
+        except OSError:
+            pass  # Ignore removal errors
+
+    def _read_pid(self) -> Optional[int]:
+        """Read the process ID from the PID file.
+
+        Returns:
+            The PID if the file exists and is valid, None otherwise.
+        """
+        try:
+            if self._pid_path.exists():
+                content = self._pid_path.read_text(encoding='utf-8').strip()
+                return int(content)
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def _is_process_running(self, pid: int) -> bool:
+        """Check if a process with the given PID is running.
+
+        Args:
+            pid: The process ID to check.
+
+        Returns:
+            True if the process is running, False otherwise.
+        """
+        import os
+
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def _on_new_issues(self, issues: List[Issue]) -> None:
+        """Callback invoked when new issues are detected by the poller.
+
+        Stores the issues, enqueues them for processing, and optionally
+        triggers automatic processing.
+
+        Args:
+            issues: List of newly detected Issue objects.
+        """
+        self._log(f"Detected {len(issues)} new issue(s)")
+
+        for issue in issues:
+            # Store the issue
+            try:
+                self._store.save(issue, status="pending")
+                self._log(f"Stored issue #{issue.number}: {issue.title}")
+            except IssueStoreError as e:
+                self._log(f"Failed to store issue #{issue.number}: {e}")
+                continue
+
+            # Enqueue for processing
+            try:
+                self._queue.enqueue(issue.number)
+                self._log(f"Enqueued issue #{issue.number} for processing")
+            except ProcessingQueueError as e:
+                self._log(f"Failed to enqueue issue #{issue.number}: {e}")
+
+        # Trigger automatic processing if enabled
+        if self._config.auto_process and issues:
+            self._process_pending()
+
+    def _on_poll_error(self, error: Exception) -> None:
+        """Callback invoked when an error occurs during polling.
+
+        Args:
+            error: The exception that occurred.
+        """
+        self._log(f"Polling error: {error}")
+
+    def _process_pending(self) -> None:
+        """Process all pending issues in the queue."""
+        self._log("Processing pending issues...")
+
+        while not self._stop_event.is_set():
+            result = self._invoker.process_next()
+            if result is None:
+                break
+
+            if result.success:
+                self._log(f"Successfully processed issue #{result.issue_number}")
+            else:
+                self._log(f"Failed to process issue #{result.issue_number}: {result.error}")
+
+        self._log("Finished processing pending issues")
+
+    def get_status(self) -> WatcherStatus:
+        """Get the current status of the watcher.
+
+        Returns:
+            A WatcherStatus object with current state information.
+        """
+        pid = self._read_pid()
+        running = False
+
+        if pid is not None:
+            running = self._is_process_running(pid)
+            if not running:
+                # Stale PID file - clean it up
+                self._remove_pid()
+                pid = None
+
+        return WatcherStatus(
+            running=running,
+            pid=pid,
+            issues_stored=self._store.count(),
+            issues_pending=self._queue.count(status="pending"),
+            issues_processing=self._queue.count(status="processing"),
+            issues_completed=self._queue.count(status="completed"),
+            issues_failed=self._queue.count(status="failed"),
+        )
+
+    def start(self, foreground: bool = True) -> bool:
+        """Start the watcher daemon.
+
+        Args:
+            foreground: If True, run in the foreground (blocking).
+                If False, the watcher should be started as a background process
+                by the caller.
+
+        Returns:
+            True if the watcher was started, False if already running.
+
+        Raises:
+            IssueWatcherError: If starting the watcher fails.
+        """
+        # Check if already running
+        status = self.get_status()
+        if status.running:
+            return False
+
+        self._running = True
+        self._stop_event.clear()
+        self._write_pid()
+        self._log("Watcher started")
+
+        # Reset any stale processing items from previous crashes
+        reset_count = self._queue.reset_processing()
+        if reset_count > 0:
+            self._log(f"Reset {reset_count} stale processing item(s) to pending")
+
+        # Initialize poller
+        poller_config = PollerConfig(
+            label=self._config.label,
+            interval=self._config.poll_interval,
+            on_new_issues=self._on_new_issues,
+            on_error=self._on_poll_error
+        )
+        self._poller = GitHubPoller(poller_config)
+
+        # Load existing seen issues from store to avoid reprocessing
+        for stored in self._store.list_issues():
+            self._poller._seen_issue_numbers.add(stored.number)
+        self._log(f"Loaded {len(self._poller._seen_issue_numbers)} known issue(s)")
+
+        if foreground:
+            self._run_foreground()
+
+        return True
+
+    def _run_foreground(self) -> None:
+        """Run the watcher in the foreground (blocking)."""
+        self._log("Running in foreground mode")
+
+        try:
+            # Start the poller
+            if self._poller is not None:
+                self._poller.start()
+
+            # Wait for stop signal
+            while not self._stop_event.is_set():
+                self._stop_event.wait(timeout=1.0)
+
+        except KeyboardInterrupt:
+            self._log("Received keyboard interrupt")
+        finally:
+            self._cleanup()
+
+    def _cleanup(self) -> None:
+        """Clean up resources when stopping."""
+        if self._poller is not None:
+            self._poller.stop(timeout=5.0)
+            self._poller = None
+
+        self._running = False
+        self._remove_pid()
+        self._log("Watcher stopped")
+
+    def stop(self) -> bool:
+        """Stop the watcher daemon.
+
+        If the watcher is running in the current process, sets the stop event.
+        If running in another process, sends SIGTERM.
+
+        Returns:
+            True if a stop signal was sent, False if not running.
+        """
+        import os
+        import signal
+
+        status = self.get_status()
+        if not status.running:
+            return False
+
+        pid = status.pid
+        if pid is None:
+            return False
+
+        # If running in current process
+        if pid == os.getpid():
+            self._stop_event.set()
+            return True
+
+        # Send SIGTERM to the other process
+        try:
+            os.kill(pid, signal.SIGTERM)
+            self._log(f"Sent SIGTERM to process {pid}")
+            return True
+        except OSError as e:
+            self._log(f"Failed to send SIGTERM to process {pid}: {e}")
+            return False
+
+    def poll_once(self) -> List[Issue]:
+        """Perform a single poll for new issues.
+
+        This can be used for manual polling without starting the daemon.
+
+        Returns:
+            List of new issues that were detected and stored.
+        """
+        try:
+            issues = fetch_ready_issues(label=self._config.label)
+        except GitHubCLIError as e:
+            self._log(f"Poll failed: {e}")
+            raise
+
+        new_issues: List[Issue] = []
+        for issue in issues:
+            if not self._store.exists(issue.number):
+                new_issues.append(issue)
+
+        if new_issues:
+            self._on_new_issues(new_issues)
+
+        return new_issues
+
+    def process_all(self) -> Tuple[List[InvocationResult], int, int]:
+        """Process all pending issues in the queue.
+
+        This can be used for manual processing without the daemon running.
+
+        Returns:
+            A tuple containing:
+                - List of InvocationResult objects
+                - Count of successfully processed issues
+                - Count of failed issues
+        """
+        return self._invoker.process_all()
+
+
+# ==============================================================================
+# CLI for watcher daemon
+# ==============================================================================
+
+def create_watcher_parser() -> argparse.ArgumentParser:
+    """Create and configure the argument parser for the watcher CLI.
+
+    Returns:
+        Configured ArgumentParser instance for the watcher commands.
+    """
+    parser = argparse.ArgumentParser(
+        prog="ralph-watch",
+        description="Manage the Ralph issue watcher daemon.",
+        epilog="Examples:\n"
+               "  ralph-watch start\n"
+               "  ralph-watch start --interval 30\n"
+               "  ralph-watch status\n"
+               "  ralph-watch stop",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    # Start command
+    start_parser = subparsers.add_parser(
+        "start",
+        help="Start the issue watcher daemon"
+    )
+    start_parser.add_argument(
+        "--label",
+        default="ready",
+        help="Filter issues by label (default: ready)"
+    )
+    start_parser.add_argument(
+        "--interval",
+        type=float,
+        default=60.0,
+        help="Polling interval in seconds (default: 60)"
+    )
+    start_parser.add_argument(
+        "--agent",
+        default="claude",
+        help="AI agent to use for planning (default: claude)"
+    )
+    start_parser.add_argument(
+        "--no-hooks",
+        action="store_true",
+        dest="no_hooks",
+        help="Disable Ralph hook execution"
+    )
+    start_parser.add_argument(
+        "--mark-issues",
+        action="store_true",
+        dest="mark_issues",
+        help="Update GitHub issue labels after processing"
+    )
+    start_parser.add_argument(
+        "--no-auto-process",
+        action="store_true",
+        dest="no_auto_process",
+        help="Don't automatically process issues (just store and queue)"
+    )
+    start_parser.add_argument(
+        "--foreground", "-f",
+        action="store_true",
+        help="Run in foreground (default behavior)"
+    )
+
+    # Stop command
+    subparsers.add_parser(
+        "stop",
+        help="Stop the issue watcher daemon"
+    )
+
+    # Status command
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show watcher daemon status"
+    )
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output status as JSON"
+    )
+
+    # Poll command (one-time poll)
+    poll_parser = subparsers.add_parser(
+        "poll",
+        help="Perform a one-time poll for new issues"
+    )
+    poll_parser.add_argument(
+        "--label",
+        default="ready",
+        help="Filter issues by label (default: ready)"
+    )
+
+    # Process command (process pending issues)
+    process_parser = subparsers.add_parser(
+        "process",
+        help="Process all pending issues in the queue"
+    )
+    process_parser.add_argument(
+        "--agent",
+        default="claude",
+        help="AI agent to use for planning (default: claude)"
+    )
+    process_parser.add_argument(
+        "--no-hooks",
+        action="store_true",
+        dest="no_hooks",
+        help="Disable Ralph hook execution"
+    )
+
+    return parser
+
+
+def watcher_main(args: Optional[List[str]] = None) -> int:
+    """Main entry point for the watcher CLI.
+
+    Args:
+        args: Command line arguments. If None, uses sys.argv.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    parser = create_watcher_parser()
+    parsed_args = parser.parse_args(args)
+
+    if parsed_args.command is None:
+        parser.print_help()
+        return 1
+
+    if parsed_args.command == "start":
+        return _handle_start(parsed_args)
+    elif parsed_args.command == "stop":
+        return _handle_stop()
+    elif parsed_args.command == "status":
+        return _handle_status(parsed_args)
+    elif parsed_args.command == "poll":
+        return _handle_poll(parsed_args)
+    elif parsed_args.command == "process":
+        return _handle_process(parsed_args)
+
+    return 1
+
+
+def _handle_start(args: argparse.Namespace) -> int:
+    """Handle the 'start' command.
+
+    Args:
+        args: Parsed command line arguments.
+
+    Returns:
+        Exit code.
+    """
+    config = WatcherConfig(
+        label=args.label,
+        poll_interval=args.interval,
+        agent_name=args.agent,
+        enable_hooks=not args.no_hooks,
+        mark_github_issues=args.mark_issues,
+        auto_process=not args.no_auto_process
+    )
+
+    watcher = IssueWatcher(config)
+    status = watcher.get_status()
+
+    if status.running:
+        print(f"Watcher is already running (PID: {status.pid})")
+        return 1
+
+    print(f"Starting watcher...")
+    print(f"  Label: {config.label}")
+    print(f"  Poll interval: {config.poll_interval}s")
+    print(f"  Agent: {config.agent_name}")
+    print(f"  Auto-process: {config.auto_process}")
+
+    try:
+        watcher.start(foreground=True)
+        return 0
+    except IssueWatcherError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        return 0
+
+
+def _handle_stop() -> int:
+    """Handle the 'stop' command.
+
+    Returns:
+        Exit code.
+    """
+    watcher = IssueWatcher()
+    status = watcher.get_status()
+
+    if not status.running:
+        print("Watcher is not running")
+        return 1
+
+    print(f"Stopping watcher (PID: {status.pid})...")
+
+    if watcher.stop():
+        print("Stop signal sent")
+        return 0
+    else:
+        print("Failed to stop watcher", file=sys.stderr)
+        return 1
+
+
+def _handle_status(args: argparse.Namespace) -> int:
+    """Handle the 'status' command.
+
+    Args:
+        args: Parsed command line arguments.
+
+    Returns:
+        Exit code.
+    """
+    watcher = IssueWatcher()
+    status = watcher.get_status()
+
+    if args.json_output:
+        print(json.dumps(status.to_dict(), indent=2))
+    else:
+        running_str = "running" if status.running else "stopped"
+        print(f"Watcher status: {running_str}")
+        if status.running:
+            print(f"  PID: {status.pid}")
+        print(f"  Issues stored: {status.issues_stored}")
+        print(f"  Queue pending: {status.issues_pending}")
+        print(f"  Queue processing: {status.issues_processing}")
+        print(f"  Queue completed: {status.issues_completed}")
+        print(f"  Queue failed: {status.issues_failed}")
+
+    return 0
+
+
+def _handle_poll(args: argparse.Namespace) -> int:
+    """Handle the 'poll' command.
+
+    Args:
+        args: Parsed command line arguments.
+
+    Returns:
+        Exit code.
+    """
+    config = WatcherConfig(label=args.label)
+    watcher = IssueWatcher(config)
+
+    print(f"Polling for issues with label '{args.label}'...")
+
+    try:
+        new_issues = watcher.poll_once()
+        if new_issues:
+            print(f"Found {len(new_issues)} new issue(s):")
+            for issue in new_issues:
+                print(f"  #{issue.number}: {issue.title}")
+        else:
+            print("No new issues found")
+        return 0
+    except GitHubCLIError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def _handle_process(args: argparse.Namespace) -> int:
+    """Handle the 'process' command.
+
+    Args:
+        args: Parsed command line arguments.
+
+    Returns:
+        Exit code.
+    """
+    config = WatcherConfig(
+        agent_name=args.agent,
+        enable_hooks=not args.no_hooks,
+        auto_process=False  # We're manually processing
+    )
+    watcher = IssueWatcher(config)
+
+    pending_count = watcher.queue.count(status="pending")
+    if pending_count == 0:
+        print("No pending issues to process")
+        return 0
+
+    print(f"Processing {pending_count} pending issue(s)...")
+
+    try:
+        results, success_count, failure_count = watcher.process_all()
+        print(f"Processed {len(results)} issue(s): {success_count} succeeded, {failure_count} failed")
+
+        for result in results:
+            status_str = "SUCCESS" if result.success else f"FAILED: {result.error}"
+            print(f"  #{result.issue_number}: {status_str}")
+
+        return 0 if failure_count == 0 else 1
+    except PlannerError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
     sys.exit(main())

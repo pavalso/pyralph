@@ -4368,5 +4368,816 @@ class TestPlannerInvokerIntegration(unittest.TestCase):
         self.assertEqual(success, 2)
 
 
+# ==============================================================================
+# Tests for IssueWatcher and CLI
+# ==============================================================================
+
+from pathlib import Path
+
+from fetch_ready_issues import (
+    WatcherConfig,
+    WatcherStatus,
+    IssueWatcher,
+    IssueWatcherError,
+    create_watcher_parser,
+    watcher_main,
+    _handle_start,
+    _handle_stop,
+    _handle_status,
+    _handle_poll,
+    _handle_process,
+)
+
+
+class TestWatcherConfig(unittest.TestCase):
+    """Tests for WatcherConfig dataclass."""
+
+    def test_default_config(self):
+        """Test WatcherConfig with default values."""
+        config = WatcherConfig()
+        self.assertEqual(config.label, "ready")
+        self.assertEqual(config.poll_interval, 60.0)
+        self.assertEqual(config.store_dir, ".ralph/issues")
+        self.assertEqual(config.queue_dir, ".ralph/queue")
+        self.assertEqual(config.pid_file, ".ralph/watcher.pid")
+        self.assertEqual(config.log_file, ".ralph/watcher.log")
+        self.assertEqual(config.agent_name, "claude")
+        self.assertTrue(config.enable_hooks)
+        self.assertFalse(config.mark_github_issues)
+        self.assertTrue(config.auto_process)
+
+    def test_custom_config(self):
+        """Test WatcherConfig with custom values."""
+        config = WatcherConfig(
+            label="custom",
+            poll_interval=30.0,
+            store_dir="/custom/store",
+            queue_dir="/custom/queue",
+            pid_file="/custom/watcher.pid",
+            log_file="/custom/watcher.log",
+            agent_name="copilot",
+            enable_hooks=False,
+            mark_github_issues=True,
+            auto_process=False
+        )
+        self.assertEqual(config.label, "custom")
+        self.assertEqual(config.poll_interval, 30.0)
+        self.assertEqual(config.store_dir, "/custom/store")
+        self.assertEqual(config.queue_dir, "/custom/queue")
+        self.assertEqual(config.pid_file, "/custom/watcher.pid")
+        self.assertEqual(config.log_file, "/custom/watcher.log")
+        self.assertEqual(config.agent_name, "copilot")
+        self.assertFalse(config.enable_hooks)
+        self.assertTrue(config.mark_github_issues)
+        self.assertFalse(config.auto_process)
+
+
+class TestWatcherStatus(unittest.TestCase):
+    """Tests for WatcherStatus dataclass."""
+
+    def test_status_default_values(self):
+        """Test WatcherStatus with default values."""
+        status = WatcherStatus(running=False)
+        self.assertFalse(status.running)
+        self.assertIsNone(status.pid)
+        self.assertEqual(status.issues_stored, 0)
+        self.assertEqual(status.issues_pending, 0)
+        self.assertEqual(status.issues_processing, 0)
+        self.assertEqual(status.issues_completed, 0)
+        self.assertEqual(status.issues_failed, 0)
+
+    def test_status_with_values(self):
+        """Test WatcherStatus with custom values."""
+        status = WatcherStatus(
+            running=True,
+            pid=12345,
+            issues_stored=10,
+            issues_pending=3,
+            issues_processing=1,
+            issues_completed=5,
+            issues_failed=1
+        )
+        self.assertTrue(status.running)
+        self.assertEqual(status.pid, 12345)
+        self.assertEqual(status.issues_stored, 10)
+        self.assertEqual(status.issues_pending, 3)
+        self.assertEqual(status.issues_processing, 1)
+        self.assertEqual(status.issues_completed, 5)
+        self.assertEqual(status.issues_failed, 1)
+
+    def test_status_to_dict(self):
+        """Test WatcherStatus.to_dict() method."""
+        status = WatcherStatus(
+            running=True,
+            pid=12345,
+            issues_stored=10,
+            issues_pending=3,
+            issues_processing=1,
+            issues_completed=5,
+            issues_failed=1
+        )
+        result = status.to_dict()
+        self.assertEqual(result, {
+            "running": True,
+            "pid": 12345,
+            "issues_stored": 10,
+            "issues_pending": 3,
+            "issues_processing": 1,
+            "issues_completed": 5,
+            "issues_failed": 1,
+        })
+
+
+class TestIssueWatcher(unittest.TestCase):
+    """Tests for IssueWatcher class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.config = WatcherConfig(
+            store_dir=f"{self.temp_dir}/issues",
+            queue_dir=f"{self.temp_dir}/queue",
+            pid_file=f"{self.temp_dir}/watcher.pid",
+            log_file=f"{self.temp_dir}/watcher.log",
+            auto_process=False  # Disable auto-process for tests
+        )
+        self.watcher = IssueWatcher(self.config)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        try:
+            shutil.rmtree(self.temp_dir)
+        except OSError:
+            pass
+
+    def test_init_with_default_config(self):
+        """Test IssueWatcher initialization with default config."""
+        watcher = IssueWatcher()
+        self.assertIsNotNone(watcher.config)
+        self.assertIsNotNone(watcher.store)
+        self.assertIsNotNone(watcher.queue)
+        self.assertFalse(watcher.is_running)
+
+    def test_init_with_custom_config(self):
+        """Test IssueWatcher initialization with custom config."""
+        self.assertEqual(self.watcher.config.store_dir, f"{self.temp_dir}/issues")
+        self.assertEqual(self.watcher.config.queue_dir, f"{self.temp_dir}/queue")
+
+    def test_get_status_not_running(self):
+        """Test get_status when watcher is not running."""
+        status = self.watcher.get_status()
+        self.assertFalse(status.running)
+        self.assertIsNone(status.pid)
+
+    def test_get_status_with_store_data(self):
+        """Test get_status with data in store and queue."""
+        # Add some test data
+        issue = Issue(
+            number=1,
+            title="Test Issue",
+            body="Test body",
+            url="https://github.com/test/repo/issues/1",
+            labels=["ready"]
+        )
+        self.watcher.store.save(issue)
+        self.watcher.queue.enqueue(1)
+
+        status = self.watcher.get_status()
+        self.assertEqual(status.issues_stored, 1)
+        self.assertEqual(status.issues_pending, 1)
+
+    def test_read_write_pid(self):
+        """Test PID file reading and writing."""
+        import os
+
+        # Initially no PID
+        self.assertIsNone(self.watcher._read_pid())
+
+        # Write PID
+        self.watcher._write_pid()
+        pid = self.watcher._read_pid()
+        self.assertEqual(pid, os.getpid())
+
+        # Remove PID
+        self.watcher._remove_pid()
+        self.assertIsNone(self.watcher._read_pid())
+
+    def test_is_process_running_current(self):
+        """Test _is_process_running for current process."""
+        import os
+        self.assertTrue(self.watcher._is_process_running(os.getpid()))
+
+    def test_is_process_running_nonexistent(self):
+        """Test _is_process_running for non-existent process."""
+        # Use a very high PID that's unlikely to exist
+        self.assertFalse(self.watcher._is_process_running(999999))
+
+    def test_log_message(self):
+        """Test logging functionality."""
+        self.watcher._log("Test message")
+
+        # Verify log file exists and contains message
+        log_path = Path(self.config.log_file)
+        self.assertTrue(log_path.exists())
+        content = log_path.read_text(encoding='utf-8')
+        self.assertIn("Test message", content)
+
+    def test_on_new_issues_callback(self):
+        """Test _on_new_issues callback stores and enqueues issues."""
+        issues = [
+            Issue(
+                number=1,
+                title="Test Issue 1",
+                body="Body 1",
+                url="https://github.com/test/repo/issues/1",
+                labels=["ready"]
+            ),
+            Issue(
+                number=2,
+                title="Test Issue 2",
+                body="Body 2",
+                url="https://github.com/test/repo/issues/2",
+                labels=["ready"]
+            )
+        ]
+
+        self.watcher._on_new_issues(issues)
+
+        # Verify issues were stored
+        self.assertEqual(self.watcher.store.count(), 2)
+        self.assertIsNotNone(self.watcher.store.get(1))
+        self.assertIsNotNone(self.watcher.store.get(2))
+
+        # Verify issues were enqueued
+        self.assertEqual(self.watcher.queue.count(status="pending"), 2)
+
+    def test_on_poll_error_callback(self):
+        """Test _on_poll_error callback logs error."""
+        error = Exception("Test error")
+        self.watcher._on_poll_error(error)
+
+        # Verify error was logged
+        log_path = Path(self.config.log_file)
+        self.assertTrue(log_path.exists())
+        content = log_path.read_text(encoding='utf-8')
+        self.assertIn("Polling error", content)
+        self.assertIn("Test error", content)
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_once_no_new_issues(self, mock_fetch):
+        """Test poll_once when no new issues exist."""
+        mock_fetch.return_value = []
+
+        new_issues = self.watcher.poll_once()
+
+        self.assertEqual(new_issues, [])
+        mock_fetch.assert_called_once_with(label="ready")
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_once_with_new_issues(self, mock_fetch):
+        """Test poll_once detects new issues."""
+        mock_fetch.return_value = [
+            Issue(
+                number=1,
+                title="New Issue",
+                body="Body",
+                url="https://github.com/test/repo/issues/1",
+                labels=["ready"]
+            )
+        ]
+
+        new_issues = self.watcher.poll_once()
+
+        self.assertEqual(len(new_issues), 1)
+        self.assertEqual(new_issues[0].number, 1)
+        # Verify it was stored
+        self.assertIsNotNone(self.watcher.store.get(1))
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_once_skips_existing_issues(self, mock_fetch):
+        """Test poll_once skips issues already in store."""
+        # Pre-store an issue
+        issue = Issue(
+            number=1,
+            title="Existing Issue",
+            body="Body",
+            url="https://github.com/test/repo/issues/1",
+            labels=["ready"]
+        )
+        self.watcher.store.save(issue)
+
+        # Mock returns same issue
+        mock_fetch.return_value = [issue]
+
+        new_issues = self.watcher.poll_once()
+
+        self.assertEqual(new_issues, [])
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_once_handles_error(self, mock_fetch):
+        """Test poll_once propagates GitHubCLIError."""
+        mock_fetch.side_effect = GitHubCLIError("Test error")
+
+        with self.assertRaises(GitHubCLIError):
+            self.watcher.poll_once()
+
+    def test_start_already_running(self):
+        """Test start returns False when already running."""
+        import os
+
+        # Simulate running watcher by writing current PID
+        self.watcher._write_pid()
+
+        # Try to start
+        result = self.watcher.start(foreground=False)
+
+        self.assertFalse(result)
+
+    def test_stop_not_running(self):
+        """Test stop returns False when not running."""
+        result = self.watcher.stop()
+        self.assertFalse(result)
+
+    def test_get_status_cleans_stale_pid(self):
+        """Test get_status removes stale PID file."""
+        # Write a fake PID that doesn't exist
+        pid_path = Path(self.config.pid_file)
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_path.write_text("999999", encoding='utf-8')
+
+        status = self.watcher.get_status()
+
+        # Should clean up stale PID
+        self.assertFalse(status.running)
+        self.assertIsNone(status.pid)
+        self.assertFalse(pid_path.exists())
+
+
+class TestWatcherParser(unittest.TestCase):
+    """Tests for watcher CLI argument parser."""
+
+    def test_parser_creation(self):
+        """Test parser creation."""
+        parser = create_watcher_parser()
+        self.assertIsNotNone(parser)
+
+    def test_parse_start_command(self):
+        """Test parsing 'start' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["start"])
+        self.assertEqual(args.command, "start")
+        self.assertEqual(args.label, "ready")
+        self.assertEqual(args.interval, 60.0)
+        self.assertEqual(args.agent, "claude")
+        self.assertFalse(args.no_hooks)
+        self.assertFalse(args.mark_issues)
+        self.assertFalse(args.no_auto_process)
+
+    def test_parse_start_with_options(self):
+        """Test parsing 'start' with options."""
+        parser = create_watcher_parser()
+        args = parser.parse_args([
+            "start",
+            "--label", "custom",
+            "--interval", "30.0",
+            "--agent", "copilot",
+            "--no-hooks",
+            "--mark-issues",
+            "--no-auto-process"
+        ])
+        self.assertEqual(args.label, "custom")
+        self.assertEqual(args.interval, 30.0)
+        self.assertEqual(args.agent, "copilot")
+        self.assertTrue(args.no_hooks)
+        self.assertTrue(args.mark_issues)
+        self.assertTrue(args.no_auto_process)
+
+    def test_parse_stop_command(self):
+        """Test parsing 'stop' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["stop"])
+        self.assertEqual(args.command, "stop")
+
+    def test_parse_status_command(self):
+        """Test parsing 'status' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["status"])
+        self.assertEqual(args.command, "status")
+        self.assertFalse(args.json_output)
+
+    def test_parse_status_with_json(self):
+        """Test parsing 'status --json'."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["status", "--json"])
+        self.assertTrue(args.json_output)
+
+    def test_parse_poll_command(self):
+        """Test parsing 'poll' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["poll"])
+        self.assertEqual(args.command, "poll")
+        self.assertEqual(args.label, "ready")
+
+    def test_parse_poll_with_label(self):
+        """Test parsing 'poll --label'."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["poll", "--label", "custom"])
+        self.assertEqual(args.label, "custom")
+
+    def test_parse_process_command(self):
+        """Test parsing 'process' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["process"])
+        self.assertEqual(args.command, "process")
+        self.assertEqual(args.agent, "claude")
+        self.assertFalse(args.no_hooks)
+
+    def test_parse_no_command(self):
+        """Test parsing with no command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args([])
+        self.assertIsNone(args.command)
+
+
+class TestWatcherCLI(unittest.TestCase):
+    """Tests for watcher CLI functions."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        try:
+            shutil.rmtree(self.temp_dir)
+        except OSError:
+            pass
+
+    def test_watcher_main_no_command(self):
+        """Test watcher_main with no command returns 1."""
+        with patch('sys.stdout', new_callable=StringIO):
+            result = watcher_main([])
+        self.assertEqual(result, 1)
+
+    def test_watcher_main_status(self):
+        """Test watcher_main status command."""
+        with patch('fetch_ready_issues.IssueWatcher') as MockWatcher:
+            mock_instance = MagicMock()
+            mock_instance.get_status.return_value = WatcherStatus(
+                running=False,
+                issues_stored=0,
+                issues_pending=0,
+                issues_processing=0,
+                issues_completed=0,
+                issues_failed=0
+            )
+            MockWatcher.return_value = mock_instance
+
+            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+                result = watcher_main(["status"])
+
+            self.assertEqual(result, 0)
+            output = mock_stdout.getvalue()
+            self.assertIn("stopped", output)
+
+    def test_watcher_main_status_json(self):
+        """Test watcher_main status --json command."""
+        with patch('fetch_ready_issues.IssueWatcher') as MockWatcher:
+            mock_instance = MagicMock()
+            mock_instance.get_status.return_value = WatcherStatus(
+                running=False,
+                issues_stored=5,
+                issues_pending=2,
+                issues_processing=0,
+                issues_completed=3,
+                issues_failed=0
+            )
+            MockWatcher.return_value = mock_instance
+
+            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+                result = watcher_main(["status", "--json"])
+
+            self.assertEqual(result, 0)
+            output = mock_stdout.getvalue()
+            # Should be valid JSON
+            data = json.loads(output)
+            self.assertEqual(data["issues_stored"], 5)
+            self.assertEqual(data["issues_pending"], 2)
+
+    def test_watcher_main_stop_not_running(self):
+        """Test watcher_main stop when not running."""
+        with patch('fetch_ready_issues.IssueWatcher') as MockWatcher:
+            mock_instance = MagicMock()
+            mock_instance.get_status.return_value = WatcherStatus(running=False)
+            MockWatcher.return_value = mock_instance
+
+            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+                result = watcher_main(["stop"])
+
+            self.assertEqual(result, 1)
+            output = mock_stdout.getvalue()
+            self.assertIn("not running", output)
+
+    def test_handle_status_text_output(self):
+        """Test _handle_status with text output."""
+        with patch('fetch_ready_issues.IssueWatcher') as MockWatcher:
+            mock_instance = MagicMock()
+            mock_instance.get_status.return_value = WatcherStatus(
+                running=True,
+                pid=12345,
+                issues_stored=10,
+                issues_pending=3,
+                issues_processing=1,
+                issues_completed=5,
+                issues_failed=1
+            )
+            MockWatcher.return_value = mock_instance
+
+            args = MagicMock()
+            args.json_output = False
+
+            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+                result = _handle_status(args)
+
+            self.assertEqual(result, 0)
+            output = mock_stdout.getvalue()
+            self.assertIn("running", output)
+            self.assertIn("12345", output)
+            self.assertIn("10", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_poll_no_new_issues(self, MockWatcher):
+        """Test _handle_poll when no new issues found."""
+        mock_instance = MagicMock()
+        mock_instance.poll_once.return_value = []
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.label = "ready"
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_poll(args)
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("No new issues found", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_poll_with_new_issues(self, MockWatcher):
+        """Test _handle_poll when new issues found."""
+        mock_instance = MagicMock()
+        mock_instance.poll_once.return_value = [
+            Issue(number=1, title="Test Issue", body="Body",
+                  url="https://github.com/test/repo/issues/1", labels=["ready"])
+        ]
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.label = "ready"
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_poll(args)
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("1 new issue", output)
+        self.assertIn("#1", output)
+        self.assertIn("Test Issue", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_poll_error(self, MockWatcher):
+        """Test _handle_poll with GitHub CLI error."""
+        mock_instance = MagicMock()
+        mock_instance.poll_once.side_effect = GitHubCLIError("Test error")
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.label = "ready"
+
+        with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
+            result = _handle_poll(args)
+
+        self.assertEqual(result, 1)
+        output = mock_stderr.getvalue()
+        self.assertIn("Test error", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_process_no_pending(self, MockWatcher):
+        """Test _handle_process when no pending issues."""
+        mock_queue = MagicMock()
+        mock_queue.count.return_value = 0
+        mock_instance = MagicMock()
+        mock_instance.queue = mock_queue
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.agent = "claude"
+        args.no_hooks = False
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_process(args)
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("No pending issues", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_process_success(self, MockWatcher):
+        """Test _handle_process with successful processing."""
+        from fetch_ready_issues import InvocationResult
+
+        mock_queue = MagicMock()
+        mock_queue.count.return_value = 2
+        mock_instance = MagicMock()
+        mock_instance.queue = mock_queue
+        mock_instance.process_all.return_value = (
+            [
+                InvocationResult(issue_number=1, success=True),
+                InvocationResult(issue_number=2, success=True)
+            ],
+            2,  # success_count
+            0   # failure_count
+        )
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.agent = "claude"
+        args.no_hooks = False
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_process(args)
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("2 succeeded", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_process_with_failures(self, MockWatcher):
+        """Test _handle_process with some failures."""
+        from fetch_ready_issues import InvocationResult
+
+        mock_queue = MagicMock()
+        mock_queue.count.return_value = 2
+        mock_instance = MagicMock()
+        mock_instance.queue = mock_queue
+        mock_instance.process_all.return_value = (
+            [
+                InvocationResult(issue_number=1, success=True),
+                InvocationResult(issue_number=2, success=False, error="Test failure")
+            ],
+            1,  # success_count
+            1   # failure_count
+        )
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.agent = "claude"
+        args.no_hooks = False
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_process(args)
+
+        self.assertEqual(result, 1)  # Non-zero due to failures
+        output = mock_stdout.getvalue()
+        self.assertIn("1 succeeded", output)
+        self.assertIn("1 failed", output)
+        self.assertIn("FAILED", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_start_already_running(self, MockWatcher):
+        """Test _handle_start when watcher is already running."""
+        mock_instance = MagicMock()
+        mock_instance.get_status.return_value = WatcherStatus(running=True, pid=12345)
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.label = "ready"
+        args.interval = 60.0
+        args.agent = "claude"
+        args.no_hooks = False
+        args.mark_issues = False
+        args.no_auto_process = False
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_start(args)
+
+        self.assertEqual(result, 1)
+        output = mock_stdout.getvalue()
+        self.assertIn("already running", output)
+
+
+class TestIssueWatcherIntegration(unittest.TestCase):
+    """Integration tests for IssueWatcher."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.config = WatcherConfig(
+            store_dir=f"{self.temp_dir}/issues",
+            queue_dir=f"{self.temp_dir}/queue",
+            pid_file=f"{self.temp_dir}/watcher.pid",
+            log_file=f"{self.temp_dir}/watcher.log",
+            auto_process=False
+        )
+        self.watcher = IssueWatcher(self.config)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        try:
+            shutil.rmtree(self.temp_dir)
+        except OSError:
+            pass
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_and_queue_integration(self, mock_fetch):
+        """Test full poll and queue flow."""
+        # Mock GitHub returning issues
+        mock_fetch.return_value = [
+            Issue(number=1, title="Issue 1", body="Body 1",
+                  url="https://github.com/test/repo/issues/1", labels=["ready"]),
+            Issue(number=2, title="Issue 2", body="Body 2",
+                  url="https://github.com/test/repo/issues/2", labels=["ready"]),
+        ]
+
+        # Poll for issues
+        new_issues = self.watcher.poll_once()
+
+        # Verify issues were detected
+        self.assertEqual(len(new_issues), 2)
+
+        # Verify issues are in store
+        self.assertEqual(self.watcher.store.count(), 2)
+        self.assertIsNotNone(self.watcher.store.get(1))
+        self.assertIsNotNone(self.watcher.store.get(2))
+
+        # Verify issues are queued
+        self.assertEqual(self.watcher.queue.count(status="pending"), 2)
+
+        # Verify status reflects state
+        status = self.watcher.get_status()
+        self.assertEqual(status.issues_stored, 2)
+        self.assertEqual(status.issues_pending, 2)
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_idempotent(self, mock_fetch):
+        """Test that polling same issues doesn't duplicate."""
+        issues = [
+            Issue(number=1, title="Issue 1", body="Body 1",
+                  url="https://github.com/test/repo/issues/1", labels=["ready"]),
+        ]
+        mock_fetch.return_value = issues
+
+        # First poll
+        new_issues_1 = self.watcher.poll_once()
+        self.assertEqual(len(new_issues_1), 1)
+
+        # Second poll with same issues
+        new_issues_2 = self.watcher.poll_once()
+        self.assertEqual(len(new_issues_2), 0)
+
+        # Store should still have only 1
+        self.assertEqual(self.watcher.store.count(), 1)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_full_pipeline(self, mock_fetch, mock_invoke):
+        """Test full pipeline from poll to process."""
+        # Setup mocks
+        mock_fetch.return_value = [
+            Issue(number=1, title="Feature Request", body="Implement feature X",
+                  url="https://github.com/test/repo/issues/1", labels=["ready"]),
+        ]
+        mock_invoke.return_value = True
+
+        # 1. Poll for issues
+        self.watcher.poll_once()
+
+        # 2. Verify queued
+        self.assertEqual(self.watcher.queue.count(status="pending"), 1)
+
+        # 3. Process all
+        results, success, failure = self.watcher.process_all()
+
+        # 4. Verify results
+        self.assertEqual(len(results), 1)
+        self.assertEqual(success, 1)
+        self.assertEqual(failure, 0)
+
+        # 5. Verify completed
+        self.assertEqual(self.watcher.queue.count(status="completed"), 1)
+
+        # 6. Verify planner was called with correct prompt
+        mock_invoke.assert_called_once()
+        call_args = mock_invoke.call_args
+        self.assertIn("TASK-001", call_args[1]["user_intent"])
+        self.assertIn("Feature Request", call_args[1]["user_intent"])
+
+
 if __name__ == "__main__":
     unittest.main()
