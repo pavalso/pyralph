@@ -24,16 +24,17 @@ class Config:
     ROOT_DIR: Path = BASE_DIR / ".ralph"
     MEMORY_DIR: Path = ROOT_DIR / "memory"
     ARCHIVE_DIR: Path = ROOT_DIR / "archive"
+    TEMPLATES_DIR: Path = ROOT_DIR / "templates"
     PRD_FILE: Path = ROOT_DIR / "prd.json"
     PROGRESS_FILE: Path = ROOT_DIR / "progress.txt"
     LOG_FILE: Path = ROOT_DIR / "ralph_log.txt"
-    
+
     # Limits
     MAX_RETRIES: int = 3
     TIMEOUT_SECONDS: int = 600
 
     def ensure_directories(self):
-        for path in [self.ROOT_DIR, self.MEMORY_DIR, self.ARCHIVE_DIR]:
+        for path in [self.ROOT_DIR, self.MEMORY_DIR, self.ARCHIVE_DIR, self.TEMPLATES_DIR]:
             path.mkdir(exist_ok=True, parents=True)
 
 CONF = Config()
@@ -43,60 +44,40 @@ CONF = Config()
 # ==============================================================================
 
 class Logger:
-    """Handles console output and persistent file logging."""
-
-    COLORS = {
-        "RESET": "\033[0m", "GREEN": "\033[92m", "RED": "\033[91m",
-        "CYAN": "\033[96m", "YELLOW": "\033[93m", "MAGENTA": "\033[95m"
-    }
-
-    # Class-level verbose flag
+    COLORS = {"RESET": "\033[0m", "GREEN": "\033[92m", "RED": "\033[91m",
+              "CYAN": "\033[96m", "YELLOW": "\033[93m", "MAGENTA": "\033[95m"}
     verbose = False
     no_color = False
 
     @staticmethod
-    def set_no_color(enabled: bool):
-        Logger.no_color = enabled
+    def set_no_color(enabled: bool): Logger.no_color = enabled
+    @staticmethod
+    def set_verbose(enabled: bool): Logger.verbose = enabled
 
     @staticmethod
-    def set_verbose(enabled: bool):
-        """Enable or disable verbose mode."""
-        Logger.verbose = enabled
+    def _print_colored(msg: str, color: str = "RESET", prefix: str = ""):
+        text = f"{prefix}{msg}" if prefix else msg
+        if Logger.no_color: print(text)
+        else: print(f"{Logger.COLORS.get(color, Logger.COLORS['RESET'])}{text}{Logger.COLORS['RESET']}")
 
     @staticmethod
-    def info(msg: str, color: str = "RESET"):
-        if Logger.no_color:
-            print(msg)
-        else:
-            c_code = Logger.COLORS.get(color, Logger.COLORS["RESET"])
-            print(f"{c_code}{msg}{Logger.COLORS['RESET']}")
-
+    def info(msg: str, color: str = "RESET"): Logger._print_colored(msg, color)
     @staticmethod
     def debug(msg: str, color: str = "RESET"):
-        """Print debug message only in verbose mode."""
-        if Logger.verbose:
-            if Logger.no_color:
-                print(f"[DEBUG] {msg}")
-            else:
-                c_code = Logger.COLORS.get(color, Logger.COLORS["RESET"])
-                print(f"{c_code}[DEBUG] {msg}{Logger.COLORS['RESET']}")
+        if Logger.verbose: Logger._print_colored(msg, color, prefix="[DEBUG] ")
+    @staticmethod
+    def warning(msg: str): Logger._print_colored(msg, "YELLOW", prefix="[WARNING] ")
+    @staticmethod
+    def error(msg: str): Logger._print_colored(msg, "RED", prefix="[ERROR] ")
 
     @staticmethod
     def file_log(content: str, type: str, tag: str = "UNKNOWN"):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         icons = {"PROMPT": "➡️", "RESPONSE": "⬅️", "ERROR": "❌", "INFO": "ℹ️"}
-        icon = icons.get(type, "❓")
-
-        entry = (
-            f"\n{'='*60}\n"
-            f"{icon} [{timestamp}] TYPE: {type} | TAG: {tag}\n"
-            f"{'='*60}\n{content}\n"
-        )
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"\n{'='*60}\n{icons.get(type, '❓')} [{ts}] TYPE: {type} | TAG: {tag}\n{'='*60}\n{content}\n"
         try:
-            with open(CONF.LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(entry)
-        except Exception as e:
-            print(f"⚠️ Log Error: {e}")
+            with open(CONF.LOG_FILE, "a", encoding="utf-8") as f: f.write(entry)
+        except Exception: print(f"⚠️ Log Error")
 
 class Shell:
     """Safe wrapper for subprocess calls."""
@@ -145,75 +126,69 @@ class JsonUtils:
 # ==============================================================================
 
 class MemoryManager:
-    """Manages the agent's wiki and context window."""
-
     @staticmethod
     def validate_memory() -> dict:
-        """
-        Validate all memory files are readable and not empty.
-
-        Returns:
-            dict with keys:
-                - 'valid': bool (all files readable)
-                - 'corrupted': list of file paths that failed to read
-                - 'empty': list of file paths that are empty
-                - 'total': int (total files checked)
-        """
-        result = {
-            'valid': True,
-            'corrupted': [],
-            'empty': [],
-            'total': 0
-        }
-
-        if not CONF.MEMORY_DIR.exists():
-            return result
-
+        result = {'valid': True, 'corrupted': [], 'empty': [], 'total': 0}
+        if not CONF.MEMORY_DIR.exists(): return result
         for path in CONF.MEMORY_DIR.rglob('*'):
-            if not path.is_file() or path.name.startswith('.'):
-                continue
-
+            if not path.is_file() or path.name.startswith('.'): continue
             result['total'] += 1
-
             try:
-                content = path.read_text(encoding='utf-8')
-                if not content.strip():
-                    result['empty'].append(str(path.relative_to(CONF.BASE_DIR)))
-                    result['valid'] = False
-            except Exception as e:
-                result['corrupted'].append(str(path.relative_to(CONF.BASE_DIR)))
-                result['valid'] = False
-
+                if not path.read_text(encoding='utf-8').strip():
+                    result['empty'].append(str(path.relative_to(CONF.BASE_DIR))); result['valid'] = False
+            except Exception:
+                result['corrupted'].append(str(path.relative_to(CONF.BASE_DIR))); result['valid'] = False
         return result
 
     @staticmethod
     def get_structure() -> str:
-        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
-            return "(Memory Empty)"
-
+        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()): return "(Memory Empty)"
         files = []
         for p in CONF.MEMORY_DIR.rglob('*'):
             if p.is_file() and not p.name.startswith('.'):
-                try:
-                    # Provide path relative to the Project Root (CWD)
-                    rel_path = p.relative_to(CONF.BASE_DIR)
-                    files.append(f"- {rel_path}")
-                except ValueError:
-                    continue # Should not happen if paths are correct
+                try: files.append(f"- {p.relative_to(CONF.BASE_DIR)}")
+                except ValueError: continue
         return "\n".join(files)
 
     @staticmethod
     def extract_test_command() -> str:
         full_text = ""
         for path in CONF.MEMORY_DIR.rglob('*'):
-             if path.suffix in ['.md', '.txt']:
-                 try: full_text += path.read_text(encoding='utf-8')
-                 except: continue
-
+            if path.suffix in ['.md', '.txt']:
+                try: full_text += path.read_text(encoding='utf-8')
+                except: continue
         match = re.search(r"Test Command.*?`([^`]+)`", full_text, re.IGNORECASE)
         if match: return match.group(1)
-        if (CONF.BASE_DIR / "package.json").exists(): return "npm test"
-        return "pytest"
+        return "npm test" if (CONF.BASE_DIR / "package.json").exists() else "pytest"
+
+
+class TemplateManager:
+    DEFAULT_TEMPLATES = {
+        "architect.txt": "ROLE: Senior Architect\nOBJECTIVE: Initialize .ralph/memory/ for: {{user_intent}}\nFILE TREE: {{file_tree}}\nDELIVERABLE: Create .ralph/memory/architecture.md with YAML frontmatter (type:wiki, title:Architecture) and sections: Tech Stack, Overview, Key Components, Risks, Test Command (format: Test Command: `CMD`).\nOUTPUT: Print STATUS: CREATED .ralph/memory/architecture.md",
+        "planner.txt": "ROLE: Product Manager\nTASK: Create PRD JSON for: {{user_intent}}\nMEMORY: {{memory_map}}\nOUTPUT: Raw JSON only. Schema: {\"id\":\"PRD-001\",\"description\":\"...\",\"userStories\":[{\"id\":\"TASK-001\",\"description\":\"As a...\",\"acceptanceCriteria\":[\"...\",\"...\",\"...\"],\"status\":\"pending\"}]}",
+        "developer.txt": "ROLE: Developer\nTASK: {{task_id}} - {{task_description}}\nCONTEXT: {{memory_tree}}\nPREFS: {{user_context}}\nFLOW: Plan, Implement, Verify ({{test_cmd}}), Print STATUS: SUCCESS or FAILURE - <reason>\nRETRY: {{prev_errors}}"
+    }
+
+    @staticmethod
+    def ensure_templates():
+        CONF.TEMPLATES_DIR.mkdir(exist_ok=True, parents=True)
+        for name, content in TemplateManager.DEFAULT_TEMPLATES.items():
+            path = CONF.TEMPLATES_DIR / name
+            if not path.exists(): path.write_text(content, encoding='utf-8')
+
+    @staticmethod
+    def load(template_name: str) -> str:
+        path = CONF.TEMPLATES_DIR / template_name
+        if not path.exists():
+            if template_name in TemplateManager.DEFAULT_TEMPLATES: return TemplateManager.DEFAULT_TEMPLATES[template_name]
+            raise FileNotFoundError(f"Template not found: {template_name}")
+        return path.read_text(encoding='utf-8')
+
+    @staticmethod
+    def render(template_name: str, **variables) -> str:
+        template = TemplateManager.load(template_name)
+        for key, value in variables.items(): template = template.replace("{{" + key + "}}", str(value))
+        return template
 
 
 # ==============================================================================
@@ -222,26 +197,11 @@ class MemoryManager:
 
 class RalphOrchestrator:
     def __init__(self, agent_name: str = "claude"):
-        """
-        Initialize the Ralph orchestrator.
-
-        Args:
-            agent_name: Name of the agent to use (e.g., "claude")
-        """
-        # Initialize agent
         self.agent = get_agent(agent_name, timeout_seconds=CONF.TIMEOUT_SECONDS)
-
-        # Set logger and config for the agent (if supported)
-        if hasattr(self.agent, 'set_logger'):
-            self.agent.set_logger(Logger)
-        if hasattr(self.agent, 'set_config'):
-            self.agent.set_config(CONF)
-
-        # Check agent dependencies
+        if hasattr(self.agent, 'set_logger'): self.agent.set_logger(Logger)
+        if hasattr(self.agent, 'set_config'): self.agent.set_config(CONF)
         if not self.agent.check_dependencies():
-            Logger.info(f"❌ Error: Agent '{self.agent.get_name()}' dependencies not satisfied.", "RED")
-            sys.exit(1)
-
+            Logger.info(f"❌ Agent '{self.agent.get_name()}' dependencies not satisfied.", "RED"); sys.exit(1)
         self.memory = MemoryManager()
         CONF.ensure_directories()
         self._validate_memory_on_startup()
@@ -249,43 +209,11 @@ class RalphOrchestrator:
     def run_architect(self, user_intent: str):
         Logger.info("\n🕵️  Architect: Initializing Memory...", "CYAN")
 
-        prompt = f"""ROLE: Senior Architect
-OBJECTIVE: Initialize the project wiki in .ralph/memory/ for the intent below and ensure a deterministic test command is discoverable.
-
-INTENT:
-{user_intent}
-
-PROJECT FILE TREE (depth 2):
-{Shell.get_file_tree()}
-
-CAPABILITIES & EXECUTION ENV:
-- You can read/write files and run shell commands in the current working directory.
-- All file paths are relative to the project root (CWD).
-- Create files directly on disk; do not rely on stdout for file content.
-
-DELIVERABLE:
-- Create the file: .ralph/memory/architecture.md
-
-CONTENT REQUIREMENTS for architecture.md:
-- Use YAML frontmatter:
-  ---
-  type: wiki
-  title: Architecture
-  ---
-- Include sections:
-  1) Tech Stack
-  2) Overview
-  3) Key Components
-  4) Risks & Assumptions
-  5) **Test Command** — MUST include a literal line of the form:
-     Test Command: `YOUR_TEST_COMMAND_HERE`
-     (Exactly this label and backtick format so an automated regex can extract it.)
-- Keep content concise and actionable.
-
-OUTPUT RULES:
-- Do NOT print the file content to stdout.
-- You may print a one-line confirmation like:
-  STATUS: CREATED .ralph/memory/architecture.md"""
+        prompt = TemplateManager.render(
+            "architect.txt",
+            user_intent=user_intent,
+            file_tree=Shell.get_file_tree()
+        )
 
         success, _, _ = self.agent.run(prompt, "ARCHITECT")
         if not success or not any(CONF.MEMORY_DIR.iterdir()):
@@ -298,44 +226,12 @@ OUTPUT RULES:
         Logger.info("\n🧠 Planner: Creating PRD...", "CYAN")
         memory_map = self.memory.get_structure()
 
-        prompt = f"""ROLE: Product Manager
-TASK: Create a PRD for the intent below.
+        prompt = TemplateManager.render(
+            "planner.txt",
+            user_intent=user_intent,
+            memory_map=memory_map
+        )
 
-INTENT:
-{user_intent}
-
-AVAILABLE WIKI/MEMORY FILES (paths only):
-{memory_map}
-
-PROCESS:
-1) EXPLORE: Infer the scope from available artifacts and the intent.
-2) THINK: Define minimal, testable user stories that can be validated by an automated test command.
-3) ACT: Output the PRD as strict JSON adhering to the schema below.
-
-STRICT OUTPUT RULES:
-- Output ONLY raw JSON (no markdown fences, no comments, no prose).
-- Ensure the JSON is syntactically valid and UTF-8 safe.
-- All IDs must be unique.
-- Each user story MUST have a non-empty description, at least 3 objective acceptance criteria, and "status": "pending".
-
-SCHEMA (example shape, not a template):
-{{
-  "id": "PRD-001",
-  "description": "Short summary of the product or feature.",
-  "userStories": [
-    {{
-      "id": "TASK-001",
-      "description": "As a <user>, I want <capability> so that <outcome>.",
-      "acceptanceCriteria": [
-        "Given <context>, when <action>, then <verifiable outcome>",
-        "Non-ambiguous criteria 2",
-        "Non-ambiguous criteria 3"
-      ],
-      "status": "pending"
-    }}
-  ]
-}}"""
-        
         for attempt in range(3):
             success, raw, _ = self.agent.run(prompt, "PLANNER")
             if not success: continue
@@ -381,64 +277,29 @@ SCHEMA (example shape, not a template):
             memory_tree = self.memory.get_structure()
             prev_errors = CONF.PROGRESS_FILE.read_text(encoding='utf-8') if CONF.PROGRESS_FILE.exists() else ""
 
-            # 2. Load and Prepare User Context (Soft Guidelines)
+            # Load and Prepare User Context (Soft Guidelines)
             user_context = "No specific user preferences provided."
             prompt_md_path = CONF.BASE_DIR / "prompt.md"
-            
+
             if prompt_md_path.exists():
                 raw_text = prompt_md_path.read_text(encoding='utf-8')
                 # Inject variables so the user can reference them if they want to
-                user_context = user_context.replace("{{PRD_ID}}", safe_prd_id)
+                user_context = raw_text.replace("{{PRD_ID}}", safe_prd_id)
                 user_context = user_context.replace("{{PRD_DESCRIPTION}}", prd['description'])
-                user_context = raw_text.replace("{{TASK_ID}}", safe_task_id)
+                user_context = user_context.replace("{{TASK_ID}}", safe_task_id)
                 user_context = user_context.replace("{{TASK_DESCRIPTION}}", task['description'])
                 user_context = user_context.replace("{{TEST_CMD}}", test_cmd)
 
-            # 3. Construct the Prompt
-            prompt = f"""ROLE: Developer (Ralph)
-TASK ID: {task['id']}
-OBJECTIVE: {task['description']}
-
-CONTEXT FILES (paths only, under .ralph/memory/):
-{memory_tree}
-
-USER PREFERENCES & WORKFLOW (FOLLOW STRICTLY):
-{user_context}
-
-DEFAULT CAPABILITIES:
-- You may read and write files within the current working directory (project root).
-- You may run local build/test commands as part of verification.
-- Do NOT perform any version control (e.g., git), networking, or package installation
-  unless explicitly requested in USER PREFERENCES & WORKFLOW above.
-- You must manage all your state via the .ralph/memory/ wiki files.
-
-EXECUTION FLOW (follow exactly):
-1) PLAN:
-   - Summarize the minimal, concrete code changes required to satisfy the task’s acceptance criteria.
-2) IMPLEMENT:
-   - Apply the necessary file edits to implement the plan.
-3) VERIFY:
-   - Run the test command:
-     {test_cmd}
-   - Only proceed if the command exits with code 0.
-4) FINALIZE:
-   - If and only if verification passed, print exactly:
-     STATUS: SUCCESS
-   - Otherwise, print exactly one line:
-     STATUS: FAILURE - <brief reason>
-
-OUTPUT RULES:
-- Do NOT print file contents to stdout.
-- Only print the STATUS line as specified above.
-
-NOTES:
-- Keep output minimal and task-focused.
-- Do not include code fences around shell commands or file contents.
-- For any ambiguity make assumptions. Never ask for user feedback.
-- Save notes, thoughts, or plans to .ralph/memory/ as needed for future tasks.
-
-RETRY CONTEXT (from previous attempt, if any):
-{prev_errors}"""
+            # Construct the Prompt using template
+            prompt = TemplateManager.render(
+                "developer.txt",
+                task_id=task['id'],
+                task_description=task['description'],
+                memory_tree=memory_tree,
+                user_context=user_context,
+                test_cmd=test_cmd,
+                prev_errors=prev_errors
+            )
 
             success, output, agent_error = self.agent.run(prompt, f"WORKER-{task['id']}")
 
@@ -509,191 +370,76 @@ RETRY CONTEXT (from previous attempt, if any):
         Logger.info(f"📦 PRD Archived to {dest}", "MAGENTA")
 
     def _validate_memory_on_startup(self):
-        """
-        Validate all memory files on startup.
-        Warns user about corrupted or empty files, but continues gracefully.
-        """
-        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
-            return
-
+        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()): return
         result = self.memory.validate_memory()
-
-        if result['total'] == 0:
-            return
-
-        if result['corrupted']:
-            Logger.info(
-                f"⚠️ Memory Validation: {len(result['corrupted'])} file(s) corrupted or unreadable:",
-                "YELLOW"
-            )
-            for file_path in result['corrupted']:
-                Logger.info(f"   - {file_path}", "YELLOW")
-
-        if result['empty']:
-            Logger.info(
-                f"⚠️ Memory Validation: {len(result['empty'])} file(s) empty:",
-                "YELLOW"
-            )
-            for file_path in result['empty']:
-                Logger.info(f"   - {file_path}", "YELLOW")
-
-        if result['valid']:
-            Logger.debug(f"✅ Memory validation passed ({result['total']} files)", "GREEN")
+        if result['total'] == 0: return
+        for key, label in [('corrupted', 'corrupted'), ('empty', 'empty')]:
+            if result[key]:
+                Logger.info(f"⚠️ Memory: {len(result[key])} {label} file(s): {', '.join(result[key])}", "YELLOW")
+        if result['valid']: Logger.debug(f"✅ Memory OK ({result['total']} files)", "GREEN")
 
     def _prompt_user_for_phase(self, phase_name: str) -> bool:
-        """
-        Prompt user to confirm running a phase. Returns True if user confirms (y), False if user declines (n).
-        """
-        response = input(f"{Logger.COLORS['YELLOW']}Run {phase_name} phase? (y/n): {Logger.COLORS['RESET']}").strip().lower()
-        return response == 'y'
+        return input(f"{Logger.COLORS['YELLOW']}Run {phase_name} phase? (y/n): {Logger.COLORS['RESET']}").strip().lower() == 'y'
+
+    def _get_intent(self, user_intent=None):
+        if user_intent: return user_intent
+        intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
+        if not intent: sys.exit(0)
+        return intent
 
     def start(self, phase: str = "all", accept_all: bool = False):
         Logger.info(f"🤖 Ralph {self.agent.get_name()} Agent active in: {CONF.BASE_DIR}", "GREEN")
-
         user_intent = None
 
-        # Handle phase-specific execution
-        if phase == "architect":
-            Logger.info("📋 Phase specified: architect only", "YELLOW")
-            user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
-            if not user_intent: sys.exit(0)
-            self.run_architect(user_intent)
-            Logger.info("✅ Architect phase complete.", "GREEN")
-            return
+        if phase in ("architect", "planner", "execute"):
+            Logger.info(f"📋 Phase: {phase} only", "YELLOW")
+            if phase == "planner" and not any(CONF.MEMORY_DIR.iterdir()):
+                Logger.info("❌ Memory missing. Run architect first.", "RED"); sys.exit(1)
+            if phase == "execute" and not CONF.PRD_FILE.exists():
+                Logger.info("❌ PRD missing. Run planner first.", "RED"); sys.exit(1)
+            if phase != "execute": user_intent = self._get_intent()
+            {"architect": self.run_architect, "planner": self.run_planner, "execute": self.execute_loop}[phase](user_intent) if phase != "execute" else self.execute_loop()
+            Logger.info(f"✅ {phase.title()} complete.", "GREEN"); return
 
-        elif phase == "planner":
-            Logger.info("📋 Phase specified: planner only", "YELLOW")
-            if not any(CONF.MEMORY_DIR.iterdir()):
-                Logger.info("❌ Memory does not exist. Run architect phase first.", "RED")
-                sys.exit(1)
-            user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
-            if not user_intent: sys.exit(0)
-            self.run_planner(user_intent)
-            Logger.info("✅ Planner phase complete.", "GREEN")
-            return
+        Logger.info("📋 Running all phases...", "YELLOW")
+        if not any(CONF.MEMORY_DIR.iterdir()):
+            if accept_all or self._prompt_user_for_phase("Architect"):
+                user_intent = self._get_intent(); self.run_architect(user_intent)
+            else: Logger.info("⏭️ Skipping architect.", "YELLOW")
+        else: Logger.info("📋 Memory exists, skipping architect.", "YELLOW")
 
-        elif phase == "execute":
-            Logger.info("📋 Phase specified: execute only", "YELLOW")
-            if not CONF.PRD_FILE.exists():
-                Logger.info("❌ PRD does not exist. Run planner phase first.", "RED")
-                sys.exit(1)
-            self.execute_loop()
-            Logger.info("✅ Execute phase complete.", "GREEN")
-            return
+        if not CONF.PRD_FILE.exists():
+            if accept_all or self._prompt_user_for_phase("Planner"):
+                user_intent = self._get_intent(user_intent); self.run_planner(user_intent)
+            else: Logger.info("⏭️ Skipping planner.", "YELLOW")
+        else: Logger.info("📋 PRD exists, skipping planner.", "YELLOW")
 
-        elif phase == "all":
-            Logger.info("📋 Running all phases...", "YELLOW")
-
-            # Step 1: Architect
-            if not any(CONF.MEMORY_DIR.iterdir()):
-                # Prompt user before running architect phase (unless accept_all is True)
-                if not accept_all and not self._prompt_user_for_phase("Architect"):
-                    Logger.info("⏭️  Skipping architect phase.", "YELLOW")
-                else:
-                    user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
-                    if not user_intent: sys.exit(0)
-                    self.run_architect(user_intent)
-            else:
-                Logger.info("📋 Memory already exists, skipping architect phase.", "YELLOW")
-
-            # Step 2: Planner
-            if not CONF.PRD_FILE.exists():
-                # Prompt user before running planner phase (unless accept_all is True)
-                if not accept_all and not self._prompt_user_for_phase("Planner"):
-                    Logger.info("⏭️  Skipping planner phase.", "YELLOW")
-                else:
-                    user_intent = user_intent or input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
-                    if not user_intent: sys.exit(0)
-                    self.run_planner(user_intent)
-            else:
-                Logger.info("📋 PRD already exists, skipping planner phase.", "YELLOW")
-
-            # Step 3: Execute
-            # Prompt user before running execute phase (unless accept_all is True)
-            if not accept_all and not self._prompt_user_for_phase("Execute"):
-                Logger.info("⏭️  Skipping execute phase.", "YELLOW")
-            else:
-                self.execute_loop()
-
-            Logger.info("✅ All phases complete.", "GREEN")
-            return
-
-        # Invalid phase (should not reach here with argparse validation)
-        Logger.info(f"❌ Unknown phase: {phase}", "RED")
-        sys.exit(1)
+        if accept_all or self._prompt_user_for_phase("Execute"): self.execute_loop()
+        else: Logger.info("⏭️ Skipping execute.", "YELLOW")
+        Logger.info("✅ All phases complete.", "GREEN")
 
 def get_version() -> str:
-    """Extract version from pyproject.toml."""
     try:
-        pyproject_path = Path(__file__).parent / "pyproject.toml"
-        with open(pyproject_path, "r") as f:
+        with open(Path(__file__).parent / "pyproject.toml", "r") as f:
             for line in f:
                 if line.startswith("version"):
-                    # Extract version from line like: version = "0.1.0"
                     match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
-                    if match:
-                        return match.group(1)
-    except Exception:
-        pass
+                    if match: return match.group(1)
+    except Exception: pass
     return "unknown"
 
 def main():
-    """Entry point for the ralph CLI."""
     agent = list_agents()[0]
-
-    parser = argparse.ArgumentParser(
-        description="Ralph - Autonomous Software Development Agent",
-        epilog="Examples:\n"
-               "  ralph                          # Run all phases\n"
-               "  ralph architect        # Run architect phase only\n"
-               "  ralph planner          # Run planner phase only\n"
-               "  ralph execute          # Run execute phase only\n"
-               "  ralph --accept-all             # Run all phases without prompts\n"
-               "  ralph execute --accept-all  # Execute with no prompts",
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-
-    parser.add_argument(
-        "phase",
-        choices=["architect", "planner", "execute", "all"],
-        default="all",
-        nargs="?",
-        help="Select which phase to run"
-    )
-
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"Ralph {get_version()}"
-    )
-
-    parser.add_argument(
-        "--accept-all", "-y",
-        action="store_true",
-        help="Skip user feedback prompts and proceed with all phases (-y, --accept-all). The -y flag is a shortcut for --accept-all."
-    )
-
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable debug-level logging and display Claude CLI prompts and responses"
-    )
-    parser.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Disable color output in CLI"
-    )
-
-    parser.add_argument(
-        "--agent",
-        choices=list_agents(),
-        default=agent,
-        help=f"Select which agent to use (default: {agent})"
-    )
-
+    parser = argparse.ArgumentParser(description="Ralph - Autonomous Software Development Agent",
+        epilog="Examples: ralph | ralph architect | ralph -y execute", formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?", help="Phase to run")
+    parser.add_argument("--version", action="version", version=f"Ralph {get_version()}")
+    parser.add_argument("--accept-all", "-y", action="store_true", help="Skip prompts")
+    parser.add_argument("--verbose", action="store_true", help="Debug logging")
+    parser.add_argument("--no-color", action="store_true", help="Disable colors")
+    parser.add_argument("--agent", choices=list_agents(), default=agent, help=f"Agent (default: {agent})")
     args = parser.parse_args()
-    Logger.set_verbose(args.verbose)
-    Logger.set_no_color(args.no_color)
+    Logger.set_verbose(args.verbose); Logger.set_no_color(args.no_color)
     RalphOrchestrator(agent_name=args.agent).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

@@ -1,15 +1,32 @@
-import unittest
-import tempfile
-import shutil
-import sys
+import argparse
+import datetime
 import json
-from datetime import datetime
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from datetime import datetime as dt
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from ralph import Config, Logger, Shell, JsonUtils, MemoryManager, CONF
+from agents import get_agent, list_agents
 from agents.base import AgentError
+from agents.claude import ClaudeAgent
+from agents.copilot import GithubAgent
+from ralph import (
+    Config,
+    CONF,
+    JsonUtils,
+    Logger,
+    MemoryManager,
+    RalphOrchestrator,
+    Shell,
+    get_version,
+    main,
+)
 
 
 class TestConfigDefaultPaths(unittest.TestCase):
@@ -292,7 +309,6 @@ class TestLoggerFileLog(unittest.TestCase):
     def test_file_log_includes_timestamp(self):
         Logger.file_log("Content", "INFO", "TAG")
         content = self.log_file.read_text(encoding="utf-8")
-        import re
         timestamp_pattern = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
         self.assertRegex(content, timestamp_pattern)
 
@@ -368,24 +384,18 @@ class TestShellRunTimeout(unittest.TestCase):
 
     def test_run_timeout_returns_error_message(self):
         # Mock subprocess.run to simulate timeout without actual waiting
-        from unittest.mock import patch
-        import subprocess
         with patch('ralph.subprocess.run') as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=1)
             stdout, stderr, code = Shell.run("some_command", timeout=1)
         self.assertEqual(stderr, "Command Timed Out")
 
     def test_run_timeout_returns_exit_code_1(self):
-        from unittest.mock import patch
-        import subprocess
         with patch('ralph.subprocess.run') as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=1)
             stdout, stderr, code = Shell.run("some_command", timeout=1)
         self.assertEqual(code, 1)
 
     def test_run_timeout_returns_empty_stdout(self):
-        from unittest.mock import patch
-        import subprocess
         with patch('ralph.subprocess.run') as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=1)
             stdout, stderr, code = Shell.run("some_command", timeout=1)
@@ -921,50 +931,42 @@ class TestRalphOrchestratorInitAgentSetup(TestRalphOrchestratorInit):
     """Tests for RalphOrchestrator agent initialization."""
 
     def test_init_creates_agent_instance(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator
             orchestrator = RalphOrchestrator(agent_name="mock")
             self.assertIsNotNone(orchestrator.agent)
 
     def test_init_calls_get_agent_with_agent_name(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent) as mock_get_agent:
-            from ralph import RalphOrchestrator
             RalphOrchestrator(agent_name="claude")
             mock_get_agent.assert_called_once()
             call_args = mock_get_agent.call_args
             self.assertEqual(call_args[0][0], "claude")
 
     def test_init_passes_timeout_to_agent(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent) as mock_get_agent:
-            from ralph import RalphOrchestrator
             RalphOrchestrator(agent_name="claude")
             call_kwargs = mock_get_agent.call_args[1]
             self.assertIn('timeout_seconds', call_kwargs)
             self.assertEqual(call_kwargs['timeout_seconds'], CONF.TIMEOUT_SECONDS)
 
     def test_init_stores_agent_in_attribute(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator
             orchestrator = RalphOrchestrator(agent_name="mock")
             self.assertIs(orchestrator.agent, mock_agent)
 
@@ -973,47 +975,39 @@ class TestRalphOrchestratorInitDependencyInjection(TestRalphOrchestratorInit):
     """Tests for RalphOrchestrator logger and config injection."""
 
     def test_init_calls_set_logger_if_available(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator, Logger
             RalphOrchestrator(agent_name="mock")
             mock_agent.set_logger.assert_called_once_with(Logger)
 
     def test_init_calls_set_config_if_available(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator
             RalphOrchestrator(agent_name="mock")
             mock_agent.set_config.assert_called_once_with(CONF)
 
     def test_init_skips_set_logger_if_not_available(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock(spec=['check_dependencies', 'get_name', 'run'])
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator
             # Should not raise even without set_logger
             orchestrator = RalphOrchestrator(agent_name="mock")
             self.assertIsNotNone(orchestrator)
 
     def test_init_skips_set_config_if_not_available(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock(spec=['check_dependencies', 'get_name', 'run'])
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator
             # Should not raise even without set_config
             orchestrator = RalphOrchestrator(agent_name="mock")
             self.assertIsNotNone(orchestrator)
@@ -1023,42 +1017,35 @@ class TestRalphOrchestratorInitDependencyValidation(TestRalphOrchestratorInit):
     """Tests for RalphOrchestrator dependency validation."""
 
     def test_init_calls_check_dependencies(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator
             RalphOrchestrator(agent_name="mock")
             mock_agent.check_dependencies.assert_called_once()
 
     def test_init_exits_when_dependencies_not_satisfied(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = False
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
             with patch('ralph.sys.exit') as mock_exit:
-                from ralph import RalphOrchestrator
                 RalphOrchestrator(agent_name="mock")
                 mock_exit.assert_called_once_with(1)
 
     def test_init_does_not_exit_when_dependencies_satisfied(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
             with patch('ralph.sys.exit') as mock_exit:
-                from ralph import RalphOrchestrator
                 RalphOrchestrator(agent_name="mock")
                 mock_exit.assert_not_called()
 
     def test_init_logs_error_when_dependencies_not_satisfied(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = False
         mock_agent.get_name.return_value = "TestAgent"
@@ -1066,7 +1053,6 @@ class TestRalphOrchestratorInitDependencyValidation(TestRalphOrchestratorInit):
         with patch('ralph.get_agent', return_value=mock_agent):
             with patch('ralph.sys.exit'):
                 with patch('ralph.Logger.info') as mock_info:
-                    from ralph import RalphOrchestrator
                     RalphOrchestrator(agent_name="mock")
                     # Check that error message was logged
                     calls = mock_info.call_args_list
@@ -1078,18 +1064,15 @@ class TestRalphOrchestratorInitMemorySetup(TestRalphOrchestratorInit):
     """Tests for RalphOrchestrator memory manager setup."""
 
     def test_init_creates_memory_manager(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator, MemoryManager
             orchestrator = RalphOrchestrator(agent_name="mock")
             self.assertIsInstance(orchestrator.memory, MemoryManager)
 
     def test_init_ensures_directories_exist(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
@@ -1100,7 +1083,6 @@ class TestRalphOrchestratorInitMemorySetup(TestRalphOrchestratorInit):
         self.assertFalse(CONF.ARCHIVE_DIR.exists())
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator
             RalphOrchestrator(agent_name="mock")
             # Directories should now exist
             self.assertTrue(CONF.ROOT_DIR.exists())
@@ -1112,7 +1094,6 @@ class TestRalphOrchestratorInitMemoryValidation(TestRalphOrchestratorInit):
     """Tests for RalphOrchestrator memory validation on startup."""
 
     def test_init_validates_memory_on_startup(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
@@ -1123,12 +1104,10 @@ class TestRalphOrchestratorInitMemoryValidation(TestRalphOrchestratorInit):
 
         with patch('ralph.get_agent', return_value=mock_agent):
             with patch.object(MemoryManager, 'validate_memory', return_value={'valid': True, 'corrupted': [], 'empty': [], 'total': 1}) as mock_validate:
-                from ralph import RalphOrchestrator
                 RalphOrchestrator(agent_name="mock")
                 mock_validate.assert_called()
 
     def test_init_warns_about_empty_memory_files(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
@@ -1139,7 +1118,6 @@ class TestRalphOrchestratorInitMemoryValidation(TestRalphOrchestratorInit):
 
         with patch('ralph.get_agent', return_value=mock_agent):
             with patch('ralph.Logger.info') as mock_info:
-                from ralph import RalphOrchestrator
                 RalphOrchestrator(agent_name="mock")
                 # Check that warning was logged
                 calls = [str(call) for call in mock_info.call_args_list]
@@ -1147,7 +1125,6 @@ class TestRalphOrchestratorInitMemoryValidation(TestRalphOrchestratorInit):
                 self.assertTrue(warning_logged)
 
     def test_init_continues_gracefully_with_memory_issues(self):
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
@@ -1157,7 +1134,6 @@ class TestRalphOrchestratorInitMemoryValidation(TestRalphOrchestratorInit):
         (CONF.MEMORY_DIR / "empty.md").write_text("", encoding="utf-8")
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator
             # Should not raise, just warn
             orchestrator = RalphOrchestrator(agent_name="mock")
             self.assertIsNotNone(orchestrator)
@@ -1167,9 +1143,6 @@ class TestRalphOrchestratorInitWithUnknownAgent(TestRalphOrchestratorInit):
     """Tests for RalphOrchestrator initialization with unknown agent names."""
 
     def test_init_raises_value_error_for_unknown_agent(self):
-        from ralph import RalphOrchestrator
-        from agents import get_agent
-
         with self.assertRaises(ValueError) as context:
             get_agent("nonexistent_agent")
 
@@ -1177,8 +1150,6 @@ class TestRalphOrchestratorInitWithUnknownAgent(TestRalphOrchestratorInit):
         self.assertIn("nonexistent_agent", str(context.exception))
 
     def test_init_error_message_lists_available_agents(self):
-        from agents import get_agent
-
         with self.assertRaises(ValueError) as context:
             get_agent("unknown")
 
@@ -1191,9 +1162,6 @@ class TestCliArgumentParserBase(unittest.TestCase):
     """Base class for CLI argument parser tests."""
 
     def setUp(self):
-        import argparse
-        from agents import list_agents
-
         self.agent = list_agents()[0]
         self.parser = argparse.ArgumentParser(
             description="Ralph - Autonomous Software Development Agent"
@@ -1448,18 +1416,14 @@ class TestCliGetVersion(unittest.TestCase):
     """Tests for get_version() function."""
 
     def test_get_version_returns_string(self):
-        from ralph import get_version
         result = get_version()
         self.assertIsInstance(result, str)
 
     def test_get_version_returns_non_empty(self):
-        from ralph import get_version
         result = get_version()
         self.assertTrue(len(result) > 0)
 
     def test_get_version_not_unknown_when_pyproject_exists(self):
-        from ralph import get_version
-        from pathlib import Path
         pyproject_path = Path(__file__).parent / "pyproject.toml"
         if pyproject_path.exists():
             result = get_version()
@@ -1473,22 +1437,18 @@ class TestCliMainFunction(unittest.TestCase):
 
     def test_main_creates_parser(self):
         # Test that main() doesn't crash on import
-        from ralph import main
         self.assertTrue(callable(main))
 
     def test_list_agents_returns_non_empty_list(self):
-        from agents import list_agents
         agents = list_agents()
         self.assertIsInstance(agents, list)
         self.assertTrue(len(agents) > 0)
 
     def test_list_agents_contains_claude(self):
-        from agents import list_agents
         agents = list_agents()
         self.assertIn("claude", agents)
 
     def test_list_agents_contains_copilot(self):
-        from agents import list_agents
         agents = list_agents()
         self.assertIn("copilot", agents)
 
@@ -1523,13 +1483,11 @@ class TestRalphOrchestratorArchivePrd(unittest.TestCase):
 
     def _create_mock_orchestrator(self):
         """Helper to create a mock orchestrator without agent dependencies."""
-        from unittest.mock import patch, MagicMock
         mock_agent = MagicMock()
         mock_agent.check_dependencies.return_value = True
         mock_agent.get_name.return_value = "MockAgent"
 
         with patch('ralph.get_agent', return_value=mock_agent):
-            from ralph import RalphOrchestrator
             return RalphOrchestrator(agent_name="mock")
 
     def test_archive_prd_moves_file_to_archive_directory(self):
@@ -1556,7 +1514,6 @@ class TestRalphOrchestratorArchivePrd(unittest.TestCase):
         self.assertEqual(len(archived_files), 1)
         filename = archived_files[0].name
         # Verify timestamp format: prd_YYYY-MM-DD_HH-MM-SS.json
-        import re
         pattern = r"^prd_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json$"
         self.assertRegex(filename, pattern)
 
@@ -1612,7 +1569,6 @@ class TestRalphOrchestratorArchivePrd(unittest.TestCase):
 
     def test_archive_prd_handles_multiple_archives(self):
         """Given multiple PRDs are archived over time, when _archive_prd is called multiple times, then each archive has a unique timestamp."""
-        from unittest.mock import patch, MagicMock
         orchestrator = self._create_mock_orchestrator()
 
         # Archive first PRD with mocked time
@@ -1654,7 +1610,6 @@ class TestRalphOrchestratorArchivePrd(unittest.TestCase):
 
     def test_archive_prd_timestamp_reflects_current_time(self):
         """Given a PRD file exists, when _archive_prd is called, then the timestamp in the filename reflects the current time."""
-        import datetime
         orchestrator = self._create_mock_orchestrator()
         prd_content = '{"id": "PRD-001", "userStories": []}'
         CONF.PRD_FILE.write_text(prd_content, encoding='utf-8')
@@ -1714,8 +1669,8 @@ class TestAgentError(unittest.TestCase):
             error = AgentError.from_exception(e, "TestAgent", "TASK-004")
 
         # Verify timestamp can be parsed as ISO format
-        parsed = datetime.fromisoformat(error.timestamp)
-        self.assertIsInstance(parsed, datetime)
+        parsed = dt.fromisoformat(error.timestamp)
+        self.assertIsInstance(parsed, dt)
 
     def test_agent_error_from_exception_captures_agent_name(self):
         """Verify agent name is captured correctly."""
@@ -1758,8 +1713,6 @@ class TestAgentStructuredErrorReturn(unittest.TestCase):
 
     def test_claude_agent_returns_agent_error_on_cli_failure(self):
         """Verify ClaudeAgent returns AgentError when CLI fails."""
-        from agents.claude import ClaudeAgent
-
         agent = ClaudeAgent(timeout_seconds=5)
 
         with patch('subprocess.run') as mock_run:
@@ -1781,8 +1734,6 @@ class TestAgentStructuredErrorReturn(unittest.TestCase):
 
     def test_claude_agent_returns_none_error_on_success(self):
         """Verify ClaudeAgent returns None for error on success."""
-        from agents.claude import ClaudeAgent
-
         agent = ClaudeAgent(timeout_seconds=5)
 
         with patch('subprocess.run') as mock_run:
@@ -1800,8 +1751,6 @@ class TestAgentStructuredErrorReturn(unittest.TestCase):
 
     def test_claude_agent_returns_agent_error_on_exception(self):
         """Verify ClaudeAgent returns AgentError when exception occurs."""
-        from agents.claude import ClaudeAgent
-
         agent = ClaudeAgent(timeout_seconds=5)
 
         with patch('subprocess.run') as mock_run:
@@ -1817,8 +1766,6 @@ class TestAgentStructuredErrorReturn(unittest.TestCase):
 
     def test_copilot_agent_returns_agent_error_on_cli_failure(self):
         """Verify GithubAgent returns AgentError when CLI fails."""
-        from agents.copilot import GithubAgent
-
         agent = GithubAgent(timeout_seconds=5)
 
         with patch('subprocess.run') as mock_run:
@@ -1840,8 +1787,6 @@ class TestAgentStructuredErrorReturn(unittest.TestCase):
 
     def test_copilot_agent_returns_none_error_on_success(self):
         """Verify GithubAgent returns None for error on success."""
-        from agents.copilot import GithubAgent
-
         agent = GithubAgent(timeout_seconds=5)
 
         with patch('subprocess.run') as mock_run:
@@ -1872,8 +1817,6 @@ class TestProgressRetryContext(unittest.TestCase):
 
     def test_record_failure_with_agent_error_includes_structured_context(self):
         """Verify _record_failure writes structured error context when AgentError provided."""
-        from ralph import RalphOrchestrator, CONF, Logger
-
         # Suppress logging output
         Logger.set_verbose(False)
 
@@ -1915,8 +1858,6 @@ class TestProgressRetryContext(unittest.TestCase):
 
     def test_record_failure_without_agent_error_uses_simple_format(self):
         """Verify _record_failure uses simple format when no AgentError provided."""
-        from ralph import RalphOrchestrator, CONF, Logger
-
         Logger.set_verbose(False)
 
         mock_agent = MagicMock()
@@ -1944,8 +1885,6 @@ class TestProgressRetryContext(unittest.TestCase):
 
     def test_structured_failure_context_includes_agent_output_section(self):
         """Verify structured failure includes the agent output section."""
-        from ralph import RalphOrchestrator, CONF, Logger
-
         Logger.set_verbose(False)
 
         mock_agent = MagicMock()
@@ -1994,8 +1933,6 @@ class TestOrchestratorUsesAgentError(unittest.TestCase):
 
     def test_orchestrator_uses_agent_returned_error(self):
         """Verify orchestrator uses structured error returned by agent."""
-        from ralph import RalphOrchestrator, CONF, Logger
-
         Logger.set_verbose(False)
 
         agent_error = AgentError(
