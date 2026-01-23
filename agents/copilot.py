@@ -29,18 +29,18 @@ class GithubAgent(BaseAgent):
 
     def get_name(self) -> str:
         """Get the display name of this agent."""
-        return "Claude"
+        return "Copilot"
 
     def check_dependencies(self) -> bool:
         """Check if Claude CLI is available."""
-        return shutil.which("claude") is not None
+        return shutil.which("copilot") is not None
 
     def run(self, prompt: str, tag: str) -> Tuple[bool, str]:
         """
-        Execute a prompt with Claude CLI.
+        Execute a prompt with Copilot CLI.
 
         Args:
-            prompt: The prompt to send to Claude
+            prompt: The prompt to send to Copilot
             tag: A tag for logging/tracking purposes
 
         Returns:
@@ -51,7 +51,7 @@ class GithubAgent(BaseAgent):
 
             # Display prompt in verbose mode
             if self._logger.verbose:
-                self._logger.debug(f"=== CLAUDE PROMPT [{tag}] ===", "CYAN")
+                self._logger.debug(f"=== COPILOT PROMPT [{tag}] ===", "CYAN")
                 self._logger.debug(prompt, "CYAN")
                 self._logger.debug("=" * 40, "CYAN")
 
@@ -78,7 +78,7 @@ class GithubAgent(BaseAgent):
                     self._logger.file_log(log_content, "ERROR", tag)
                     # Display error in verbose mode
                     if self._logger.verbose:
-                        self._logger.debug(f"=== CLAUDE ERROR [{tag}] ===", "RED")
+                        self._logger.debug(f"=== COPILOT ERROR [{tag}] ===", "RED")
                         self._logger.debug(f"STDOUT:\n{result.stdout}", "RED")
                         self._logger.debug(f"STDERR:\n{result.stderr}", "RED")
                         self._logger.debug("=" * 40, "RED")
@@ -89,7 +89,7 @@ class GithubAgent(BaseAgent):
 
                 # Display response in verbose mode
                 if self._logger.verbose:
-                    self._logger.debug(f"=== CLAUDE RESPONSE [{tag}] ===", "GREEN")
+                    self._logger.debug(f"=== COPILOT RESPONSE [{tag}] ===", "GREEN")
                     self._logger.debug(result.stdout, "GREEN")
                     self._logger.debug("=" * 40, "GREEN")
 
@@ -99,7 +99,7 @@ class GithubAgent(BaseAgent):
             if self._logger:
                 self._logger.file_log(str(e), "SYSTEM_EXCEPTION", tag)
                 if self._logger.verbose:
-                    self._logger.debug(f"=== CLAUDE EXCEPTION [{tag}] ===", "RED")
+                    self._logger.debug(f"=== COPILOT EXCEPTION [{tag}] ===", "RED")
                     self._logger.debug(str(e), "RED")
                     self._logger.debug("=" * 40, "RED")
             return False, str(e)

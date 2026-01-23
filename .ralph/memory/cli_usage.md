@@ -65,6 +65,15 @@ Enable debug-level logging to see all Claude CLI prompts and responses. Displays
 
 Useful for debugging agent behavior and understanding how prompts flow through Claude.
 
+### No-Color Flag
+
+```bash
+ralph --no-color
+ralph --no-color --phase execute
+```
+
+Disables colored output in CLI messages. Useful for environments that do not support ANSI color codes, such as CI pipelines or plain terminals.
+
 ### Version
 
 ```bash

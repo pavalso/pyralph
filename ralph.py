@@ -51,6 +51,11 @@ class Logger:
 
     # Class-level verbose flag
     verbose = False
+    no_color = False
+
+    @staticmethod
+    def set_no_color(enabled: bool):
+        Logger.no_color = enabled
 
     @staticmethod
     def set_verbose(enabled: bool):
@@ -59,15 +64,21 @@ class Logger:
 
     @staticmethod
     def info(msg: str, color: str = "RESET"):
-        c_code = Logger.COLORS.get(color, Logger.COLORS["RESET"])
-        print(f"{c_code}{msg}{Logger.COLORS['RESET']}")
+        if Logger.no_color:
+            print(msg)
+        else:
+            c_code = Logger.COLORS.get(color, Logger.COLORS["RESET"])
+            print(f"{c_code}{msg}{Logger.COLORS['RESET']}")
 
     @staticmethod
     def debug(msg: str, color: str = "RESET"):
         """Print debug message only in verbose mode."""
         if Logger.verbose:
-            c_code = Logger.COLORS.get(color, Logger.COLORS["RESET"])
-            print(f"{c_code}[DEBUG] {msg}{Logger.COLORS['RESET']}")
+            if Logger.no_color:
+                print(f"[DEBUG] {msg}")
+            else:
+                c_code = Logger.COLORS.get(color, Logger.COLORS["RESET"])
+                print(f"{c_code}[DEBUG] {msg}{Logger.COLORS['RESET']}")
 
     @staticmethod
     def file_log(content: str, type: str, tag: str = "UNKNOWN"):
@@ -385,46 +396,31 @@ SCHEMA (example shape, not a template):
                 user_context = raw_text.replace("{{TEST_CMD}}", test_cmd)
 
             # 3. Construct the Prompt
+            # 3. Construct the Prompt (Sandwich Method)
             prompt = f"""
-ROLE: Developer (Ralph)
-TASK ID: {task['id']}
-OBJECTIVE: {task['description']}
+            ROLE: Developer (Ralph). 
+            TASK: {task['id']}
+            OBJECTIVE: {task['description']}
+            
+            CONTEXT FILES:
+            {memory_tree}
 
-CONTEXT FILES (paths only, under .ralph/memory/):
-{memory_tree}
+            --- USER PREFERENCES & WORKFLOW (IMPORTANT) ---
+            {user_context}
+            -----------------------------------------------
 
-USER PREFERENCES & WORKFLOW (soft constraints; overrides defaults):
-{user_context}
+            --- CORE EXECUTION STEPS ---
+            1. PLAN: Analyze the requirements and user preferences.
+            2. IMPLEMENT: Write the code. Adhere to the preferences above.
+            3. VERIFY: Run '{test_cmd}'.
+            4. FINALIZE: Only output "STATUS: SUCCESS" if tests pass.
 
-DEFAULT CAPABILITIES:
-- You may read and write files within the current working directory (project root).
-- You may run local build/test commands as part of verification.
-- Do NOT perform any version control (e.g., git), networking, or package installation
-  unless explicitly requested in USER PREFERENCES & WORKFLOW above.
+            ADHERE TO THE RULES:
+            You MUST only output "STATUS: X" on FINALIZE step. Never end early.
 
-EXECUTION FLOW (follow exactly):
-1) PLAN:
-   - Summarize the minimal, concrete code changes required to satisfy the task’s acceptance criteria.
-2) IMPLEMENT:
-   - Apply the necessary file edits to implement the plan.
-3) VERIFY:
-   - Run the test command:
-     {test_cmd}
-   - Only proceed if the command exits with code 0.
-4) FINALIZE:
-   - If and only if verification passed, print exactly:
-     STATUS: SUCCESS
-   - Otherwise, print exactly one line:
-     STATUS: FAILURE - <brief reason>
-
-NOTES:
-- Keep output minimal and task-focused.
-- If USER PREFERENCES & WORKFLOW requires special steps (e.g., git actions, environment setup),
-  follow them explicitly; otherwise do not perform them.
-- Do not include code fences around shell commands or file contents.
-
-RETRY CONTEXT (from previous attempt, if any):
-{prev_errors}"""
+            FEEDBACK FROM PREVIOUS ATTEMPT:
+            {prev_errors}
+            """
 
             success, output = self.agent.run(prompt, f"WORKER-{task['id']}")
 
@@ -635,6 +631,11 @@ def main():
         action="store_true",
         help="Enable debug-level logging and display Claude CLI prompts and responses"
     )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable color output in CLI"
+    )
 
     parser.add_argument(
         "--agent",
@@ -645,6 +646,7 @@ def main():
 
     args = parser.parse_args()
     Logger.set_verbose(args.verbose)
+    Logger.set_no_color(args.no_color)
     RalphOrchestrator(agent_name=args.agent).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

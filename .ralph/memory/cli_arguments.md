@@ -91,6 +91,22 @@ parser.add_argument(
 - **Behavior**: Sets `Logger.verbose = True` to display debug messages with colored output
 - **Use cases**: Debugging agent behavior, understanding Claude prompt/response flow
 
+### --no-color Flag
+
+```python
+parser.add_argument(
+    "--no-color",
+    action="store_true",
+    help="Disable color output in CLI"
+)
+```
+
+- **Action**: store_true (boolean flag, no value required)
+- **Default**: False
+- **Description**: Disable colored output in CLI messages
+- **Behavior**: Sets `Logger.no_color = True` to suppress ANSI color codes in all output
+- **Use cases**: Useful for environments where colored output is not supported (e.g., CI logs, plain terminals)
+
 ## Argument Passing
 
 ```python
