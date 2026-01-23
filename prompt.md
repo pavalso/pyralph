@@ -38,6 +38,34 @@ After task completion and verification, merge the feature branch back to main:
    - Local: `git branch -d feature/TASK-<id>-<short-description>`
    - Remote: `git push origin --delete feature/TASK-<id>-<short-description>`
 
+# Conflict Resolution
+
+When merge conflicts occur during the merge-back workflow, follow these steps:
+1. Identify conflicted files by running `git status` (files with "both modified" status).
+2. Open each conflicted file and locate conflict markers:
+   - `<<<<<<< HEAD` marks the start of your current branch's changes
+   - `=======` separates the two versions
+   - `>>>>>>> feature/TASK-<id>` marks the end of the incoming branch's changes
+3. Resolve each conflict by:
+   - Understanding both versions of the code
+   - Choosing one version, combining both, or writing a new solution
+   - Removing all conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`)
+4. After resolving conflicts in a file, stage it: `git add <resolved-file>`.
+5. Once all conflicts are resolved and staged, complete the merge: `git commit`.
+6. Re-run the test suite to verify the merged code works correctly.
+7. If tests fail after conflict resolution, fix the issues before pushing.
+
+Common conflict scenarios:
+- **Same line edited**: Compare changes and keep the correct logic.
+- **Adjacent changes**: Often both changes can be kept; ensure they work together.
+- **Deleted vs modified**: Decide if the deletion or modification is correct.
+- **File renamed/deleted**: Check if the file should exist and under which name.
+
+Tips for avoiding conflicts:
+- Pull from main frequently during development: `git pull origin main --rebase`.
+- Keep feature branches short-lived and focused.
+- Communicate with team members about overlapping work areas.
+
 # Memory Management
 
 When managing your memory, consider the following strategies:
