@@ -1,3 +1,21 @@
+# Branch Management
+
+Before starting each task, create a dedicated feature branch:
+1. Branch from the main branch (e.g., `main` or `master`).
+2. Use the naming convention `feature/TASK-<id>-<short-description>` (e.g., `feature/TASK-001-add-login`).
+3. Commit changes to this feature branch during task implementation.
+4. After task completion and verification, the branch can be merged back to main.
+
+# Commit Workflow
+
+When making changes during task execution, follow this commit workflow:
+1. Stage only the files that were modified for the current task using `git add <file>`.
+2. Write clear, concise commit messages that describe what was changed and why.
+3. Use the format: `TASK-<id>: <brief description of change>` (e.g., `TASK-001: Add login validation`).
+4. Commit frequently at logical checkpoints (e.g., after implementing a feature, fixing a bug, or adding tests).
+5. Before committing, review staged changes with `git diff --staged` to ensure only intended changes are included.
+6. Do not commit generated files, build artifacts, or files listed in `.gitignore`.
+
 # Memory Management
 
 When managing your memory, consider the following strategies:
