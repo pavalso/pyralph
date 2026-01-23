@@ -404,5 +404,80 @@ def create_draft_issues(
     return results, success_count, failure_count
 
 
+def update_issue_labels(
+    issue_number: int,
+    add_labels: Optional[List[str]] = None,
+    remove_labels: Optional[List[str]] = None
+) -> bool:
+    """Update labels on a GitHub issue by adding and/or removing labels.
+
+    Uses the GitHub CLI (gh) to modify labels on an existing issue in the
+    current repository.
+
+    Args:
+        issue_number: The issue number to update.
+        add_labels: List of label names to add to the issue.
+        remove_labels: List of label names to remove from the issue.
+
+    Returns:
+        True if the label update was successful, False otherwise.
+
+    Raises:
+        GitHubCLIError: If the gh CLI command fails.
+    """
+    if not add_labels and not remove_labels:
+        return True  # Nothing to do
+
+    try:
+        cmd = ["gh", "issue", "edit", str(issue_number)]
+
+        if add_labels:
+            cmd.extend(["--add-label", ",".join(add_labels)])
+
+        if remove_labels:
+            cmd.extend(["--remove-label", ",".join(remove_labels)])
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode != 0:
+            raise GitHubCLIError(
+                f"gh CLI failed to update labels on issue #{issue_number}: {result.stderr}"
+            )
+
+        return True
+
+    except subprocess.TimeoutExpired:
+        raise GitHubCLIError(
+            f"gh CLI command timed out while updating labels on issue #{issue_number}"
+        )
+
+
+def mark_issue_processed(issue_number: int) -> bool:
+    """Mark a GitHub issue as processed by swapping the 'ready' label with 'processed'.
+
+    This is a convenience function that removes the 'ready' label and adds
+    the 'processed' label to prevent re-processing of the issue.
+
+    Args:
+        issue_number: The issue number to mark as processed.
+
+    Returns:
+        True if the label update was successful, False otherwise.
+
+    Raises:
+        GitHubCLIError: If the gh CLI command fails.
+    """
+    return update_issue_labels(
+        issue_number=issue_number,
+        add_labels=["processed"],
+        remove_labels=["ready"]
+    )
+
+
 if __name__ == "__main__":
     sys.exit(main())

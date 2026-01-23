@@ -22,6 +22,8 @@ from fetch_ready_issues import (
     process_ready_issues,
     create_draft_issue,
     create_draft_issues,
+    update_issue_labels,
+    mark_issue_processed,
 )
 
 
@@ -1035,6 +1037,155 @@ class TestCreateDraftIssues(unittest.TestCase):
         self.assertEqual(results[0].title, "A")
         self.assertEqual(results[1].title, "B")
         self.assertEqual(results[2].title, "C")
+
+
+class TestUpdateIssueLabels(unittest.TestCase):
+    """Tests for update_issue_labels function."""
+
+    def test_update_issue_labels_add_only(self):
+        """Test update_issue_labels with only add_labels."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = update_issue_labels(42, add_labels=["processed"])
+
+        self.assertTrue(result)
+        call_args = mock_run.call_args[0][0]
+        self.assertEqual(call_args[0], "gh")
+        self.assertEqual(call_args[1], "issue")
+        self.assertEqual(call_args[2], "edit")
+        self.assertEqual(call_args[3], "42")
+        self.assertIn("--add-label", call_args)
+        self.assertIn("processed", call_args)
+
+    def test_update_issue_labels_remove_only(self):
+        """Test update_issue_labels with only remove_labels."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = update_issue_labels(42, remove_labels=["ready"])
+
+        self.assertTrue(result)
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("--remove-label", call_args)
+        self.assertIn("ready", call_args)
+
+    def test_update_issue_labels_add_and_remove(self):
+        """Test update_issue_labels with both add and remove labels."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = update_issue_labels(
+                42,
+                add_labels=["processed", "done"],
+                remove_labels=["ready", "pending"]
+            )
+
+        self.assertTrue(result)
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("--add-label", call_args)
+        self.assertIn("processed,done", call_args)
+        self.assertIn("--remove-label", call_args)
+        self.assertIn("ready,pending", call_args)
+
+    def test_update_issue_labels_no_labels(self):
+        """Test update_issue_labels with no labels returns True without calling gh."""
+        with patch("subprocess.run") as mock_run:
+            result = update_issue_labels(42)
+
+        self.assertTrue(result)
+        mock_run.assert_not_called()
+
+    def test_update_issue_labels_empty_lists(self):
+        """Test update_issue_labels with empty lists returns True without calling gh."""
+        with patch("subprocess.run") as mock_run:
+            result = update_issue_labels(42, add_labels=[], remove_labels=[])
+
+        self.assertTrue(result)
+        mock_run.assert_not_called()
+
+    def test_update_issue_labels_cli_error(self):
+        """Test update_issue_labels raises GitHubCLIError on CLI failure."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="Error: issue not found"
+            )
+            with self.assertRaises(GitHubCLIError) as context:
+                update_issue_labels(42, add_labels=["processed"])
+
+        self.assertIn("gh CLI failed to update labels", str(context.exception))
+        self.assertIn("#42", str(context.exception))
+
+    def test_update_issue_labels_timeout(self):
+        """Test update_issue_labels raises GitHubCLIError on timeout."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=60)
+            with self.assertRaises(GitHubCLIError) as context:
+                update_issue_labels(42, add_labels=["processed"])
+
+        self.assertIn("timed out", str(context.exception))
+        self.assertIn("#42", str(context.exception))
+
+    def test_update_issue_labels_correct_command_structure(self):
+        """Test update_issue_labels builds correct command structure."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            update_issue_labels(123, add_labels=["a"], remove_labels=["b"])
+
+        call_args = mock_run.call_args[0][0]
+        # Command should be: gh issue edit 123 --add-label a --remove-label b
+        self.assertEqual(call_args[:4], ["gh", "issue", "edit", "123"])
+
+
+class TestMarkIssueProcessed(unittest.TestCase):
+    """Tests for mark_issue_processed function."""
+
+    def test_mark_issue_processed_success(self):
+        """Test mark_issue_processed returns True on success."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = mark_issue_processed(42)
+
+        self.assertTrue(result)
+
+    def test_mark_issue_processed_correct_labels(self):
+        """Test mark_issue_processed uses correct labels."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            mark_issue_processed(42)
+
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("--add-label", call_args)
+        self.assertIn("processed", call_args)
+        self.assertIn("--remove-label", call_args)
+        self.assertIn("ready", call_args)
+
+    def test_mark_issue_processed_cli_error(self):
+        """Test mark_issue_processed raises GitHubCLIError on CLI failure."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="Error: issue not found"
+            )
+            with self.assertRaises(GitHubCLIError):
+                mark_issue_processed(42)
+
+    def test_mark_issue_processed_timeout(self):
+        """Test mark_issue_processed raises GitHubCLIError on timeout."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=60)
+            with self.assertRaises(GitHubCLIError):
+                mark_issue_processed(42)
+
+    def test_mark_issue_processed_different_issue_numbers(self):
+        """Test mark_issue_processed with various issue numbers."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+            for issue_num in [1, 99, 1234]:
+                mark_issue_processed(issue_num)
+                call_args = mock_run.call_args[0][0]
+                self.assertEqual(call_args[3], str(issue_num))
 
 
 if __name__ == "__main__":
