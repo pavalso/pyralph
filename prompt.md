@@ -1,4 +1,16 @@
-# Branch Management
+# Gitflow Lifecycle Overview
+
+This document describes the complete gitflow workflow from task start to merge completion. Follow these phases in order:
+
+1. **Branch Management** → Create a feature branch from main
+2. **Commit Workflow** → Make commits during development
+3. **Test Verification** → Ensure all tests pass
+4. **Merge-Back Workflow** → Merge feature branch to main
+5. **Conflict Resolution** → Resolve any merge conflicts (if needed)
+
+---
+
+# Phase 1: Branch Management
 
 Before starting each task, create a dedicated feature branch:
 1. Branch from the main branch (e.g., `main` or `master`).
@@ -6,7 +18,11 @@ Before starting each task, create a dedicated feature branch:
 3. Commit changes to this feature branch during task implementation.
 4. After task completion and verification, the branch can be merged back to main.
 
-# Commit Workflow
+**Next:** Proceed to Phase 2 (Commit Workflow) to make changes on your feature branch.
+
+---
+
+# Phase 2: Commit Workflow
 
 When making changes during task execution, follow this commit workflow:
 1. Stage only the files that were modified for the current task using `git add <file>`.
@@ -16,7 +32,11 @@ When making changes during task execution, follow this commit workflow:
 5. Before committing, review staged changes with `git diff --staged` to ensure only intended changes are included.
 6. Do not commit generated files, build artifacts, or files listed in `.gitignore`.
 
-# Test Verification
+**Next:** Once development is complete, proceed to Phase 3 (Test Verification) before merging.
+
+---
+
+# Phase 3: Test Verification
 
 Before merging any changes, ensure all tests pass:
 1. Run the test suite using `pytest` from the project root.
@@ -25,7 +45,11 @@ Before merging any changes, ensure all tests pass:
 4. Do not skip or disable tests to make the suite pass.
 5. If new functionality is added, ensure appropriate tests are included.
 
-# Merge-Back Workflow
+**Next:** Once all tests pass, proceed to Phase 4 (Merge-Back Workflow) to integrate your changes.
+
+---
+
+# Phase 4: Merge-Back Workflow
 
 After task completion and verification, merge the feature branch back to main:
 1. Ensure all tests pass before merging (see Test Verification above).
@@ -38,7 +62,11 @@ After task completion and verification, merge the feature branch back to main:
    - Local: `git branch -d feature/TASK-<id>-<short-description>`
    - Remote: `git push origin --delete feature/TASK-<id>-<short-description>`
 
-# Conflict Resolution
+**Next:** If merge conflicts occur in step 5, refer to Phase 5 (Conflict Resolution).
+
+---
+
+# Phase 5: Conflict Resolution
 
 When merge conflicts occur during the merge-back workflow, follow these steps:
 1. Identify conflicted files by running `git status` (files with "both modified" status).
@@ -66,7 +94,11 @@ Tips for avoiding conflicts:
 - Keep feature branches short-lived and focused.
 - Communicate with team members about overlapping work areas.
 
-# Memory Management
+**Complete:** After resolving conflicts and pushing, the gitflow lifecycle is complete.
+
+---
+
+# Memory Management (Supplemental)
 
 When managing your memory, consider the following strategies:
 1. Create or update memory entries with clear and concise information. The file name created should be in the format `<tag1>_<tag2>.md`.
