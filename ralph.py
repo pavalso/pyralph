@@ -66,6 +66,11 @@ class Logger:
     custom_log_file: Optional[Path] = None
     # Non-interactive mode (disables all interactive prompts)
     non_interactive = False
+    # Redaction patterns for sensitive data
+    redact_patterns: List[str] = []
+    # Log control flags
+    no_log_prompts = False
+    no_log_responses = False
 
     @staticmethod
     def set_no_color(enabled: bool) -> None:
@@ -129,6 +134,69 @@ class Logger:
     def set_non_interactive(enabled: bool) -> None:
         """Set non-interactive mode (disables all interactive prompts)."""
         Logger.non_interactive = enabled
+
+    @staticmethod
+    def set_redact_patterns(patterns: List[str]) -> None:
+        """Set patterns to redact from logs.
+
+        Args:
+            patterns: List of regex patterns to redact from log output
+        """
+        Logger.redact_patterns = patterns
+
+    @staticmethod
+    def add_redact_patterns_from_file(file_path: str) -> None:
+        """Load redaction patterns from a file (one pattern per line).
+
+        Args:
+            file_path: Path to file containing patterns (one per line)
+        """
+        try:
+            path = Path(file_path)
+            if path.exists():
+                patterns = [line.strip() for line in path.read_text(encoding='utf-8').splitlines() if line.strip() and not line.strip().startswith('#')]
+                Logger.redact_patterns.extend(patterns)
+        except Exception:
+            pass  # Silently ignore errors reading redact file
+
+    @staticmethod
+    def set_no_log_prompts(enabled: bool) -> None:
+        """Disable logging of prompts to log file.
+
+        Args:
+            enabled: If True, prompts will not be written to logs
+        """
+        Logger.no_log_prompts = enabled
+
+    @staticmethod
+    def set_no_log_responses(enabled: bool) -> None:
+        """Disable logging of responses to log file.
+
+        Args:
+            enabled: If True, responses will not be written to logs
+        """
+        Logger.no_log_responses = enabled
+
+    @staticmethod
+    def _redact_content(content: str) -> str:
+        """Apply redaction patterns to content.
+
+        Args:
+            content: The content to redact
+
+        Returns:
+            Content with sensitive patterns replaced with [REDACTED]
+        """
+        if not Logger.redact_patterns:
+            return content
+        redacted = content
+        for pattern in Logger.redact_patterns:
+            try:
+                redacted = re.sub(pattern, '[REDACTED]', redacted)
+            except re.error:
+                # Invalid regex pattern, skip it
+                pass
+        return redacted
 
     @staticmethod
     def get_log_file() -> Path:
@@ -235,10 +303,25 @@ class Logger:
 
     @staticmethod
     def file_log(content: str, type: str, tag: str = "UNKNOWN") -> None:
+        """Append a timestamped entry to the persistent log file.
+
+        Respects the following privacy flags:
+        - --no-log-prompts: Skip logging when type is PROMPT
+        - --no-log-responses: Skip logging when type is RESPONSE
+        - --redact / --redact-file: Apply redaction patterns to content
+        """
+        # Skip logging prompts if --no-log-prompts is set
+        if Logger.no_log_prompts and type == "PROMPT":
+            return
+        # Skip logging responses if --no-log-responses is set
+        if Logger.no_log_responses and type == "RESPONSE":
+            return
+        # Apply redaction patterns to content
+        redacted_content = Logger._redact_content(content)
         icons = {"PROMPT": "➡️", "RESPONSE": "⬅️", "ERROR": "❌", "INFO": "ℹ️"}
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_file = Logger.get_log_file()
-        entry = f"\n{'='*60}\n{icons.get(type, '❓')} [{ts}] TYPE: {type} | TAG: {tag}\n{'='*60}\n{content}\n"
+        entry = f"\n{'='*60}\n{icons.get(type, '❓')} [{ts}] TYPE: {type} | TAG: {tag}\n{'='*60}\n{redacted_content}\n"
         try:
             with open(log_file, "a", encoding="utf-8") as f: f.write(entry)
         except Exception: print(f"⚠️ Log Error")
@@ -1467,6 +1550,11 @@ def main() -> None:
     parser.add_argument("--pre", nargs="+", metavar="CMD", help="Shell command(s) to run before each phase (aborts on failure)")
     parser.add_argument("--post", nargs="+", metavar="CMD", help="Shell command(s) to run after each phase (receives RALPH_PHASE, RALPH_SUCCESS env vars)")
     parser.add_argument("--plugin", nargs="+", metavar="PATH", help="Load plugin(s) from Python file or directory path")
+    # Safety and privacy flags for protecting sensitive data
+    parser.add_argument("--redact", nargs="+", metavar="PATTERN", help="Regex patterns to redact from logs (e.g., API keys, passwords)")
+    parser.add_argument("--redact-file", type=str, metavar="FILE", help="Load redaction patterns from file (one pattern per line)")
+    parser.add_argument("--no-log-prompts", action="store_true", help="Do not log prompts to log file (protects sensitive input)")
+    parser.add_argument("--no-log-responses", action="store_true", help="Do not log responses to log file (protects sensitive output)")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -1496,6 +1584,15 @@ def main() -> None:
         Logger.set_ndjson_output(True)
     elif args.json_output or ci_mode:
         Logger.set_json_output(True)
+    # Configure safety and privacy flags
+    if args.redact:
+        Logger.set_redact_patterns(args.redact)
+    if args.redact_file:
+        Logger.add_redact_patterns_from_file(args.redact_file)
+    if args.no_log_prompts:
+        Logger.set_no_log_prompts(True)
+    if args.no_log_responses:
+        Logger.set_no_log_responses(True)
 
     # Determine hook configuration
     enable_hooks = not args.no_hooks
