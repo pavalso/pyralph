@@ -1,7 +1,46 @@
 """Base Agent interface for Ralph orchestrator."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Tuple
+import traceback
+
+
+@dataclass
+class AgentError:
+    """Encapsulates full error context for agent failures."""
+    exception_type: str
+    message: str
+    stack_trace: str
+    timestamp: str
+    agent_name: str
+    task_id: str
+
+    def format_log_entry(self) -> str:
+        """Format the error as a detailed log entry."""
+        return (
+            f"[{self.timestamp}] AGENT ERROR\n"
+            f"Agent: {self.agent_name}\n"
+            f"Task ID: {self.task_id}\n"
+            f"Exception Type: {self.exception_type}\n"
+            f"Message: {self.message}\n"
+            f"Stack Trace:\n{self.stack_trace}"
+        )
+
+    @classmethod
+    def from_exception(
+        cls, exc: Exception, agent_name: str, task_id: str
+    ) -> "AgentError":
+        """Create an AgentError from an exception with full context."""
+        return cls(
+            exception_type=type(exc).__name__,
+            message=str(exc),
+            stack_trace=traceback.format_exc(),
+            timestamp=datetime.now().isoformat(),
+            agent_name=agent_name,
+            task_id=task_id,
+        )
 
 
 class BaseAgent(ABC):

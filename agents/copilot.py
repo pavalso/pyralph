@@ -3,7 +3,7 @@
 import subprocess
 import shutil
 from typing import Tuple
-from .base import BaseAgent
+from .base import BaseAgent, AgentError
 
 class GithubAgent(BaseAgent):
     """Interface to the Copilot CLI agent."""
@@ -105,10 +105,11 @@ class GithubAgent(BaseAgent):
                 return True, result.stdout
 
             except Exception as e:
+                error = AgentError.from_exception(e, self.get_name(), tag)
                 if self._logger:
-                    self._logger.file_log(str(e), "SYSTEM_EXCEPTION", tag)
+                    self._logger.file_log(error.format_log_entry(), "SYSTEM_EXCEPTION", tag)
                     if self._logger.verbose:
                         self._logger.debug(f"=== COPILOT EXCEPTION [{tag}] ===", "RED")
-                        self._logger.debug(str(e), "RED")
+                        self._logger.debug(error.format_log_entry(), "RED")
                         self._logger.debug("=" * 40, "RED")
-                return False, str(e)
+                return False, error.format_log_entry()
