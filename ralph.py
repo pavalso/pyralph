@@ -248,8 +248,7 @@ class RalphOrchestrator:
     def run_architect(self, user_intent: str):
         Logger.info("\n🕵️  Architect: Initializing Memory...", "CYAN")
 
-        prompt = f"""
-ROLE: Senior Architect
+        prompt = f"""ROLE: Senior Architect
 OBJECTIVE: Initialize the project wiki in .ralph/memory/ for the intent below and ensure a deterministic test command is discoverable.
 
 INTENT:
@@ -298,8 +297,7 @@ OUTPUT RULES:
         Logger.info("\n🧠 Planner: Creating PRD...", "CYAN")
         memory_map = self.memory.get_structure()
 
-        prompt = f"""
-ROLE: Product Manager
+        prompt = f"""ROLE: Product Manager
 TASK: Create a PRD for the intent below.
 
 INTENT:
@@ -389,38 +387,53 @@ SCHEMA (example shape, not a template):
             if prompt_md_path.exists():
                 raw_text = prompt_md_path.read_text(encoding='utf-8')
                 # Inject variables so the user can reference them if they want to
-                user_context = raw_text.replace("{{PRD_ID}}", safe_prd_id)
-                user_context = raw_text.replace("{{PRD_DESCRIPTION}}", prd['description'])
+                user_context = user_context.replace("{{PRD_ID}}", safe_prd_id)
+                user_context = user_context.replace("{{PRD_DESCRIPTION}}", prd['description'])
                 user_context = raw_text.replace("{{TASK_ID}}", safe_task_id)
-                user_context = raw_text.replace("{{TASK_DESCRIPTION}}", task['description'])
-                user_context = raw_text.replace("{{TEST_CMD}}", test_cmd)
+                user_context = user_context.replace("{{TASK_DESCRIPTION}}", task['description'])
+                user_context = user_context.replace("{{TEST_CMD}}", test_cmd)
 
             # 3. Construct the Prompt
-            # 3. Construct the Prompt (Sandwich Method)
-            prompt = f"""
-            ROLE: Developer (Ralph). 
-            TASK: {task['id']}
-            OBJECTIVE: {task['description']}
-            
-            CONTEXT FILES:
-            {memory_tree}
+            prompt = f"""ROLE: Developer (Ralph)
+TASK ID: {task['id']}
+OBJECTIVE: {task['description']}
 
-            --- USER PREFERENCES & WORKFLOW (IMPORTANT) ---
-            {user_context}
-            -----------------------------------------------
+CONTEXT FILES (paths only, under .ralph/memory/):
+{memory_tree}
 
-            --- CORE EXECUTION STEPS ---
-            1. PLAN: Analyze the requirements and user preferences.
-            2. IMPLEMENT: Write the code. Adhere to the preferences above.
-            3. VERIFY: Run '{test_cmd}'.
-            4. FINALIZE: Only output "STATUS: SUCCESS" if tests pass.
+USER PREFERENCES & WORKFLOW (soft constraints; overrides defaults):
+{user_context}
 
-            ADHERE TO THE RULES:
-            You MUST only output "STATUS: X" on FINALIZE step. Never end early.
+DEFAULT CAPABILITIES:
+- You may read and write files within the current working directory (project root).
+- You may run local build/test commands as part of verification.
+- Do NOT perform any version control (e.g., git), networking, or package installation
+  unless explicitly requested in USER PREFERENCES & WORKFLOW above.
 
-            FEEDBACK FROM PREVIOUS ATTEMPT:
-            {prev_errors}
-            """
+EXECUTION FLOW (follow exactly):
+1) PLAN:
+   - Summarize the minimal, concrete code changes required to satisfy the task’s acceptance criteria.
+2) IMPLEMENT:
+   - Apply the necessary file edits to implement the plan.
+3) VERIFY:
+   - Run the test command:
+     {test_cmd}
+   - Only proceed if the command exits with code 0.
+4) FINALIZE:
+   - If and only if verification passed, print exactly:
+     STATUS: SUCCESS
+   - Otherwise, print exactly one line:
+     STATUS: FAILURE - <brief reason>
+
+NOTES:
+- Keep output minimal and task-focused.
+- If USER PREFERENCES & WORKFLOW requires special steps (e.g., git actions, environment setup),
+  follow them explicitly; otherwise do not perform them.
+- Do not include code fences around shell commands or file contents.
+- For any ambiguity make assumptions. Never ask for user feedback.
+
+RETRY CONTEXT (from previous attempt, if any):
+{prev_errors}"""
 
             success, output = self.agent.run(prompt, f"WORKER-{task['id']}")
 
@@ -443,7 +456,7 @@ SCHEMA (example shape, not a template):
                     return
                 else:
                     Logger.info("   🛑 Agent Hallucinated Success.", "RED")
-                    self._record_failure(retries, "Verification Failed", stderr[-1000:])
+                    self._record_failure(retries, "Verification Failed", output[-1000:])
             else:
                 self._record_failure(retries, "Agent Reported Failure", output[-1000:])
 
@@ -557,7 +570,7 @@ SCHEMA (example shape, not a template):
                 if not accept_all and not self._prompt_user_for_phase("Planner"):
                     Logger.info("⏭️  Skipping planner phase.", "YELLOW")
                 else:
-                    user_intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
+                    user_intent = user_intent or input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
                     if not user_intent: sys.exit(0)
                     self.run_planner(user_intent)
             else:
@@ -594,6 +607,8 @@ def get_version() -> str:
 
 def main():
     """Entry point for the ralph CLI."""
+    agent = list_agents()[0]
+
     parser = argparse.ArgumentParser(
         description="Ralph - Autonomous Software Development Agent",
         epilog="Examples:\n"
@@ -640,8 +655,8 @@ def main():
     parser.add_argument(
         "--agent",
         choices=list_agents(),
-        default="claude",
-        help="Select which agent to use (default: claude)"
+        default=agent,
+        help=f"Select which agent to use (default: {agent})"
     )
 
     args = parser.parse_args()
