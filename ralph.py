@@ -593,7 +593,9 @@ class RalphOrchestrator:
                  concurrency: Optional[int] = None, rate_limit: Optional[float] = None,
                  backoff: Optional[float] = None,
                  pre: Optional[List[str]] = None, post: Optional[List[str]] = None,
-                 plugin: Optional[List[str]] = None) -> None:
+                 plugin: Optional[List[str]] = None,
+                 schema: Optional[str] = None, min_criteria: Optional[int] = None,
+                 label: Optional[List[str]] = None) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -661,6 +663,10 @@ class RalphOrchestrator:
         self._plugin_paths = plugin or []
         # Load plugins if specified
         self._load_plugins()
+        # Store PRD and story control flags
+        self._schema_path = schema
+        self._min_criteria = min_criteria
+        self._labels = label or []
 
     def _load_plugins(self) -> None:
         """
@@ -865,12 +871,150 @@ class RalphOrchestrator:
         self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
         self._run_post_commands("architect", success=True)
 
+    def _validate_prd_schema(self, data: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Validate PRD data against a JSON schema file.
+
+        Args:
+            data: The PRD data to validate
+
+        Returns:
+            Tuple of (is_valid, error_message). error_message is empty if valid.
+        """
+        if not self._schema_path:
+            return True, ""
+
+        schema_path = Path(self._schema_path)
+        if not schema_path.exists():
+            return False, f"Schema file not found: {self._schema_path}"
+
+        try:
+            schema = json.loads(schema_path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError as e:
+            return False, f"Invalid JSON schema: {e}"
+
+        # Basic JSON schema validation (supports type, required, properties)
+        errors = self._validate_against_schema(data, schema, "")
+        if errors:
+            return False, "; ".join(errors)
+        return True, ""
+
+    def _validate_against_schema(self, data: Any, schema: Dict[str, Any], path: str) -> List[str]:
+        """
+        Recursively validate data against a JSON schema.
+
+        Supports a subset of JSON Schema: type, required, properties, items, minItems.
+
+        Args:
+            data: The data to validate
+            schema: The schema to validate against
+            path: Current path in the data for error messages
+
+        Returns:
+            List of validation error messages
+        """
+        errors: List[str] = []
+        path_prefix = f"{path}." if path else ""
+
+        # Check type
+        if "type" in schema:
+            expected_type = schema["type"]
+            type_map = {"string": str, "number": (int, float), "integer": int,
+                        "boolean": bool, "array": list, "object": dict, "null": type(None)}
+            if expected_type in type_map:
+                expected = type_map[expected_type]
+                if not isinstance(data, expected):
+                    errors.append(f"{path or 'root'}: expected {expected_type}, got {type(data).__name__}")
+                    return errors  # Don't check further if type is wrong
+
+        # Check required properties (for objects)
+        if "required" in schema and isinstance(data, dict):
+            for req in schema["required"]:
+                if req not in data:
+                    errors.append(f"{path_prefix}{req}: required property missing")
+
+        # Check properties (for objects)
+        if "properties" in schema and isinstance(data, dict):
+            for prop, prop_schema in schema["properties"].items():
+                if prop in data:
+                    errors.extend(self._validate_against_schema(data[prop], prop_schema, f"{path_prefix}{prop}"))
+
+        # Check items (for arrays)
+        if "items" in schema and isinstance(data, list):
+            for i, item in enumerate(data):
+                errors.extend(self._validate_against_schema(item, schema["items"], f"{path}[{i}]"))
+
+        # Check minItems (for arrays)
+        if "minItems" in schema and isinstance(data, list):
+            if len(data) < schema["minItems"]:
+                errors.append(f"{path or 'root'}: array has {len(data)} items, minimum is {schema['minItems']}")
+
+        return errors
+
+    def _validate_min_criteria(self, data: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Validate that each user story has at least the minimum number of acceptance criteria.
+
+        Args:
+            data: The PRD data to validate
+
+        Returns:
+            Tuple of (is_valid, error_message). error_message is empty if valid.
+        """
+        if self._min_criteria is None:
+            return True, ""
+
+        stories = data.get("userStories", [])
+        violations = []
+        for story in stories:
+            story_id = story.get("id", "unknown")
+            criteria = story.get("acceptanceCriteria", [])
+            if len(criteria) < self._min_criteria:
+                violations.append(f"{story_id} has {len(criteria)} criteria (minimum: {self._min_criteria})")
+
+        if violations:
+            return False, "; ".join(violations)
+        return True, ""
+
+    def _apply_labels(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Apply custom labels to the PRD data.
+
+        Labels are key=value pairs that get added to a 'labels' dict in the PRD.
+
+        Args:
+            data: The PRD data to annotate
+
+        Returns:
+            The PRD data with labels applied
+        """
+        if not self._labels:
+            return data
+
+        labels_dict: Dict[str, str] = {}
+        for label in self._labels:
+            if "=" in label:
+                key, value = label.split("=", 1)
+                labels_dict[key.strip()] = value.strip()
+            else:
+                # Labels without = are treated as tags with empty value
+                labels_dict[label.strip()] = ""
+
+        if labels_dict:
+            data["labels"] = labels_dict
+        return data
+
     def run_planner(self, user_intent: str) -> None:
         """
         Run the planner phase to create a Product Requirements Document.
 
         Generates a PRD with user stories and acceptance criteria,
         saved to .ralph/prd.json.
+
+        Respects the following flags:
+        - --schema: Validate PRD against a JSON schema file
+        - --min-criteria: Ensure each story has at least N acceptance criteria
+        - --label: Add custom labels to the PRD
 
         Args:
             user_intent: Description of what the user wants to build
@@ -906,6 +1050,22 @@ class RalphOrchestrator:
             try:
                 data = JsonUtils.parse(raw)
                 if "userStories" not in data: raise ValueError("Missing userStories")
+
+                # Validate against JSON schema if --schema is specified
+                schema_valid, schema_error = self._validate_prd_schema(data)
+                if not schema_valid:
+                    Logger.info(f"⚠️ Schema validation failed (Attempt {attempt+1}): {schema_error}", "YELLOW")
+                    continue
+
+                # Validate minimum acceptance criteria if --min-criteria is specified
+                criteria_valid, criteria_error = self._validate_min_criteria(data)
+                if not criteria_valid:
+                    Logger.info(f"⚠️ Criteria validation failed (Attempt {attempt+1}): {criteria_error}", "YELLOW")
+                    continue
+
+                # Apply labels if --label is specified
+                data = self._apply_labels(data)
+
                 CONF.PRD_FILE.write_text(json.dumps(data, indent=2), encoding='utf-8')
                 Logger.info(f"✅ PRD Created ({len(data['userStories'])} stories).", "GREEN")
                 self.hooks.emit(Event(EventType.PRD_CREATED, phase="planner", prd_path=str(CONF.PRD_FILE)))
@@ -1555,6 +1715,10 @@ def main() -> None:
     parser.add_argument("--redact-file", type=str, metavar="FILE", help="Load redaction patterns from file (one pattern per line)")
     parser.add_argument("--no-log-prompts", action="store_true", help="Do not log prompts to log file (protects sensitive input)")
     parser.add_argument("--no-log-responses", action="store_true", help="Do not log responses to log file (protects sensitive output)")
+    # PRD and story control flags for validation and annotation
+    parser.add_argument("--schema", type=str, metavar="FILE", help="Validate generated PRD against a JSON schema file")
+    parser.add_argument("--min-criteria", type=int, metavar="N", help="Require at least N acceptance criteria per user story")
+    parser.add_argument("--label", nargs="+", metavar="KEY=VAL", help="Add custom labels to PRD (format: key=value or just key)")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -1648,7 +1812,10 @@ def main() -> None:
         backoff=args.backoff,
         pre=args.pre,
         post=args.post,
-        plugin=args.plugin
+        plugin=args.plugin,
+        schema=args.schema,
+        min_criteria=args.min_criteria,
+        label=args.label
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

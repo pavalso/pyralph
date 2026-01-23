@@ -5270,5 +5270,461 @@ class TestCombinedPrivacyFlags(unittest.TestCase):
         self.assertIn("[REDACTED]", content)
 
 
+# ==============================================================================
+# PRD AND STORY CONTROL FLAGS TESTS (TASK-013)
+# ==============================================================================
+
+
+class TestPrdStoryControlFlagsArgumentParsing(unittest.TestCase):
+    """Tests for --schema, --min-criteria, and --label CLI flag parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
+        self.parser.add_argument("--schema", type=str, metavar="FILE")
+        self.parser.add_argument("--min-criteria", type=int, metavar="N")
+        self.parser.add_argument("--label", nargs="+", metavar="KEY=VAL")
+
+    def test_schema_flag_parses_file_path(self):
+        """Test --schema flag parses file path."""
+        args = self.parser.parse_args(['--schema', '/path/to/schema.json'])
+        self.assertEqual(args.schema, '/path/to/schema.json')
+
+    def test_schema_flag_default_is_none(self):
+        """Test --schema flag defaults to None."""
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.schema)
+
+    def test_min_criteria_flag_parses_integer(self):
+        """Test --min-criteria flag parses integer."""
+        args = self.parser.parse_args(['--min-criteria', '3'])
+        self.assertEqual(args.min_criteria, 3)
+
+    def test_min_criteria_flag_default_is_none(self):
+        """Test --min-criteria flag defaults to None."""
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.min_criteria)
+
+    def test_label_flag_parses_single_label(self):
+        """Test --label flag parses a single label."""
+        args = self.parser.parse_args(['--label', 'version=1.0'])
+        self.assertEqual(args.label, ['version=1.0'])
+
+    def test_label_flag_parses_multiple_labels(self):
+        """Test --label flag parses multiple labels."""
+        args = self.parser.parse_args(['--label', 'version=1.0', 'team=backend', 'sprint=5'])
+        self.assertEqual(args.label, ['version=1.0', 'team=backend', 'sprint=5'])
+
+    def test_label_flag_default_is_none(self):
+        """Test --label flag defaults to None."""
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.label)
+
+
+class TestPrdStoryControlFlagsCLI(unittest.TestCase):
+    """Tests for CLI argument parsing of --schema, --min-criteria, --label."""
+
+    def test_cli_parses_schema_flag(self):
+        """Test CLI correctly parses --schema flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--schema', '/tmp/schema.json', 'planner']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['schema'], '/tmp/schema.json')
+
+    def test_cli_parses_min_criteria_flag(self):
+        """Test CLI correctly parses --min-criteria flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--min-criteria', '5', 'planner']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['min_criteria'], 5)
+
+    def test_cli_parses_label_flag_single(self):
+        """Test CLI correctly parses --label flag with single value."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            # Phase must come before --label to avoid being consumed by nargs="+"
+            with patch('sys.argv', ['ralph', 'planner', '--label', 'version=1.0']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['label'], ['version=1.0'])
+
+    def test_cli_parses_label_flag_multiple(self):
+        """Test CLI correctly parses --label flag with multiple values."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            # Phase must come before --label to avoid being consumed by nargs="+"
+            with patch('sys.argv', ['ralph', 'planner', '--label', 'version=1.0', 'team=backend']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['label'], ['version=1.0', 'team=backend'])
+
+    def test_cli_all_prd_flags_together(self):
+        """Test CLI correctly parses all PRD control flags together."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            # Phase must come before --label to avoid being consumed by nargs="+"
+            with patch('sys.argv', [
+                'ralph',
+                'planner',
+                '--schema', '/tmp/schema.json',
+                '--min-criteria', '3',
+                '--label', 'version=2.0', 'env=prod'
+            ]):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['schema'], '/tmp/schema.json')
+            self.assertEqual(call_kwargs['min_criteria'], 3)
+            self.assertEqual(call_kwargs['label'], ['version=2.0', 'env=prod'])
+
+    def test_cli_prd_flags_default_to_none(self):
+        """Test CLI PRD flags default correctly when not specified."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertIsNone(call_kwargs['schema'])
+            self.assertIsNone(call_kwargs['min_criteria'])
+            self.assertIsNone(call_kwargs['label'])
+
+
+class TestOrchestratorSchemaValidation(TempConfigTestCase):
+    """Tests for RalphOrchestrator --schema validation functionality."""
+
+    def test_validate_prd_schema_returns_true_when_no_schema(self):
+        """Test _validate_prd_schema returns True when no schema specified."""
+        orch = self.create_mock_orchestrator()
+        valid, error = orch._validate_prd_schema({"id": "PRD-001"})
+        self.assertTrue(valid)
+        self.assertEqual(error, "")
+
+    def test_validate_prd_schema_fails_when_schema_file_not_found(self):
+        """Test _validate_prd_schema fails when schema file doesn't exist."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(schema="/nonexistent/schema.json")
+        valid, error = orch._validate_prd_schema({"id": "PRD-001"})
+        self.assertFalse(valid)
+        self.assertIn("not found", error)
+
+    def test_validate_prd_schema_fails_on_invalid_json(self):
+        """Test _validate_prd_schema fails when schema contains invalid JSON."""
+        schema_path = self.temp_path / "invalid_schema.json"
+        schema_path.write_text("not valid json {", encoding='utf-8')
+
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(schema=str(schema_path))
+        valid, error = orch._validate_prd_schema({"id": "PRD-001"})
+        self.assertFalse(valid)
+        self.assertIn("Invalid JSON schema", error)
+
+    def test_validate_prd_schema_validates_required_properties(self):
+        """Test _validate_prd_schema validates required properties."""
+        schema_path = self.temp_path / "schema.json"
+        schema = {
+            "type": "object",
+            "required": ["id", "userStories"]
+        }
+        schema_path.write_text(json.dumps(schema), encoding='utf-8')
+
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(schema=str(schema_path))
+
+        # Valid data
+        valid, error = orch._validate_prd_schema({"id": "PRD-001", "userStories": []})
+        self.assertTrue(valid)
+
+        # Missing required property
+        valid, error = orch._validate_prd_schema({"id": "PRD-001"})
+        self.assertFalse(valid)
+        self.assertIn("userStories", error)
+        self.assertIn("required", error)
+
+    def test_validate_prd_schema_validates_type(self):
+        """Test _validate_prd_schema validates property types."""
+        schema_path = self.temp_path / "schema.json"
+        schema = {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "count": {"type": "integer"}
+            }
+        }
+        schema_path.write_text(json.dumps(schema), encoding='utf-8')
+
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(schema=str(schema_path))
+
+        # Valid types
+        valid, error = orch._validate_prd_schema({"id": "PRD-001", "count": 5})
+        self.assertTrue(valid)
+
+        # Wrong type
+        valid, error = orch._validate_prd_schema({"id": 123, "count": 5})
+        self.assertFalse(valid)
+        self.assertIn("expected string", error)
+
+    def test_validate_prd_schema_validates_nested_properties(self):
+        """Test _validate_prd_schema validates nested object properties."""
+        schema_path = self.temp_path / "schema.json"
+        schema = {
+            "type": "object",
+            "properties": {
+                "userStories": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "description"]
+                    }
+                }
+            }
+        }
+        schema_path.write_text(json.dumps(schema), encoding='utf-8')
+
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(schema=str(schema_path))
+
+        # Valid nested data
+        valid, error = orch._validate_prd_schema({
+            "userStories": [{"id": "TASK-001", "description": "Test"}]
+        })
+        self.assertTrue(valid)
+
+        # Missing required nested property
+        valid, error = orch._validate_prd_schema({
+            "userStories": [{"id": "TASK-001"}]
+        })
+        self.assertFalse(valid)
+        self.assertIn("description", error)
+
+    def test_validate_prd_schema_validates_min_items(self):
+        """Test _validate_prd_schema validates minItems for arrays."""
+        schema_path = self.temp_path / "schema.json"
+        schema = {
+            "type": "object",
+            "properties": {
+                "userStories": {
+                    "type": "array",
+                    "minItems": 1
+                }
+            }
+        }
+        schema_path.write_text(json.dumps(schema), encoding='utf-8')
+
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(schema=str(schema_path))
+
+        # Valid (has items)
+        valid, error = orch._validate_prd_schema({"userStories": [{"id": "TASK-001"}]})
+        self.assertTrue(valid)
+
+        # Invalid (empty array)
+        valid, error = orch._validate_prd_schema({"userStories": []})
+        self.assertFalse(valid)
+        self.assertIn("minimum", error)
+
+
+class TestOrchestratorMinCriteriaValidation(TempConfigTestCase):
+    """Tests for RalphOrchestrator --min-criteria validation functionality."""
+
+    def test_validate_min_criteria_returns_true_when_not_set(self):
+        """Test _validate_min_criteria returns True when not specified."""
+        orch = self.create_mock_orchestrator()
+        valid, error = orch._validate_min_criteria({
+            "userStories": [{"id": "TASK-001", "acceptanceCriteria": []}]
+        })
+        self.assertTrue(valid)
+        self.assertEqual(error, "")
+
+    def test_validate_min_criteria_passes_when_criteria_met(self):
+        """Test _validate_min_criteria passes when all stories meet minimum."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(min_criteria=2)
+
+        valid, error = orch._validate_min_criteria({
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["a", "b", "c"]},
+                {"id": "TASK-002", "acceptanceCriteria": ["x", "y"]}
+            ]
+        })
+        self.assertTrue(valid)
+        self.assertEqual(error, "")
+
+    def test_validate_min_criteria_fails_when_criteria_not_met(self):
+        """Test _validate_min_criteria fails when a story has too few criteria."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(min_criteria=3)
+
+        valid, error = orch._validate_min_criteria({
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["a", "b", "c"]},
+                {"id": "TASK-002", "acceptanceCriteria": ["x"]}  # Only 1, needs 3
+            ]
+        })
+        self.assertFalse(valid)
+        self.assertIn("TASK-002", error)
+        self.assertIn("1 criteria", error)
+        self.assertIn("minimum: 3", error)
+
+    def test_validate_min_criteria_reports_all_violations(self):
+        """Test _validate_min_criteria reports all stories that violate minimum."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(min_criteria=5)
+
+        valid, error = orch._validate_min_criteria({
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["a", "b"]},
+                {"id": "TASK-002", "acceptanceCriteria": ["x"]},
+                {"id": "TASK-003", "acceptanceCriteria": ["1", "2", "3", "4", "5"]}  # OK
+            ]
+        })
+        self.assertFalse(valid)
+        self.assertIn("TASK-001", error)
+        self.assertIn("TASK-002", error)
+        self.assertNotIn("TASK-003", error)
+
+    def test_validate_min_criteria_handles_missing_criteria_field(self):
+        """Test _validate_min_criteria handles stories without acceptanceCriteria."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(min_criteria=1)
+
+        valid, error = orch._validate_min_criteria({
+            "userStories": [{"id": "TASK-001"}]  # No acceptanceCriteria field
+        })
+        self.assertFalse(valid)
+        self.assertIn("TASK-001", error)
+        self.assertIn("0 criteria", error)
+
+    def test_validate_min_criteria_handles_empty_stories(self):
+        """Test _validate_min_criteria handles PRD with no user stories."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(min_criteria=3)
+
+        valid, error = orch._validate_min_criteria({"userStories": []})
+        self.assertTrue(valid)  # No stories to validate
+        self.assertEqual(error, "")
+
+
+class TestOrchestratorLabelApplication(TempConfigTestCase):
+    """Tests for RalphOrchestrator --label functionality."""
+
+    def test_apply_labels_returns_unchanged_when_no_labels(self):
+        """Test _apply_labels returns unchanged data when no labels specified."""
+        orch = self.create_mock_orchestrator()
+        data = {"id": "PRD-001", "userStories": []}
+        result = orch._apply_labels(data)
+        self.assertEqual(result, data)
+        self.assertNotIn("labels", result)
+
+    def test_apply_labels_adds_key_value_labels(self):
+        """Test _apply_labels adds key=value format labels."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(label=["version=1.0", "team=backend"])
+
+        data = {"id": "PRD-001"}
+        result = orch._apply_labels(data)
+        self.assertIn("labels", result)
+        self.assertEqual(result["labels"]["version"], "1.0")
+        self.assertEqual(result["labels"]["team"], "backend")
+
+    def test_apply_labels_handles_key_only_labels(self):
+        """Test _apply_labels handles labels without values (tags)."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(label=["urgent", "reviewed"])
+
+        data = {"id": "PRD-001"}
+        result = orch._apply_labels(data)
+        self.assertIn("labels", result)
+        self.assertEqual(result["labels"]["urgent"], "")
+        self.assertEqual(result["labels"]["reviewed"], "")
+
+    def test_apply_labels_handles_mixed_labels(self):
+        """Test _apply_labels handles mix of key=value and key-only labels."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(label=["version=2.0", "urgent", "sprint=5"])
+
+        data = {"id": "PRD-001"}
+        result = orch._apply_labels(data)
+        self.assertEqual(result["labels"]["version"], "2.0")
+        self.assertEqual(result["labels"]["urgent"], "")
+        self.assertEqual(result["labels"]["sprint"], "5")
+
+    def test_apply_labels_handles_values_with_equals(self):
+        """Test _apply_labels handles values containing equals sign."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(label=["formula=a=b+c", "url=http://example.com?a=1"])
+
+        data = {"id": "PRD-001"}
+        result = orch._apply_labels(data)
+        self.assertEqual(result["labels"]["formula"], "a=b+c")
+        self.assertEqual(result["labels"]["url"], "http://example.com?a=1")
+
+    def test_apply_labels_preserves_existing_data(self):
+        """Test _apply_labels preserves existing PRD data."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(label=["tag=test"])
+
+        data = {"id": "PRD-001", "description": "Test PRD", "userStories": [{"id": "TASK-001"}]}
+        result = orch._apply_labels(data)
+        self.assertEqual(result["id"], "PRD-001")
+        self.assertEqual(result["description"], "Test PRD")
+        self.assertEqual(result["userStories"], [{"id": "TASK-001"}])
+        self.assertEqual(result["labels"]["tag"], "test")
+
+    def test_apply_labels_strips_whitespace(self):
+        """Test _apply_labels strips whitespace from keys and values."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(label=["  version = 1.0  ", "  tag  "])
+
+        data = {"id": "PRD-001"}
+        result = orch._apply_labels(data)
+        self.assertEqual(result["labels"]["version"], "1.0")
+        self.assertEqual(result["labels"]["tag"], "")
+
+
+class TestOrchestratorPrdFlagsInitialization(TempConfigTestCase):
+    """Tests for RalphOrchestrator initialization with PRD control flags."""
+
+    def test_orchestrator_stores_schema_path(self):
+        """Test orchestrator stores schema path from constructor."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(schema="/path/to/schema.json")
+        self.assertEqual(orch._schema_path, "/path/to/schema.json")
+
+    def test_orchestrator_stores_min_criteria(self):
+        """Test orchestrator stores min_criteria from constructor."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(min_criteria=5)
+        self.assertEqual(orch._min_criteria, 5)
+
+    def test_orchestrator_stores_labels(self):
+        """Test orchestrator stores labels from constructor."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(label=["a=1", "b=2"])
+        self.assertEqual(orch._labels, ["a=1", "b=2"])
+
+    def test_orchestrator_labels_default_to_empty_list(self):
+        """Test orchestrator labels default to empty list when not specified."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator()
+        self.assertEqual(orch._labels, [])
+
+    def test_orchestrator_schema_and_min_criteria_default_to_none(self):
+        """Test orchestrator schema and min_criteria default to None."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator()
+        self.assertIsNone(orch._schema_path)
+        self.assertIsNone(orch._min_criteria)
+
+
 if __name__ == "__main__":
     unittest.main()
