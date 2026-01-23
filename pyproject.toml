@@ -11,14 +11,14 @@ requires-python = ">=3.8"
 authors = [
     { name = "Ralph Agent" }
 ]
-dependencies = []
+dependencies = ["pyyaml>=6.0"]
 
 [project.scripts]
 ralph = "ralph:main"
 
 [tool.setuptools]
 packages = ["agents"]
-py-modules = ["ralph"]
+py-modules = ["ralph", "hooks"]
 
 [tool.setuptools.package-data]
 agents = ["*.py"]

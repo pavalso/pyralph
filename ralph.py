@@ -14,6 +14,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from agents import get_agent, list_agents
 from agents.base import AgentError
 
+# Import hooks
+from hooks import HookManager, Event, EventType
+
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
@@ -25,6 +28,7 @@ class Config:
     MEMORY_DIR: Path = ROOT_DIR / "memory"
     ARCHIVE_DIR: Path = ROOT_DIR / "archive"
     TEMPLATES_DIR: Path = ROOT_DIR / "templates"
+    HOOKS_DIR: Path = ROOT_DIR / "hooks"
     PRD_FILE: Path = ROOT_DIR / "prd.json"
     PROGRESS_FILE: Path = ROOT_DIR / "progress.txt"
     LOG_FILE: Path = ROOT_DIR / "ralph_log.txt"
@@ -34,7 +38,7 @@ class Config:
     TIMEOUT_SECONDS: int = 600
 
     def ensure_directories(self) -> None:
-        for path in [self.ROOT_DIR, self.MEMORY_DIR, self.ARCHIVE_DIR, self.TEMPLATES_DIR]:
+        for path in [self.ROOT_DIR, self.MEMORY_DIR, self.ARCHIVE_DIR, self.TEMPLATES_DIR, self.HOOKS_DIR]:
             path.mkdir(exist_ok=True, parents=True)
 
 CONF = Config()
@@ -57,8 +61,14 @@ class Logger:
     @staticmethod
     def _print_colored(msg: str, color: str = "RESET", prefix: str = ""):
         text = f"{prefix}{msg}" if prefix else msg
-        if Logger.no_color: print(text)
-        else: print(f"{Logger.COLORS.get(color, Logger.COLORS['RESET'])}{text}{Logger.COLORS['RESET']}")
+        if Logger.no_color:
+            output = text
+        else:
+            output = f"{Logger.COLORS.get(color, Logger.COLORS['RESET'])}{text}{Logger.COLORS['RESET']}"
+        try:
+            print(output)
+        except UnicodeEncodeError:
+            print(output.encode('ascii', errors='replace').decode('ascii'))
 
     @staticmethod
     def info(msg: str, color: str = "RESET"): Logger._print_colored(msg, color)
@@ -180,13 +190,17 @@ class MemoryManager:
 
     @staticmethod
     def extract_test_command() -> str:
-        full_text = ""
+        texts = []
         for path in CONF.MEMORY_DIR.rglob('*'):
-            if path.suffix in ['.md', '.txt']:
-                try: full_text += path.read_text(encoding='utf-8')
-                except: continue
+            if path.suffix in ('.md', '.txt'):
+                try:
+                    texts.append(path.read_text(encoding='utf-8'))
+                except Exception:
+                    continue
+        full_text = ''.join(texts)
         match = re.search(r"Test Command.*?`([^`]+)`", full_text, re.IGNORECASE)
-        if match: return match.group(1)
+        if match:
+            return match.group(1)
         return "npm test" if (CONF.BASE_DIR / "package.json").exists() else "pytest"
 
 
@@ -224,7 +238,7 @@ class TemplateManager:
 # ==============================================================================
 
 class RalphOrchestrator:
-    def __init__(self, agent_name: str = "claude") -> None:
+    def __init__(self, agent_name: str = "claude", enable_hooks: bool = True, enabled_hook_names: Optional[List[str]] = None) -> None:
         self.agent = get_agent(agent_name, timeout_seconds=CONF.TIMEOUT_SECONDS)
         if hasattr(self.agent, 'set_logger'): self.agent.set_logger(Logger)
         if hasattr(self.agent, 'set_config'): self.agent.set_config(CONF)
@@ -233,6 +247,12 @@ class RalphOrchestrator:
         self.memory = MemoryManager()
         CONF.ensure_directories()
         self._validate_memory_on_startup()
+        # Initialize hook system
+        self.hooks = HookManager(CONF.HOOKS_DIR, Logger)
+        if not enable_hooks:
+            self.hooks.disable()
+        elif enabled_hook_names is not None:
+            self.hooks.set_enabled_hooks(enabled_hook_names)
 
     def run_architect(self, user_intent: str) -> None:
         """
@@ -246,6 +266,8 @@ class RalphOrchestrator:
             user_intent: Description of what the user wants to build
         """
         Logger.info("\n🕵️  Architect: Initializing Memory...", "CYAN")
+        self.hooks.emit(Event(EventType.PHASE_START, phase="architect"))
+        self.hooks.emit(Event(EventType.ARCHITECT_START, phase="architect"))
 
         prompt = TemplateManager.render(
             "architect.txt",
@@ -256,14 +278,20 @@ class RalphOrchestrator:
         success, _, _ = self.agent.run(prompt, "ARCHITECT")
         if not success or not any(CONF.MEMORY_DIR.iterdir()):
             Logger.info("⚠️ Architect failed.", "RED")
+            self.hooks.emit(Event(EventType.ARCHITECT_FAILURE, phase="architect"))
+            self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
             sys.exit(1)
 
         arch_md_path = CONF.BASE_DIR / "ARCH.md"
         if not arch_md_path.exists():
             Logger.info("⚠️ Architect failed: ARCH.md was not created.", "RED")
+            self.hooks.emit(Event(EventType.ARCHITECT_FAILURE, phase="architect"))
+            self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
             sys.exit(1)
 
         Logger.info("✅ Memory Initialized.", "GREEN")
+        self.hooks.emit(Event(EventType.ARCHITECT_SUCCESS, phase="architect"))
+        self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
 
     def run_planner(self, user_intent: str) -> None:
         """
@@ -276,6 +304,8 @@ class RalphOrchestrator:
             user_intent: Description of what the user wants to build
         """
         Logger.info("\n🧠 Planner: Creating PRD...", "CYAN")
+        self.hooks.emit(Event(EventType.PHASE_START, phase="planner"))
+        self.hooks.emit(Event(EventType.PLANNER_START, phase="planner"))
         memory_map = self.memory.get_structure()
 
         prompt = TemplateManager.render(
@@ -293,11 +323,16 @@ class RalphOrchestrator:
                 if "userStories" not in data: raise ValueError("Missing userStories")
                 CONF.PRD_FILE.write_text(json.dumps(data, indent=2), encoding='utf-8')
                 Logger.info(f"✅ PRD Created ({len(data['userStories'])} stories).", "GREEN")
+                self.hooks.emit(Event(EventType.PRD_CREATED, phase="planner", prd_path=str(CONF.PRD_FILE)))
+                self.hooks.emit(Event(EventType.PLANNER_SUCCESS, phase="planner"))
+                self.hooks.emit(Event(EventType.PHASE_END, phase="planner"))
                 return
             except Exception as e:
                 Logger.info(f"⚠️ JSON Error (Attempt {attempt+1}): {e}", "YELLOW")
 
         Logger.info("❌ Planning Failed.", "RED")
+        self.hooks.emit(Event(EventType.PLANNER_FAILURE, phase="planner"))
+        self.hooks.emit(Event(EventType.PHASE_END, phase="planner"))
         sys.exit(1)
 
     def execute_loop(self) -> None:
@@ -312,6 +347,8 @@ class RalphOrchestrator:
         test_cmd = self.memory.extract_test_command()
 
         Logger.info(f"\n🚀 Starting Loop. Verify Command: '{test_cmd}'", "YELLOW")
+        self.hooks.emit(Event(EventType.PHASE_START, phase="execute"))
+        self.hooks.emit(Event(EventType.EXECUTE_START, phase="execute", verification_command=test_cmd))
 
         failed_tasks: List[str] = []
 
@@ -339,6 +376,66 @@ class RalphOrchestrator:
             Logger.info("\n🎉 All Tasks Complete.", "GREEN")
 
         self._archive_prd()
+        self.hooks.emit(Event(EventType.EXECUTE_END, phase="execute"))
+        self.hooks.emit(Event(EventType.PHASE_END, phase="execute"))
+
+    def _sanitize_id(self, text: str) -> str:
+        """Sanitize an ID string to contain only alphanumeric chars and hyphens/underscores."""
+        return "".join(c for c in text if c.isalnum() or c in '-_')
+
+    def _load_user_context(self, prd: Dict[str, Any], task: Dict[str, Any], test_cmd: str) -> str:
+        """Load and prepare user context from prompt.md with variable substitution."""
+        prompt_md_path = CONF.BASE_DIR / "prompt.md"
+        if not prompt_md_path.exists():
+            return "No specific user preferences provided."
+
+        raw_text = prompt_md_path.read_text(encoding='utf-8')
+        replacements = {
+            "{{PRD_ID}}": self._sanitize_id(prd['id']),
+            "{{PRD_DESCRIPTION}}": prd['description'],
+            "{{TASK_ID}}": self._sanitize_id(task['id']),
+            "{{TASK_DESCRIPTION}}": task['description'],
+            "{{TEST_CMD}}": test_cmd,
+        }
+        for placeholder, value in replacements.items():
+            raw_text = raw_text.replace(placeholder, value)
+        return raw_text
+
+    def _verify_task(self, task: Dict[str, Any], test_cmd: str) -> Tuple[bool, Optional[AgentError]]:
+        """Run verification and return (success, error_if_failed)."""
+        Logger.info("   🔒 Verifying Agent's Claim...", "YELLOW")
+        self.hooks.emit(Event(
+            EventType.VERIFICATION_START, phase="execute",
+            task_id=task['id'], verification_command=test_cmd
+        ))
+
+        stdout, stderr, code = Shell.run(test_cmd)
+        verify_log = f"CMD: {test_cmd}\nEXIT CODE: {code}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+        Logger.file_log(verify_log, "VERIFICATION", f"WORKER-{task['id']}")
+
+        if code == 0:
+            Logger.info("   ✅ Verified.", "GREEN")
+            self.hooks.emit(Event(
+                EventType.VERIFICATION_SUCCESS, phase="execute",
+                task_id=task['id'], verification_command=test_cmd, verification_exit_code=code
+            ))
+            return True, None
+
+        Logger.info("   🛑 Agent Hallucinated Success.", "RED")
+        error = AgentError(
+            exception_type="VerificationError",
+            message=f"Test command '{test_cmd}' failed with exit code {code}",
+            stack_trace=f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}",
+            timestamp=datetime.datetime.now().isoformat(),
+            agent_name=self.agent.get_name(),
+            task_id=task['id'],
+        )
+        self.hooks.emit(Event(
+            EventType.VERIFICATION_FAILURE, phase="execute",
+            task_id=task['id'], verification_command=test_cmd,
+            verification_exit_code=code, error=error
+        ))
+        return False, error
 
     def _execute_task(self, prd: Dict[str, Any], task: Dict[str, Any], test_cmd: str) -> bool:
         """
@@ -347,69 +444,40 @@ class RalphOrchestrator:
         Returns:
             True if task completed successfully, False if max retries exhausted.
         """
-        retries = 0
+        self.hooks.emit(Event(
+            EventType.TASK_START, phase="execute",
+            task_id=task['id'], task_description=task['description'], max_retries=CONF.MAX_RETRIES
+        ))
 
-        safe_prd_id = "".join(c for c in prd['id'] if c.isalnum() or c in ('-', '_'))
-        safe_task_id = "".join(c for c in task['id'] if c.isalnum() or c in ('-', '_'))
-
-        while retries < CONF.MAX_RETRIES:
-            memory_tree = self.memory.get_structure()
+        for retry in range(CONF.MAX_RETRIES):
             prev_errors = CONF.PROGRESS_FILE.read_text(encoding='utf-8') if CONF.PROGRESS_FILE.exists() else ""
-
-            # Load and Prepare User Context (Soft Guidelines)
-            user_context = "No specific user preferences provided."
-            prompt_md_path = CONF.BASE_DIR / "prompt.md"
-
-            if prompt_md_path.exists():
-                raw_text = prompt_md_path.read_text(encoding='utf-8')
-                # Inject variables so the user can reference them if they want to
-                user_context = raw_text.replace("{{PRD_ID}}", safe_prd_id)
-                user_context = user_context.replace("{{PRD_DESCRIPTION}}", prd['description'])
-                user_context = user_context.replace("{{TASK_ID}}", safe_task_id)
-                user_context = user_context.replace("{{TASK_DESCRIPTION}}", task['description'])
-                user_context = user_context.replace("{{TEST_CMD}}", test_cmd)
-
-            # Construct the Prompt using template
             prompt = TemplateManager.render(
                 "developer.txt",
-                task_id=task['id'],
-                task_description=task['description'],
-                memory_tree=memory_tree,
-                user_context=user_context,
-                test_cmd=test_cmd,
-                prev_errors=prev_errors
+                task_id=task['id'], task_description=task['description'],
+                memory_tree=self.memory.get_structure(),
+                user_context=self._load_user_context(prd, task, test_cmd),
+                test_cmd=test_cmd, prev_errors=prev_errors
             )
 
             success, output, agent_error = self.agent.run(prompt, f"WORKER-{task['id']}")
 
             if not success:
-                self._record_failure(retries, "CLI Crash", output, agent_error=agent_error)
-                retries += 1
+                self._record_failure(retry, "CLI Crash", output, agent_error=agent_error, task_id=task['id'])
+                self._emit_retry_event(task, retry)
                 continue
 
             if "STATUS: SUCCESS" in output:
-                Logger.info("   🔒 Verifying Agent's Claim...", "YELLOW")
-                stdout, stderr, code = Shell.run(test_cmd)
-                verify_log = f"CMD: {test_cmd}\nEXIT CODE: {code}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-                Logger.file_log(verify_log, "VERIFICATION", f"WORKER-{task['id']}")
-
-                if code == 0:
-                    Logger.info(f"   ✅ Verified.", "GREEN")
-
+                verified, verify_error = self._verify_task(task, test_cmd)
+                if verified:
                     task['status'] = 'completed'
-                    if CONF.PROGRESS_FILE.exists(): CONF.PROGRESS_FILE.unlink()
+                    if CONF.PROGRESS_FILE.exists():
+                        CONF.PROGRESS_FILE.unlink()
+                    self.hooks.emit(Event(
+                        EventType.TASK_SUCCESS, phase="execute",
+                        task_id=task['id'], task_description=task['description']
+                    ))
                     return True
-                else:
-                    Logger.info("   🛑 Agent Hallucinated Success.", "RED")
-                    error = AgentError(
-                        exception_type="VerificationError",
-                        message=f"Test command '{test_cmd}' failed with exit code {code}",
-                        stack_trace=f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}",
-                        timestamp=datetime.datetime.now().isoformat(),
-                        agent_name=self.agent.get_name(),
-                        task_id=task['id'],
-                    )
-                    self._record_failure(retries, "Verification Failed", output[-1000:], agent_error=error)
+                self._record_failure(retry, "Verification Failed", output[-1000:], agent_error=verify_error, task_id=task['id'])
             else:
                 error = AgentError(
                     exception_type="AgentReportedFailure",
@@ -419,15 +487,28 @@ class RalphOrchestrator:
                     agent_name=self.agent.get_name(),
                     task_id=task['id'],
                 )
-                self._record_failure(retries, "Agent Reported Failure", output[-1000:], agent_error=error)
+                self._record_failure(retry, "Agent Reported Failure", output[-1000:], agent_error=error, task_id=task['id'])
 
-            retries += 1
+            self._emit_retry_event(task, retry)
 
         Logger.info(f"🛑 Max retries for {task['id']}. Marking as failed and continuing.", "RED")
         task['status'] = 'failed'
+        self.hooks.emit(Event(
+            EventType.TASK_FAILURE, phase="execute",
+            task_id=task['id'], task_description=task['description'],
+            retry_count=CONF.MAX_RETRIES, max_retries=CONF.MAX_RETRIES
+        ))
         return False
 
-    def _record_failure(self, retry: int, reason: str, detail: str, agent_error: Optional[AgentError] = None) -> None:
+    def _emit_retry_event(self, task: Dict[str, Any], retry: int) -> None:
+        """Emit a task retry event."""
+        self.hooks.emit(Event(
+            EventType.TASK_RETRY, phase="execute",
+            task_id=task['id'], task_description=task['description'],
+            retry_count=retry + 1, max_retries=CONF.MAX_RETRIES
+        ))
+
+    def _record_failure(self, retry: int, reason: str, detail: str, agent_error: Optional[AgentError] = None, task_id: Optional[str] = None) -> None:
         if agent_error:
             msg = (
                 f"Attempt {retry+1} Failed: {reason}\n"
@@ -441,6 +522,13 @@ class RalphOrchestrator:
         CONF.PROGRESS_FILE.write_text(msg, encoding='utf-8')
         Logger.file_log(msg, "FAILURE_RECORD", f"RETRY-{retry+1}")
         Logger.info(f"   ⚠️ Retry {retry+1}/{CONF.MAX_RETRIES}: {reason}", "RED")
+        self.hooks.emit(Event(
+            EventType.ERROR,
+            phase="execute",
+            task_id=task_id or (agent_error.task_id if agent_error else None),
+            error=agent_error,
+            metadata={"reason": reason, "retry": retry + 1}
+        ))
 
     def _archive_prd(self) -> None:
         if not CONF.PRD_FILE.exists(): return
@@ -448,6 +536,7 @@ class RalphOrchestrator:
         dest = CONF.ARCHIVE_DIR / f"prd_{ts}.json"
         shutil.move(str(CONF.PRD_FILE), str(dest))
         Logger.info(f"📦 PRD Archived to {dest}", "MAGENTA")
+        self.hooks.emit(Event(EventType.PRD_ARCHIVED, prd_path=str(dest)))
 
     def _validate_memory_on_startup(self) -> None:
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()): return
@@ -467,6 +556,59 @@ class RalphOrchestrator:
         if not intent: sys.exit(0)
         return intent
 
+    def _run_single_phase(self, phase: str) -> None:
+        """Run a single specified phase with prerequisite checks."""
+        Logger.info(f"📋 Phase: {phase} only", "YELLOW")
+
+        if phase == "planner" and not any(CONF.MEMORY_DIR.iterdir()):
+            Logger.info("❌ Memory missing. Run architect first.", "RED")
+            sys.exit(1)
+        if phase == "execute" and not CONF.PRD_FILE.exists():
+            Logger.info("❌ PRD missing. Run planner first.", "RED")
+            sys.exit(1)
+
+        if phase == "execute":
+            self.execute_loop()
+        else:
+            user_intent = self._get_intent()
+            if phase == "architect":
+                self.run_architect(user_intent)
+            else:
+                self.run_planner(user_intent)
+
+        Logger.info(f"✅ {phase.title()} complete.", "GREEN")
+
+    def _run_all_phases(self, accept_all: bool) -> None:
+        """Run all phases with optional user confirmation."""
+        Logger.info("📋 Running all phases...", "YELLOW")
+        user_intent = None
+
+        # Architect phase
+        if any(CONF.MEMORY_DIR.iterdir()):
+            Logger.info("📋 Memory exists, skipping architect.", "YELLOW")
+        elif accept_all or self._prompt_user_for_phase("Architect"):
+            user_intent = self._get_intent()
+            self.run_architect(user_intent)
+        else:
+            Logger.info("⏭️ Skipping architect.", "YELLOW")
+
+        # Planner phase
+        if CONF.PRD_FILE.exists():
+            Logger.info("📋 PRD exists, skipping planner.", "YELLOW")
+        elif accept_all or self._prompt_user_for_phase("Planner"):
+            user_intent = self._get_intent(user_intent)
+            self.run_planner(user_intent)
+        else:
+            Logger.info("⏭️ Skipping planner.", "YELLOW")
+
+        # Execute phase
+        if accept_all or self._prompt_user_for_phase("Execute"):
+            self.execute_loop()
+        else:
+            Logger.info("⏭️ Skipping execute.", "YELLOW")
+
+        Logger.info("✅ All phases complete.", "GREEN")
+
     def start(self, phase: str = "all", accept_all: bool = False) -> None:
         """
         Start the Ralph orchestrator.
@@ -476,34 +618,11 @@ class RalphOrchestrator:
             accept_all: If True, skip user confirmation prompts
         """
         Logger.info(f"🤖 Ralph {self.agent.get_name()} Agent active in: {CONF.BASE_DIR}", "GREEN")
-        user_intent = None
 
         if phase in ("architect", "planner", "execute"):
-            Logger.info(f"📋 Phase: {phase} only", "YELLOW")
-            if phase == "planner" and not any(CONF.MEMORY_DIR.iterdir()):
-                Logger.info("❌ Memory missing. Run architect first.", "RED"); sys.exit(1)
-            if phase == "execute" and not CONF.PRD_FILE.exists():
-                Logger.info("❌ PRD missing. Run planner first.", "RED"); sys.exit(1)
-            if phase != "execute": user_intent = self._get_intent()
-            {"architect": self.run_architect, "planner": self.run_planner, "execute": self.execute_loop}[phase](user_intent) if phase != "execute" else self.execute_loop()
-            Logger.info(f"✅ {phase.title()} complete.", "GREEN"); return
-
-        Logger.info("📋 Running all phases...", "YELLOW")
-        if not any(CONF.MEMORY_DIR.iterdir()):
-            if accept_all or self._prompt_user_for_phase("Architect"):
-                user_intent = self._get_intent(); self.run_architect(user_intent)
-            else: Logger.info("⏭️ Skipping architect.", "YELLOW")
-        else: Logger.info("📋 Memory exists, skipping architect.", "YELLOW")
-
-        if not CONF.PRD_FILE.exists():
-            if accept_all or self._prompt_user_for_phase("Planner"):
-                user_intent = self._get_intent(user_intent); self.run_planner(user_intent)
-            else: Logger.info("⏭️ Skipping planner.", "YELLOW")
-        else: Logger.info("📋 PRD exists, skipping planner.", "YELLOW")
-
-        if accept_all or self._prompt_user_for_phase("Execute"): self.execute_loop()
-        else: Logger.info("⏭️ Skipping execute.", "YELLOW")
-        Logger.info("✅ All phases complete.", "GREEN")
+            self._run_single_phase(phase)
+        else:
+            self._run_all_phases(accept_all)
 
 def get_version() -> str:
     try:
@@ -525,10 +644,17 @@ def main() -> None:
     parser.add_argument("--accept-all", "-y", action="store_true", help="Skip prompts")
     parser.add_argument("--verbose", action="store_true", help="Debug logging")
     parser.add_argument("--no-color", action="store_true", help="Disable colors")
+    parser.add_argument("--no-hooks", action="store_true", help="Disable hook execution")
+    parser.add_argument("--hooks", nargs="+", metavar="NAME", help="Enable only specified hooks by name")
     parser.add_argument("--agent", choices=list_agents(), default=agent, help=f"Agent (default: {agent})")
     args = parser.parse_args()
     Logger.set_verbose(args.verbose); Logger.set_no_color(args.no_color)
-    RalphOrchestrator(agent_name=args.agent).start(phase=args.phase, accept_all=args.accept_all)
+
+    # Determine hook configuration
+    enable_hooks = not args.no_hooks
+    enabled_hook_names = args.hooks if args.hooks else None
+
+    RalphOrchestrator(agent_name=args.agent, enable_hooks=enable_hooks, enabled_hook_names=enabled_hook_names).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
     main()
