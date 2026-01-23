@@ -1,6 +1,8 @@
 """Tests for fetch_ready_issues.py module."""
 import json
 import subprocess
+import threading
+import time
 import unittest
 from io import StringIO
 from unittest.mock import MagicMock, patch
@@ -13,6 +15,13 @@ from fetch_ready_issues import (
     UserStory,
     CreatedIssue,
     CreateIssueResult,
+    HookConfig,
+    HookRegistrationError,
+    PollerConfig,
+    GitHubPoller,
+    StoredIssue,
+    IssueStoreError,
+    IssueStore,
     check_gh_cli,
     fetch_ready_issues,
     main,
@@ -22,6 +31,12 @@ from fetch_ready_issues import (
     process_ready_issues,
     create_draft_issue,
     create_draft_issues,
+    update_issue_labels,
+    mark_issue_processed,
+    create_argument_parser,
+    format_issues_as_text,
+    generate_hook_config,
+    register_hook,
 )
 
 
@@ -217,6 +232,156 @@ class TestFetchReadyIssues(unittest.TestCase):
             issues = fetch_ready_issues()
         self.assertEqual(issues[0].labels, [])
 
+    def test_fetch_ready_issues_custom_label(self):
+        """Test fetch_ready_issues uses custom label parameter."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="[]", stderr="")
+            fetch_ready_issues(label="bug")
+
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("--label", call_args)
+        label_idx = call_args.index("--label")
+        self.assertEqual(call_args[label_idx + 1], "bug")
+
+    def test_fetch_ready_issues_default_label(self):
+        """Test fetch_ready_issues uses 'ready' as default label."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="[]", stderr="")
+            fetch_ready_issues()
+
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("ready", call_args)
+
+
+class TestCreateArgumentParser(unittest.TestCase):
+    """Tests for create_argument_parser function."""
+
+    def test_parser_default_values(self):
+        """Test parser has correct default values."""
+        parser = create_argument_parser()
+        args = parser.parse_args([])
+        self.assertEqual(args.label, "ready")
+        self.assertEqual(args.output_format, "json")
+        self.assertFalse(args.verbose)
+        self.assertFalse(args.no_check)
+
+    def test_parser_label_option(self):
+        """Test parser parses --label option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--label", "bug"])
+        self.assertEqual(args.label, "bug")
+
+    def test_parser_format_option_json(self):
+        """Test parser parses --format json option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--format", "json"])
+        self.assertEqual(args.output_format, "json")
+
+    def test_parser_format_option_text(self):
+        """Test parser parses --format text option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--format", "text"])
+        self.assertEqual(args.output_format, "text")
+
+    def test_parser_verbose_option(self):
+        """Test parser parses --verbose option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--verbose"])
+        self.assertTrue(args.verbose)
+
+    def test_parser_no_check_option(self):
+        """Test parser parses --no-check option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--no-check"])
+        self.assertTrue(args.no_check)
+
+    def test_parser_multiple_options(self):
+        """Test parser parses multiple options together."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--label", "feature", "--format", "text", "--verbose", "--no-check"])
+        self.assertEqual(args.label, "feature")
+        self.assertEqual(args.output_format, "text")
+        self.assertTrue(args.verbose)
+        self.assertTrue(args.no_check)
+
+    def test_parser_invalid_format_raises(self):
+        """Test parser raises on invalid format option."""
+        parser = create_argument_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--format", "invalid"])
+
+
+class TestFormatIssuesAsText(unittest.TestCase):
+    """Tests for format_issues_as_text function."""
+
+    def test_format_empty_list(self):
+        """Test format_issues_as_text with empty list."""
+        result = format_issues_as_text([])
+        self.assertEqual(result, "No issues found.")
+
+    def test_format_single_issue(self):
+        """Test format_issues_as_text with single issue."""
+        issues = [
+            Issue(
+                number=42,
+                title="Test Issue",
+                body="Issue body",
+                url="https://github.com/owner/repo/issues/42",
+                labels=["ready", "bug"]
+            )
+        ]
+        result = format_issues_as_text(issues)
+        self.assertIn("Found 1 issue(s):", result)
+        self.assertIn("#42: Test Issue", result)
+        self.assertIn("URL: https://github.com/owner/repo/issues/42", result)
+        self.assertIn("Labels: ready, bug", result)
+        self.assertIn("Body: Issue body", result)
+
+    def test_format_multiple_issues(self):
+        """Test format_issues_as_text with multiple issues."""
+        issues = [
+            Issue(number=1, title="First", body="Body 1", url="http://url1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body 2", url="http://url2", labels=["bug"]),
+        ]
+        result = format_issues_as_text(issues)
+        self.assertIn("Found 2 issue(s):", result)
+        self.assertIn("#1: First", result)
+        self.assertIn("#2: Second", result)
+
+    def test_format_issue_no_labels(self):
+        """Test format_issues_as_text with issue having no labels."""
+        issues = [
+            Issue(number=1, title="Test", body="Body", url="http://url", labels=[])
+        ]
+        result = format_issues_as_text(issues)
+        self.assertNotIn("Labels:", result)
+
+    def test_format_issue_no_body(self):
+        """Test format_issues_as_text with issue having no body."""
+        issues = [
+            Issue(number=1, title="Test", body=None, url="http://url", labels=[])
+        ]
+        result = format_issues_as_text(issues)
+        self.assertNotIn("Body:", result)
+
+    def test_format_long_body_truncated(self):
+        """Test format_issues_as_text truncates long body."""
+        long_body = "A" * 150
+        issues = [
+            Issue(number=1, title="Test", body=long_body, url="http://url", labels=[])
+        ]
+        result = format_issues_as_text(issues)
+        self.assertIn("...", result)
+        self.assertNotIn("A" * 150, result)
+
+    def test_format_body_newlines_replaced(self):
+        """Test format_issues_as_text replaces newlines in body preview."""
+        issues = [
+            Issue(number=1, title="Test", body="Line1\nLine2\nLine3", url="http://url", labels=[])
+        ]
+        result = format_issues_as_text(issues)
+        self.assertIn("Line1 Line2 Line3", result)
+
 
 class TestMain(unittest.TestCase):
     """Tests for main function."""
@@ -225,20 +390,31 @@ class TestMain(unittest.TestCase):
         """Test main returns 1 when gh CLI is not available."""
         with patch("fetch_ready_issues.check_gh_cli", return_value=False):
             with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
-                result = main()
+                result = main([])
         self.assertEqual(result, 1)
         self.assertIn("gh CLI is not installed", mock_stderr.getvalue())
 
-    def test_main_no_issues_found(self):
-        """Test main returns 0 and prints message when no issues found."""
+    def test_main_no_issues_found_json_format(self):
+        """Test main returns 0 and prints JSON when no issues found (json format)."""
         with patch("fetch_ready_issues.check_gh_cli", return_value=True):
             with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]):
                 with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
-                    result = main()
+                    result = main([])
+        self.assertEqual(result, 0)
+        output = json.loads(mock_stdout.getvalue())
+        self.assertEqual(output["count"], 0)
+        self.assertEqual(output["issues"], [])
+
+    def test_main_no_issues_found_text_format(self):
+        """Test main returns 0 and prints message when no issues found (text format)."""
+        with patch("fetch_ready_issues.check_gh_cli", return_value=True):
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]):
+                with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
+                    result = main(["--format", "text"])
         self.assertEqual(result, 0)
         self.assertIn("No open issues", mock_stdout.getvalue())
 
-    def test_main_issues_found(self):
+    def test_main_issues_found_json_format(self):
         """Test main returns 0 and prints JSON when issues found."""
         issues = [
             Issue(number=1, title="Test", body="Body", url="http://url", labels=["ready"])
@@ -246,12 +422,26 @@ class TestMain(unittest.TestCase):
         with patch("fetch_ready_issues.check_gh_cli", return_value=True):
             with patch("fetch_ready_issues.fetch_ready_issues", return_value=issues):
                 with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
-                    result = main()
+                    result = main([])
         self.assertEqual(result, 0)
         output = json.loads(mock_stdout.getvalue())
         self.assertEqual(output["count"], 1)
         self.assertEqual(len(output["issues"]), 1)
         self.assertEqual(output["issues"][0]["number"], 1)
+
+    def test_main_issues_found_text_format(self):
+        """Test main returns 0 and prints text when issues found (text format)."""
+        issues = [
+            Issue(number=42, title="Test Issue", body="Body", url="http://url", labels=["ready"])
+        ]
+        with patch("fetch_ready_issues.check_gh_cli", return_value=True):
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=issues):
+                with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
+                    result = main(["--format", "text"])
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("#42: Test Issue", output)
+        self.assertIn("Found 1 issue(s):", output)
 
     def test_main_github_cli_error(self):
         """Test main returns 1 and prints error on GitHubCLIError."""
@@ -259,9 +449,34 @@ class TestMain(unittest.TestCase):
             with patch("fetch_ready_issues.fetch_ready_issues") as mock_fetch:
                 mock_fetch.side_effect = GitHubCLIError("Test error")
                 with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
-                    result = main()
+                    result = main([])
         self.assertEqual(result, 1)
         self.assertIn("Test error", mock_stderr.getvalue())
+
+    def test_main_custom_label(self):
+        """Test main passes custom label to fetch_ready_issues."""
+        with patch("fetch_ready_issues.check_gh_cli", return_value=True):
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]) as mock_fetch:
+                main(["--label", "bug"])
+        mock_fetch.assert_called_once_with(label="bug")
+
+    def test_main_no_check_skips_auth_check(self):
+        """Test main with --no-check skips gh CLI authentication check."""
+        with patch("fetch_ready_issues.check_gh_cli") as mock_check:
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]):
+                main(["--no-check"])
+        mock_check.assert_not_called()
+
+    def test_main_verbose_output(self):
+        """Test main with --verbose prints verbose output."""
+        with patch("fetch_ready_issues.check_gh_cli", return_value=True):
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]):
+                with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
+                    main(["--verbose", "--label", "test"])
+        stderr_output = mock_stderr.getvalue()
+        self.assertIn("Label filter: test", stderr_output)
+        self.assertIn("Output format: json", stderr_output)
+        self.assertIn("Fetching issues", stderr_output)
 
 
 class TestGitHubCLIError(unittest.TestCase):
@@ -1035,6 +1250,1396 @@ class TestCreateDraftIssues(unittest.TestCase):
         self.assertEqual(results[0].title, "A")
         self.assertEqual(results[1].title, "B")
         self.assertEqual(results[2].title, "C")
+
+
+class TestUpdateIssueLabels(unittest.TestCase):
+    """Tests for update_issue_labels function."""
+
+    def test_update_issue_labels_add_only(self):
+        """Test update_issue_labels with only add_labels."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = update_issue_labels(42, add_labels=["processed"])
+
+        self.assertTrue(result)
+        call_args = mock_run.call_args[0][0]
+        self.assertEqual(call_args[0], "gh")
+        self.assertEqual(call_args[1], "issue")
+        self.assertEqual(call_args[2], "edit")
+        self.assertEqual(call_args[3], "42")
+        self.assertIn("--add-label", call_args)
+        self.assertIn("processed", call_args)
+
+    def test_update_issue_labels_remove_only(self):
+        """Test update_issue_labels with only remove_labels."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = update_issue_labels(42, remove_labels=["ready"])
+
+        self.assertTrue(result)
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("--remove-label", call_args)
+        self.assertIn("ready", call_args)
+
+    def test_update_issue_labels_add_and_remove(self):
+        """Test update_issue_labels with both add and remove labels."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = update_issue_labels(
+                42,
+                add_labels=["processed", "done"],
+                remove_labels=["ready", "pending"]
+            )
+
+        self.assertTrue(result)
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("--add-label", call_args)
+        self.assertIn("processed,done", call_args)
+        self.assertIn("--remove-label", call_args)
+        self.assertIn("ready,pending", call_args)
+
+    def test_update_issue_labels_no_labels(self):
+        """Test update_issue_labels with no labels returns True without calling gh."""
+        with patch("subprocess.run") as mock_run:
+            result = update_issue_labels(42)
+
+        self.assertTrue(result)
+        mock_run.assert_not_called()
+
+    def test_update_issue_labels_empty_lists(self):
+        """Test update_issue_labels with empty lists returns True without calling gh."""
+        with patch("subprocess.run") as mock_run:
+            result = update_issue_labels(42, add_labels=[], remove_labels=[])
+
+        self.assertTrue(result)
+        mock_run.assert_not_called()
+
+    def test_update_issue_labels_cli_error(self):
+        """Test update_issue_labels raises GitHubCLIError on CLI failure."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="Error: issue not found"
+            )
+            with self.assertRaises(GitHubCLIError) as context:
+                update_issue_labels(42, add_labels=["processed"])
+
+        self.assertIn("gh CLI failed to update labels", str(context.exception))
+        self.assertIn("#42", str(context.exception))
+
+    def test_update_issue_labels_timeout(self):
+        """Test update_issue_labels raises GitHubCLIError on timeout."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=60)
+            with self.assertRaises(GitHubCLIError) as context:
+                update_issue_labels(42, add_labels=["processed"])
+
+        self.assertIn("timed out", str(context.exception))
+        self.assertIn("#42", str(context.exception))
+
+    def test_update_issue_labels_correct_command_structure(self):
+        """Test update_issue_labels builds correct command structure."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            update_issue_labels(123, add_labels=["a"], remove_labels=["b"])
+
+        call_args = mock_run.call_args[0][0]
+        # Command should be: gh issue edit 123 --add-label a --remove-label b
+        self.assertEqual(call_args[:4], ["gh", "issue", "edit", "123"])
+
+
+class TestMarkIssueProcessed(unittest.TestCase):
+    """Tests for mark_issue_processed function."""
+
+    def test_mark_issue_processed_success(self):
+        """Test mark_issue_processed returns True on success."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = mark_issue_processed(42)
+
+        self.assertTrue(result)
+
+    def test_mark_issue_processed_correct_labels(self):
+        """Test mark_issue_processed uses correct labels."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            mark_issue_processed(42)
+
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("--add-label", call_args)
+        self.assertIn("processed", call_args)
+        self.assertIn("--remove-label", call_args)
+        self.assertIn("ready", call_args)
+
+    def test_mark_issue_processed_cli_error(self):
+        """Test mark_issue_processed raises GitHubCLIError on CLI failure."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="Error: issue not found"
+            )
+            with self.assertRaises(GitHubCLIError):
+                mark_issue_processed(42)
+
+    def test_mark_issue_processed_timeout(self):
+        """Test mark_issue_processed raises GitHubCLIError on timeout."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=60)
+            with self.assertRaises(GitHubCLIError):
+                mark_issue_processed(42)
+
+    def test_mark_issue_processed_different_issue_numbers(self):
+        """Test mark_issue_processed with various issue numbers."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+            for issue_num in [1, 99, 1234]:
+                mark_issue_processed(issue_num)
+                call_args = mock_run.call_args[0][0]
+                self.assertEqual(call_args[3], str(issue_num))
+
+
+class TestHookConfig(unittest.TestCase):
+    """Tests for HookConfig dataclass."""
+
+    def test_hook_config_creation(self):
+        """Test HookConfig dataclass creation with all fields."""
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS", "TASK_SUCCESS"],
+            priority=50,
+            timeout=10.0
+        )
+        self.assertEqual(config.name, "test_hook")
+        self.assertEqual(config.path, "/path/to/script.py")
+        self.assertEqual(config.events, ["PLANNER_SUCCESS", "TASK_SUCCESS"])
+        self.assertEqual(config.priority, 50)
+        self.assertEqual(config.timeout, 10.0)
+
+    def test_hook_config_default_values(self):
+        """Test HookConfig dataclass default values."""
+        config = HookConfig(
+            name="minimal_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+        self.assertEqual(config.priority, 100)
+        self.assertEqual(config.timeout, 5.0)
+
+    def test_hook_config_to_dict(self):
+        """Test HookConfig.to_dict() method."""
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"],
+            priority=75,
+            timeout=15.0
+        )
+        result = config.to_dict()
+        self.assertEqual(result, {
+            "name": "test_hook",
+            "path": "/path/to/script.py",
+            "events": ["PLANNER_SUCCESS"],
+            "priority": 75,
+            "timeout": 15.0
+        })
+
+
+class TestHookRegistrationError(unittest.TestCase):
+    """Tests for HookRegistrationError exception."""
+
+    def test_exception_message(self):
+        """Test HookRegistrationError stores message correctly."""
+        error = HookRegistrationError("Test message")
+        self.assertEqual(str(error), "Test message")
+
+    def test_exception_inheritance(self):
+        """Test HookRegistrationError inherits from Exception."""
+        error = HookRegistrationError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestGenerateHookConfig(unittest.TestCase):
+    """Tests for generate_hook_config function."""
+
+    def test_generate_hook_config_default_path(self):
+        """Test generate_hook_config uses default path."""
+        config = generate_hook_config()
+        self.assertEqual(config.name, "fetch_ready_issues")
+        self.assertEqual(config.events, ["PLANNER_SUCCESS"])
+        self.assertEqual(config.priority, 100)
+        self.assertEqual(config.timeout, 30.0)
+        # Path should be absolute
+        self.assertTrue(config.path.endswith("fetch_ready_issues.py"))
+
+    def test_generate_hook_config_custom_path(self):
+        """Test generate_hook_config with custom script path."""
+        custom_path = "/custom/path/to/script.py"
+        config = generate_hook_config(script_path=custom_path)
+        self.assertEqual(config.path, custom_path)
+        self.assertEqual(config.name, "fetch_ready_issues")
+        self.assertEqual(config.events, ["PLANNER_SUCCESS"])
+
+    def test_generate_hook_config_events(self):
+        """Test generate_hook_config returns correct events."""
+        config = generate_hook_config()
+        self.assertIn("PLANNER_SUCCESS", config.events)
+        self.assertEqual(len(config.events), 1)
+
+
+class TestRegisterHook(unittest.TestCase):
+    """Tests for register_hook function."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import shutil
+        self.temp_dir = tempfile.mkdtemp()
+        self.hooks_dir = f"{self.temp_dir}/.ralph/hooks"
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_register_hook_creates_directory(self):
+        """Test register_hook creates hooks directory if it doesn't exist."""
+        import os
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        result = register_hook(self.hooks_dir, config)
+
+        self.assertTrue(os.path.exists(self.hooks_dir))
+        self.assertTrue(os.path.exists(result))
+
+    def test_register_hook_creates_yaml_file(self):
+        """Test register_hook creates hooks.yaml file."""
+        import os
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        result = register_hook(self.hooks_dir, config)
+
+        self.assertTrue(result.endswith("hooks.yaml"))
+        self.assertTrue(os.path.exists(result))
+
+    def test_register_hook_writes_correct_yaml(self):
+        """Test register_hook writes correct YAML content."""
+        import yaml
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"],
+            priority=50,
+            timeout=10.0
+        )
+
+        result = register_hook(self.hooks_dir, config)
+
+        with open(result, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertIn("hooks", content)
+        self.assertEqual(len(content["hooks"]), 1)
+        hook = content["hooks"][0]
+        self.assertEqual(hook["name"], "test_hook")
+        self.assertEqual(hook["path"], "/path/to/script.py")
+        self.assertEqual(hook["events"], ["PLANNER_SUCCESS"])
+        self.assertEqual(hook["priority"], 50)
+        self.assertEqual(hook["timeout"], 10.0)
+
+    def test_register_hook_appends_to_existing_config(self):
+        """Test register_hook appends to existing hooks.yaml."""
+        import os
+        import yaml
+
+        # Create initial hooks directory and config
+        os.makedirs(self.hooks_dir, exist_ok=True)
+        config_path = f"{self.hooks_dir}/hooks.yaml"
+        initial_config = {
+            "hooks": [
+                {"name": "existing_hook", "path": "/existing/path.py", "events": ["TASK_SUCCESS"]}
+            ]
+        }
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(initial_config, f)
+
+        # Register new hook
+        config = HookConfig(
+            name="new_hook",
+            path="/new/path.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        register_hook(self.hooks_dir, config)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertEqual(len(content["hooks"]), 2)
+        hook_names = [h["name"] for h in content["hooks"]]
+        self.assertIn("existing_hook", hook_names)
+        self.assertIn("new_hook", hook_names)
+
+    def test_register_hook_replaces_existing_hook_with_same_name(self):
+        """Test register_hook replaces hook with same name."""
+        import os
+        import yaml
+
+        # Create initial hooks directory and config
+        os.makedirs(self.hooks_dir, exist_ok=True)
+        config_path = f"{self.hooks_dir}/hooks.yaml"
+        initial_config = {
+            "hooks": [
+                {"name": "test_hook", "path": "/old/path.py", "events": ["TASK_SUCCESS"]}
+            ]
+        }
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(initial_config, f)
+
+        # Register hook with same name but different config
+        config = HookConfig(
+            name="test_hook",
+            path="/new/path.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        register_hook(self.hooks_dir, config)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertEqual(len(content["hooks"]), 1)
+        self.assertEqual(content["hooks"][0]["path"], "/new/path.py")
+        self.assertEqual(content["hooks"][0]["events"], ["PLANNER_SUCCESS"])
+
+    def test_register_hook_handles_empty_yaml(self):
+        """Test register_hook handles empty existing hooks.yaml."""
+        import os
+        import yaml
+
+        # Create empty hooks.yaml
+        os.makedirs(self.hooks_dir, exist_ok=True)
+        config_path = f"{self.hooks_dir}/hooks.yaml"
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write("")
+
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        register_hook(self.hooks_dir, config)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertEqual(len(content["hooks"]), 1)
+
+    def test_register_hook_handles_malformed_hooks_list(self):
+        """Test register_hook handles hooks.yaml with non-list hooks value."""
+        import os
+        import yaml
+
+        # Create hooks.yaml with non-list hooks value
+        os.makedirs(self.hooks_dir, exist_ok=True)
+        config_path = f"{self.hooks_dir}/hooks.yaml"
+        initial_config = {"hooks": "not_a_list"}
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(initial_config, f)
+
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        register_hook(self.hooks_dir, config)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertIsInstance(content["hooks"], list)
+        self.assertEqual(len(content["hooks"]), 1)
+
+    def test_register_hook_returns_config_path(self):
+        """Test register_hook returns the path to hooks.yaml."""
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        result = register_hook(self.hooks_dir, config)
+
+        self.assertTrue(result.endswith("hooks.yaml"))
+        self.assertIn(self.temp_dir, result)
+
+
+class TestMainRegisterHook(unittest.TestCase):
+    """Tests for main function with --register-hook option."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.hooks_dir = f"{self.temp_dir}/.ralph/hooks"
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_main_register_hook_success(self):
+        """Test main with --register-hook returns 0 on success."""
+        with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
+            result = main(["--register-hook", "--hooks-dir", self.hooks_dir])
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("Hook registered successfully", output)
+        self.assertIn("fetch_ready_issues", output)
+        self.assertIn("PLANNER_SUCCESS", output)
+
+    def test_main_register_hook_custom_hooks_dir(self):
+        """Test main with --register-hook uses custom hooks directory."""
+        import os
+        custom_hooks_dir = f"{self.temp_dir}/custom/hooks"
+
+        with patch("sys.stdout", new_callable=StringIO):
+            result = main(["--register-hook", "--hooks-dir", custom_hooks_dir])
+
+        self.assertEqual(result, 0)
+        self.assertTrue(os.path.exists(f"{custom_hooks_dir}/hooks.yaml"))
+
+    def test_main_register_hook_error(self):
+        """Test main with --register-hook returns 1 on error."""
+        with patch("fetch_ready_issues.register_hook") as mock_register:
+            mock_register.side_effect = HookRegistrationError("Test error")
+            with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
+                result = main(["--register-hook", "--hooks-dir", self.hooks_dir])
+
+        self.assertEqual(result, 1)
+        self.assertIn("Test error", mock_stderr.getvalue())
+
+    def test_main_register_hook_skips_gh_check(self):
+        """Test main with --register-hook does not check gh CLI."""
+        with patch("fetch_ready_issues.check_gh_cli") as mock_check:
+            with patch("sys.stdout", new_callable=StringIO):
+                main(["--register-hook", "--hooks-dir", self.hooks_dir])
+
+        mock_check.assert_not_called()
+
+    def test_main_register_hook_skips_fetch(self):
+        """Test main with --register-hook does not fetch issues."""
+        with patch("fetch_ready_issues.fetch_ready_issues") as mock_fetch:
+            with patch("sys.stdout", new_callable=StringIO):
+                main(["--register-hook", "--hooks-dir", self.hooks_dir])
+
+        mock_fetch.assert_not_called()
+
+
+class TestCreateArgumentParserRegisterHook(unittest.TestCase):
+    """Tests for create_argument_parser with register hook options."""
+
+    def test_parser_register_hook_default(self):
+        """Test parser has register_hook default to False."""
+        parser = create_argument_parser()
+        args = parser.parse_args([])
+        self.assertFalse(args.register_hook)
+
+    def test_parser_register_hook_option(self):
+        """Test parser parses --register-hook option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--register-hook"])
+        self.assertTrue(args.register_hook)
+
+    def test_parser_hooks_dir_default(self):
+        """Test parser has hooks_dir default value."""
+        parser = create_argument_parser()
+        args = parser.parse_args([])
+        self.assertEqual(args.hooks_dir, ".ralph/hooks")
+
+    def test_parser_hooks_dir_option(self):
+        """Test parser parses --hooks-dir option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--hooks-dir", "/custom/path"])
+        self.assertEqual(args.hooks_dir, "/custom/path")
+
+    def test_parser_register_hook_with_hooks_dir(self):
+        """Test parser parses both --register-hook and --hooks-dir options."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--register-hook", "--hooks-dir", "/my/hooks"])
+        self.assertTrue(args.register_hook)
+        self.assertEqual(args.hooks_dir, "/my/hooks")
+
+
+class TestPollerConfig(unittest.TestCase):
+    """Tests for PollerConfig dataclass."""
+
+    def test_poller_config_default_values(self):
+        """Test PollerConfig has correct default values."""
+        config = PollerConfig()
+        self.assertEqual(config.label, "ready")
+        self.assertEqual(config.interval, 60.0)
+        self.assertIsNone(config.on_new_issues)
+        self.assertIsNone(config.on_error)
+
+    def test_poller_config_custom_values(self):
+        """Test PollerConfig with custom values."""
+        callback = lambda issues: None
+        error_callback = lambda e: None
+        config = PollerConfig(
+            label="bug",
+            interval=30.0,
+            on_new_issues=callback,
+            on_error=error_callback
+        )
+        self.assertEqual(config.label, "bug")
+        self.assertEqual(config.interval, 30.0)
+        self.assertIs(config.on_new_issues, callback)
+        self.assertIs(config.on_error, error_callback)
+
+    def test_poller_config_partial_values(self):
+        """Test PollerConfig with only some custom values."""
+        config = PollerConfig(interval=120.0)
+        self.assertEqual(config.label, "ready")
+        self.assertEqual(config.interval, 120.0)
+        self.assertIsNone(config.on_new_issues)
+
+
+class TestGitHubPoller(unittest.TestCase):
+    """Tests for GitHubPoller class."""
+
+    def test_poller_default_config(self):
+        """Test GitHubPoller with default configuration."""
+        poller = GitHubPoller()
+        self.assertEqual(poller.interval, 60.0)
+        self.assertEqual(poller.config.label, "ready")
+        self.assertFalse(poller.is_running)
+
+    def test_poller_custom_config(self):
+        """Test GitHubPoller with custom configuration."""
+        config = PollerConfig(label="feature", interval=45.0)
+        poller = GitHubPoller(config)
+        self.assertEqual(poller.interval, 45.0)
+        self.assertEqual(poller.config.label, "feature")
+
+    def test_poller_interval_setter(self):
+        """Test setting polling interval."""
+        poller = GitHubPoller()
+        poller.interval = 30.0
+        self.assertEqual(poller.interval, 30.0)
+
+    def test_poller_interval_setter_invalid(self):
+        """Test setting invalid polling interval raises ValueError."""
+        poller = GitHubPoller()
+        with self.assertRaises(ValueError):
+            poller.interval = 0
+        with self.assertRaises(ValueError):
+            poller.interval = -10
+
+    def test_poller_seen_issues_initially_empty(self):
+        """Test seen_issues is initially empty."""
+        poller = GitHubPoller()
+        self.assertEqual(poller.seen_issues, set())
+
+    def test_poller_seen_issues_returns_copy(self):
+        """Test seen_issues returns a copy of the set."""
+        poller = GitHubPoller()
+        seen = poller.seen_issues
+        seen.add(999)  # Modify the copy
+        self.assertNotIn(999, poller.seen_issues)  # Original should be unmodified
+
+    def test_poller_start_stop(self):
+        """Test starting and stopping the poller."""
+        config = PollerConfig(interval=0.1)
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=[]):
+            result = poller.start()
+            self.assertTrue(result)
+            self.assertTrue(poller.is_running)
+
+            # Try starting again - should return False
+            result = poller.start()
+            self.assertFalse(result)
+
+            # Stop the poller
+            result = poller.stop(timeout=1.0)
+            self.assertTrue(result)
+            self.assertFalse(poller.is_running)
+
+            # Try stopping again - should return False
+            result = poller.stop()
+            self.assertFalse(result)
+
+    def test_poller_poll_once_returns_new_issues(self):
+        """Test poll_once returns new issues."""
+        mock_issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        poller = GitHubPoller()
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues):
+            new_issues = poller.poll_once()
+
+        self.assertEqual(len(new_issues), 2)
+        self.assertEqual(new_issues[0].number, 1)
+        self.assertEqual(new_issues[1].number, 2)
+        self.assertEqual(poller.seen_issues, {1, 2})
+
+    def test_poller_poll_once_filters_seen_issues(self):
+        """Test poll_once does not return already seen issues."""
+        mock_issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        poller = GitHubPoller()
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues):
+            # First poll - all issues are new
+            new_issues_1 = poller.poll_once()
+            self.assertEqual(len(new_issues_1), 2)
+
+            # Second poll - no new issues
+            new_issues_2 = poller.poll_once()
+            self.assertEqual(len(new_issues_2), 0)
+
+    def test_poller_poll_once_detects_new_issues_incrementally(self):
+        """Test poll_once detects new issues appearing between polls."""
+        poller = GitHubPoller()
+
+        # First poll - one issue
+        mock_issues_1 = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+        ]
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues_1):
+            new_issues = poller.poll_once()
+            self.assertEqual(len(new_issues), 1)
+
+        # Second poll - same issue plus a new one
+        mock_issues_2 = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues_2):
+            new_issues = poller.poll_once()
+            self.assertEqual(len(new_issues), 1)
+            self.assertEqual(new_issues[0].number, 2)
+
+    def test_poller_poll_once_raises_on_error(self):
+        """Test poll_once raises GitHubCLIError on failure."""
+        poller = GitHubPoller()
+
+        with patch('fetch_ready_issues.fetch_ready_issues') as mock_fetch:
+            mock_fetch.side_effect = GitHubCLIError("CLI error")
+            with self.assertRaises(GitHubCLIError):
+                poller.poll_once()
+
+    def test_poller_reset_seen_issues(self):
+        """Test reset_seen_issues clears the seen set."""
+        mock_issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+        ]
+
+        poller = GitHubPoller()
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues):
+            poller.poll_once()
+            self.assertEqual(poller.seen_issues, {1})
+
+            poller.reset_seen_issues()
+            self.assertEqual(poller.seen_issues, set())
+
+            # After reset, issues should be "new" again
+            new_issues = poller.poll_once()
+            self.assertEqual(len(new_issues), 1)
+
+    def test_poller_callback_invoked_on_new_issues(self):
+        """Test on_new_issues callback is invoked when new issues are found."""
+        received_issues = []
+
+        def callback(issues):
+            received_issues.extend(issues)
+
+        config = PollerConfig(
+            interval=0.05,
+            on_new_issues=callback
+        )
+        poller = GitHubPoller(config)
+
+        mock_issues = [
+            Issue(number=1, title="Test", body="Body", url="http://url/1", labels=["ready"]),
+        ]
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues):
+            poller.start()
+            time.sleep(0.15)  # Let the polling loop run a couple of times
+            poller.stop(timeout=1.0)
+
+        self.assertEqual(len(received_issues), 1)
+        self.assertEqual(received_issues[0].number, 1)
+
+    def test_poller_callback_not_invoked_when_no_new_issues(self):
+        """Test on_new_issues callback is not invoked when no new issues."""
+        call_count = [0]
+
+        def callback(issues):
+            call_count[0] += 1
+
+        config = PollerConfig(
+            interval=0.05,
+            on_new_issues=callback
+        )
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=[]):
+            poller.start()
+            time.sleep(0.15)
+            poller.stop(timeout=1.0)
+
+        self.assertEqual(call_count[0], 0)
+
+    def test_poller_error_callback_invoked_on_error(self):
+        """Test on_error callback is invoked when an error occurs."""
+        received_errors = []
+
+        def error_callback(e):
+            received_errors.append(e)
+
+        config = PollerConfig(
+            interval=0.05,
+            on_error=error_callback
+        )
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues') as mock_fetch:
+            mock_fetch.side_effect = GitHubCLIError("Test error")
+            poller.start()
+            time.sleep(0.15)
+            poller.stop(timeout=1.0)
+
+        self.assertGreater(len(received_errors), 0)
+        self.assertIsInstance(received_errors[0], GitHubCLIError)
+
+    def test_poller_continues_after_error(self):
+        """Test poller continues polling after an error."""
+        poll_count = [0]
+        received_issues = []
+
+        def callback(issues):
+            received_issues.extend(issues)
+
+        config = PollerConfig(
+            interval=0.05,
+            on_new_issues=callback
+        )
+        poller = GitHubPoller(config)
+
+        def mock_fetch(label="ready"):
+            poll_count[0] += 1
+            if poll_count[0] == 1:
+                raise GitHubCLIError("Temporary error")
+            return [Issue(number=1, title="Test", body="Body", url="http://url/1", labels=["ready"])]
+
+        with patch('fetch_ready_issues.fetch_ready_issues', side_effect=mock_fetch):
+            poller.start()
+            time.sleep(0.2)
+            poller.stop(timeout=1.0)
+
+        # Should have polled multiple times
+        self.assertGreater(poll_count[0], 1)
+        # Should have eventually received issues after the error
+        self.assertGreater(len(received_issues), 0)
+
+    def test_poller_uses_configured_label(self):
+        """Test poller uses the configured label for fetching."""
+        config = PollerConfig(label="custom-label")
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=[]) as mock_fetch:
+            poller.poll_once()
+
+        mock_fetch.assert_called_once_with(label="custom-label")
+
+    def test_poller_thread_safety(self):
+        """Test poller is thread-safe for concurrent access."""
+        poller = GitHubPoller()
+        errors = []
+
+        def poll_worker():
+            try:
+                for _ in range(10):
+                    with patch('fetch_ready_issues.fetch_ready_issues', return_value=[
+                        Issue(number=1, title="Test", body="Body", url="http://url/1", labels=["ready"])
+                    ]):
+                        poller.poll_once()
+                        _ = poller.seen_issues
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=poll_worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(errors), 0)
+
+    def test_poller_stop_with_timeout(self):
+        """Test stopping poller with timeout."""
+        config = PollerConfig(interval=10.0)  # Long interval
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=[]):
+            poller.start()
+            # Stop should complete quickly due to stop_event, not wait for interval
+            start_time = time.time()
+            poller.stop(timeout=1.0)
+            elapsed = time.time() - start_time
+
+        self.assertLess(elapsed, 2.0)  # Should complete well within timeout
+        self.assertFalse(poller.is_running)
+
+
+class TestStoredIssue(unittest.TestCase):
+    """Tests for StoredIssue dataclass."""
+
+    def test_stored_issue_creation(self):
+        """Test StoredIssue dataclass creation with all fields."""
+        stored = StoredIssue(
+            number=42,
+            title="Test Issue",
+            body="Issue body content",
+            url="https://github.com/owner/repo/issues/42",
+            labels=["ready", "bug"],
+            stored_at="2024-01-15T10:30:00+00:00",
+            status="pending"
+        )
+        self.assertEqual(stored.number, 42)
+        self.assertEqual(stored.title, "Test Issue")
+        self.assertEqual(stored.body, "Issue body content")
+        self.assertEqual(stored.url, "https://github.com/owner/repo/issues/42")
+        self.assertEqual(stored.labels, ["ready", "bug"])
+        self.assertEqual(stored.stored_at, "2024-01-15T10:30:00+00:00")
+        self.assertEqual(stored.status, "pending")
+
+    def test_stored_issue_default_status(self):
+        """Test StoredIssue default status is 'pending'."""
+        stored = StoredIssue(
+            number=1,
+            title="Test",
+            body=None,
+            url="http://url",
+            labels=[],
+            stored_at="2024-01-15T10:30:00+00:00"
+        )
+        self.assertEqual(stored.status, "pending")
+
+    def test_stored_issue_to_dict(self):
+        """Test StoredIssue.to_dict() method."""
+        stored = StoredIssue(
+            number=10,
+            title="Dict Test",
+            body="Body text",
+            url="https://github.com/owner/repo/issues/10",
+            labels=["ready"],
+            stored_at="2024-01-15T10:30:00+00:00",
+            status="completed"
+        )
+        result = stored.to_dict()
+        self.assertEqual(result, {
+            "number": 10,
+            "title": "Dict Test",
+            "body": "Body text",
+            "url": "https://github.com/owner/repo/issues/10",
+            "labels": ["ready"],
+            "stored_at": "2024-01-15T10:30:00+00:00",
+            "status": "completed"
+        })
+
+    def test_stored_issue_from_dict(self):
+        """Test StoredIssue.from_dict() class method."""
+        data = {
+            "number": 5,
+            "title": "From Dict",
+            "body": "Test body",
+            "url": "http://url",
+            "labels": ["bug"],
+            "stored_at": "2024-01-15T10:30:00+00:00",
+            "status": "processing"
+        }
+        stored = StoredIssue.from_dict(data)
+        self.assertEqual(stored.number, 5)
+        self.assertEqual(stored.title, "From Dict")
+        self.assertEqual(stored.body, "Test body")
+        self.assertEqual(stored.labels, ["bug"])
+        self.assertEqual(stored.status, "processing")
+
+    def test_stored_issue_from_dict_missing_optional_fields(self):
+        """Test StoredIssue.from_dict() with missing optional fields."""
+        data = {
+            "number": 1,
+            "title": "Test",
+            "url": "http://url",
+            "stored_at": "2024-01-15T10:30:00+00:00"
+        }
+        stored = StoredIssue.from_dict(data)
+        self.assertIsNone(stored.body)
+        self.assertEqual(stored.labels, [])
+        self.assertEqual(stored.status, "pending")
+
+    def test_stored_issue_from_issue(self):
+        """Test StoredIssue.from_issue() class method."""
+        issue = Issue(
+            number=42,
+            title="Test Issue",
+            body="Body",
+            url="http://url",
+            labels=["ready"]
+        )
+        stored = StoredIssue.from_issue(issue)
+        self.assertEqual(stored.number, 42)
+        self.assertEqual(stored.title, "Test Issue")
+        self.assertEqual(stored.body, "Body")
+        self.assertEqual(stored.labels, ["ready"])
+        self.assertEqual(stored.status, "pending")
+        self.assertIsNotNone(stored.stored_at)
+
+    def test_stored_issue_from_issue_custom_status(self):
+        """Test StoredIssue.from_issue() with custom status."""
+        issue = Issue(
+            number=1,
+            title="Test",
+            body="Body",
+            url="http://url",
+            labels=[]
+        )
+        stored = StoredIssue.from_issue(issue, status="processing")
+        self.assertEqual(stored.status, "processing")
+
+
+class TestIssueStoreError(unittest.TestCase):
+    """Tests for IssueStoreError exception."""
+
+    def test_exception_message(self):
+        """Test IssueStoreError stores message correctly."""
+        error = IssueStoreError("Test message")
+        self.assertEqual(str(error), "Test message")
+
+    def test_exception_inheritance(self):
+        """Test IssueStoreError inherits from Exception."""
+        error = IssueStoreError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestIssueStore(unittest.TestCase):
+    """Tests for IssueStore class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import shutil
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = f"{self.temp_dir}/issues_store"
+        self.store = IssueStore(self.store_dir)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(self, number: int, title: str = "Test") -> Issue:
+        """Helper to create a test issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=f"Body for issue {number}",
+            url=f"http://url/{number}",
+            labels=["ready"]
+        )
+
+    def test_store_initialization(self):
+        """Test IssueStore initialization."""
+        import os
+        store = IssueStore("/custom/path")
+        # Use os.path.normpath to handle platform differences
+        self.assertEqual(os.path.normpath(store.store_dir), os.path.normpath("/custom/path"))
+        self.assertEqual(os.path.normpath(store.issues_dir), os.path.normpath("/custom/path/issues"))
+
+    def test_store_default_path(self):
+        """Test IssueStore default path."""
+        import os
+        store = IssueStore()
+        self.assertEqual(os.path.normpath(store.store_dir), os.path.normpath(".ralph/issues"))
+
+    def test_save_creates_directory(self):
+        """Test save creates storage directory if it doesn't exist."""
+        import os
+        issue = self._create_issue(1)
+        self.store.save(issue)
+        self.assertTrue(os.path.exists(self.store.issues_dir))
+
+    def test_save_creates_json_file(self):
+        """Test save creates a JSON file for the issue."""
+        import os
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        expected_path = os.path.join(self.store.issues_dir, "42.json")
+        self.assertTrue(os.path.exists(expected_path))
+
+    def test_save_returns_stored_issue(self):
+        """Test save returns a StoredIssue."""
+        issue = self._create_issue(1)
+        stored = self.store.save(issue)
+        self.assertIsInstance(stored, StoredIssue)
+        self.assertEqual(stored.number, 1)
+        self.assertEqual(stored.status, "pending")
+
+    def test_save_with_custom_status(self):
+        """Test save with custom status."""
+        issue = self._create_issue(1)
+        stored = self.store.save(issue, status="processing")
+        self.assertEqual(stored.status, "processing")
+
+    def test_save_overwrites_existing(self):
+        """Test save overwrites existing issue."""
+        issue1 = self._create_issue(1, title="Original")
+        issue2 = self._create_issue(1, title="Updated")
+
+        self.store.save(issue1)
+        self.store.save(issue2)
+
+        retrieved = self.store.get(1)
+        self.assertEqual(retrieved.title, "Updated")
+
+    def test_save_stored(self):
+        """Test save_stored saves a StoredIssue."""
+        issue = self._create_issue(1)
+        stored = self.store.save(issue)
+
+        # Modify and save again
+        from dataclasses import replace
+        updated = replace(stored, status="completed")
+        self.store.save_stored(updated)
+
+        retrieved = self.store.get(1)
+        self.assertEqual(retrieved.status, "completed")
+
+    def test_get_returns_stored_issue(self):
+        """Test get returns the stored issue."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+
+        retrieved = self.store.get(42)
+        self.assertIsInstance(retrieved, StoredIssue)
+        self.assertEqual(retrieved.number, 42)
+        self.assertEqual(retrieved.title, "Test")
+
+    def test_get_returns_none_for_missing(self):
+        """Test get returns None for non-existent issue."""
+        result = self.store.get(999)
+        self.assertIsNone(result)
+
+    def test_get_preserves_all_fields(self):
+        """Test get preserves all issue fields."""
+        issue = Issue(
+            number=1,
+            title="Full Test",
+            body="Body content",
+            url="http://example.com/1",
+            labels=["ready", "bug", "high-priority"]
+        )
+        self.store.save(issue, status="processing")
+
+        retrieved = self.store.get(1)
+        self.assertEqual(retrieved.title, "Full Test")
+        self.assertEqual(retrieved.body, "Body content")
+        self.assertEqual(retrieved.url, "http://example.com/1")
+        self.assertEqual(retrieved.labels, ["ready", "bug", "high-priority"])
+        self.assertEqual(retrieved.status, "processing")
+
+    def test_exists_returns_true_for_existing(self):
+        """Test exists returns True for stored issue."""
+        issue = self._create_issue(1)
+        self.store.save(issue)
+        self.assertTrue(self.store.exists(1))
+
+    def test_exists_returns_false_for_missing(self):
+        """Test exists returns False for non-existent issue."""
+        self.assertFalse(self.store.exists(999))
+
+    def test_delete_removes_issue(self):
+        """Test delete removes the issue file."""
+        issue = self._create_issue(1)
+        self.store.save(issue)
+        self.assertTrue(self.store.exists(1))
+
+        result = self.store.delete(1)
+        self.assertTrue(result)
+        self.assertFalse(self.store.exists(1))
+
+    def test_delete_returns_false_for_missing(self):
+        """Test delete returns False for non-existent issue."""
+        result = self.store.delete(999)
+        self.assertFalse(result)
+
+    def test_list_issues_empty_store(self):
+        """Test list_issues returns empty list for empty store."""
+        result = self.store.list_issues()
+        self.assertEqual(result, [])
+
+    def test_list_issues_returns_all_issues(self):
+        """Test list_issues returns all stored issues."""
+        for i in range(1, 4):
+            self.store.save(self._create_issue(i))
+
+        issues = self.store.list_issues()
+        self.assertEqual(len(issues), 3)
+        numbers = [i.number for i in issues]
+        self.assertEqual(numbers, [1, 2, 3])
+
+    def test_list_issues_sorted_by_number(self):
+        """Test list_issues returns issues sorted by number."""
+        # Save in random order
+        for i in [5, 2, 8, 1, 3]:
+            self.store.save(self._create_issue(i))
+
+        issues = self.store.list_issues()
+        numbers = [i.number for i in issues]
+        self.assertEqual(numbers, [1, 2, 3, 5, 8])
+
+    def test_list_issues_filter_by_status(self):
+        """Test list_issues filters by status."""
+        self.store.save(self._create_issue(1), status="pending")
+        self.store.save(self._create_issue(2), status="processing")
+        self.store.save(self._create_issue(3), status="completed")
+        self.store.save(self._create_issue(4), status="pending")
+
+        pending = self.store.list_issues(status="pending")
+        self.assertEqual(len(pending), 2)
+        self.assertEqual([i.number for i in pending], [1, 4])
+
+        completed = self.store.list_issues(status="completed")
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].number, 3)
+
+    def test_list_issues_skips_malformed_files(self):
+        """Test list_issues skips malformed JSON files."""
+        import os
+
+        # Create a valid issue
+        self.store.save(self._create_issue(1))
+
+        # Create a malformed JSON file
+        malformed_path = os.path.join(self.store.issues_dir, "2.json")
+        with open(malformed_path, 'w') as f:
+            f.write("not valid json")
+
+        # Should only return the valid issue
+        issues = self.store.list_issues()
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].number, 1)
+
+    def test_update_status(self):
+        """Test update_status updates the issue status."""
+        self.store.save(self._create_issue(1), status="pending")
+
+        updated = self.store.update_status(1, "completed")
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.status, "completed")
+
+        # Verify persisted
+        retrieved = self.store.get(1)
+        self.assertEqual(retrieved.status, "completed")
+
+    def test_update_status_returns_none_for_missing(self):
+        """Test update_status returns None for non-existent issue."""
+        result = self.store.update_status(999, "completed")
+        self.assertIsNone(result)
+
+    def test_count_empty_store(self):
+        """Test count returns 0 for empty store."""
+        self.assertEqual(self.store.count(), 0)
+
+    def test_count_all_issues(self):
+        """Test count returns total number of issues."""
+        for i in range(5):
+            self.store.save(self._create_issue(i))
+        self.assertEqual(self.store.count(), 5)
+
+    def test_count_by_status(self):
+        """Test count filters by status."""
+        self.store.save(self._create_issue(1), status="pending")
+        self.store.save(self._create_issue(2), status="pending")
+        self.store.save(self._create_issue(3), status="completed")
+
+        self.assertEqual(self.store.count(status="pending"), 2)
+        self.assertEqual(self.store.count(status="completed"), 1)
+        self.assertEqual(self.store.count(status="failed"), 0)
+
+    def test_clear_removes_all_issues(self):
+        """Test clear removes all stored issues."""
+        for i in range(3):
+            self.store.save(self._create_issue(i))
+        self.assertEqual(self.store.count(), 3)
+
+        count = self.store.clear()
+        self.assertEqual(count, 3)
+        self.assertEqual(self.store.count(), 0)
+
+    def test_clear_returns_zero_for_empty_store(self):
+        """Test clear returns 0 for empty store."""
+        count = self.store.clear()
+        self.assertEqual(count, 0)
+
+    def test_save_batch(self):
+        """Test save_batch saves multiple issues."""
+        issues = [self._create_issue(i) for i in range(1, 4)]
+        stored = self.store.save_batch(issues)
+
+        self.assertEqual(len(stored), 3)
+        self.assertEqual(self.store.count(), 3)
+
+        for i, s in enumerate(stored, 1):
+            self.assertEqual(s.number, i)
+            self.assertEqual(s.status, "pending")
+
+    def test_save_batch_with_custom_status(self):
+        """Test save_batch with custom status."""
+        issues = [self._create_issue(i) for i in range(1, 3)]
+        stored = self.store.save_batch(issues, status="processing")
+
+        for s in stored:
+            self.assertEqual(s.status, "processing")
+
+    def test_save_batch_empty_list(self):
+        """Test save_batch with empty list."""
+        stored = self.store.save_batch([])
+        self.assertEqual(stored, [])
+        self.assertEqual(self.store.count(), 0)
+
+    def test_stored_issue_survives_restart(self):
+        """Test stored issues survive creating a new IssueStore instance."""
+        # Save with first store instance
+        self.store.save(self._create_issue(42), status="processing")
+
+        # Create new store instance pointing to same directory
+        new_store = IssueStore(self.store_dir)
+
+        # Issue should be retrievable
+        retrieved = new_store.get(42)
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.number, 42)
+        self.assertEqual(retrieved.status, "processing")
+
+    def test_json_file_format(self):
+        """Test the JSON file format is human-readable."""
+        import os
+
+        issue = Issue(
+            number=1,
+            title="Test Issue",
+            body="Test body",
+            url="http://url",
+            labels=["ready"]
+        )
+        self.store.save(issue)
+
+        file_path = os.path.join(self.store.issues_dir, "1.json")
+        with open(file_path, 'r') as f:
+            content = f.read()
+
+        # Should be indented JSON
+        self.assertIn('"number": 1', content)
+        self.assertIn('"title": "Test Issue"', content)
+        self.assertIn('\n', content)  # Should have newlines (indented)
+
+
+class TestIssueStoreIntegration(unittest.TestCase):
+    """Integration tests for IssueStore with GitHubPoller workflow."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = f"{self.temp_dir}/issues_store"
+        self.store = IssueStore(self.store_dir)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_store_issues_from_poller_callback(self):
+        """Test storing issues received from a poller callback."""
+        mock_issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        # Simulate callback storing issues
+        def on_new_issues(issues):
+            self.store.save_batch(issues)
+
+        on_new_issues(mock_issues)
+
+        self.assertEqual(self.store.count(), 2)
+        self.assertIsNotNone(self.store.get(1))
+        self.assertIsNotNone(self.store.get(2))
+
+    def test_track_processing_status(self):
+        """Test tracking issue processing status through workflow."""
+        issue = Issue(number=1, title="Test", body="Body", url="http://url", labels=["ready"])
+
+        # Issue arrives - save as pending
+        self.store.save(issue, status="pending")
+        self.assertEqual(self.store.get(1).status, "pending")
+
+        # Start processing
+        self.store.update_status(1, "processing")
+        self.assertEqual(self.store.get(1).status, "processing")
+
+        # Processing complete
+        self.store.update_status(1, "completed")
+        self.assertEqual(self.store.get(1).status, "completed")
+
+    def test_resume_after_restart(self):
+        """Test resuming incomplete processing after restart."""
+        # Save issues with various statuses
+        for i, status in [(1, "completed"), (2, "processing"), (3, "pending")]:
+            issue = Issue(number=i, title=f"Issue {i}", body="Body", url="http://url", labels=[])
+            self.store.save(issue, status=status)
+
+        # Simulate restart - create new store instance
+        new_store = IssueStore(self.store_dir)
+
+        # Find incomplete issues to resume
+        pending = new_store.list_issues(status="pending")
+        processing = new_store.list_issues(status="processing")
+
+        # Issues needing attention
+        incomplete = pending + processing
+        self.assertEqual(len(incomplete), 2)
+        incomplete_numbers = {i.number for i in incomplete}
+        self.assertEqual(incomplete_numbers, {2, 3})
 
 
 if __name__ == "__main__":
