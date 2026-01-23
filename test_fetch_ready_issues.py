@@ -22,6 +22,9 @@ from fetch_ready_issues import (
     StoredIssue,
     IssueStoreError,
     IssueStore,
+    QueueItem,
+    ProcessingQueueError,
+    ProcessingQueue,
     check_gh_cli,
     fetch_ready_issues,
     main,
@@ -2640,6 +2643,708 @@ class TestIssueStoreIntegration(unittest.TestCase):
         self.assertEqual(len(incomplete), 2)
         incomplete_numbers = {i.number for i in incomplete}
         self.assertEqual(incomplete_numbers, {2, 3})
+
+
+class TestQueueItem(unittest.TestCase):
+    """Tests for QueueItem dataclass."""
+
+    def test_queue_item_creation(self):
+        """Test QueueItem dataclass creation with all fields."""
+        item = QueueItem(
+            issue_number=42,
+            priority=1,
+            added_at="2024-01-15T10:30:00+00:00",
+            status="pending",
+            started_at=None,
+            completed_at=None,
+            error=None,
+            retry_count=0
+        )
+        self.assertEqual(item.issue_number, 42)
+        self.assertEqual(item.priority, 1)
+        self.assertEqual(item.added_at, "2024-01-15T10:30:00+00:00")
+        self.assertEqual(item.status, "pending")
+        self.assertIsNone(item.started_at)
+        self.assertIsNone(item.completed_at)
+        self.assertIsNone(item.error)
+        self.assertEqual(item.retry_count, 0)
+
+    def test_queue_item_default_values(self):
+        """Test QueueItem default values."""
+        item = QueueItem(issue_number=1)
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.priority, 0)
+        self.assertIsNotNone(item.added_at)  # Auto-generated
+        self.assertEqual(item.status, "pending")
+        self.assertIsNone(item.started_at)
+        self.assertIsNone(item.completed_at)
+        self.assertIsNone(item.error)
+        self.assertEqual(item.retry_count, 0)
+
+    def test_queue_item_auto_timestamp(self):
+        """Test QueueItem auto-generates timestamp if not provided."""
+        item = QueueItem(issue_number=1)
+        self.assertIsNotNone(item.added_at)
+        self.assertIn("T", item.added_at)  # ISO format
+
+    def test_queue_item_to_dict(self):
+        """Test QueueItem.to_dict() method."""
+        item = QueueItem(
+            issue_number=10,
+            priority=2,
+            added_at="2024-01-15T10:30:00+00:00",
+            status="completed",
+            started_at="2024-01-15T10:31:00+00:00",
+            completed_at="2024-01-15T10:32:00+00:00",
+            error=None,
+            retry_count=1
+        )
+        result = item.to_dict()
+        self.assertEqual(result, {
+            "issue_number": 10,
+            "priority": 2,
+            "added_at": "2024-01-15T10:30:00+00:00",
+            "status": "completed",
+            "started_at": "2024-01-15T10:31:00+00:00",
+            "completed_at": "2024-01-15T10:32:00+00:00",
+            "error": None,
+            "retry_count": 1
+        })
+
+    def test_queue_item_from_dict(self):
+        """Test QueueItem.from_dict() class method."""
+        data = {
+            "issue_number": 5,
+            "priority": 1,
+            "added_at": "2024-01-15T10:30:00+00:00",
+            "status": "processing",
+            "started_at": "2024-01-15T10:31:00+00:00",
+            "completed_at": None,
+            "error": None,
+            "retry_count": 0
+        }
+        item = QueueItem.from_dict(data)
+        self.assertEqual(item.issue_number, 5)
+        self.assertEqual(item.priority, 1)
+        self.assertEqual(item.status, "processing")
+        self.assertEqual(item.started_at, "2024-01-15T10:31:00+00:00")
+
+    def test_queue_item_from_dict_missing_optional_fields(self):
+        """Test QueueItem.from_dict() with missing optional fields."""
+        data = {
+            "issue_number": 1,
+        }
+        item = QueueItem.from_dict(data)
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.priority, 0)
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(item.retry_count, 0)
+
+    def test_queue_item_with_error(self):
+        """Test QueueItem with error message."""
+        item = QueueItem(
+            issue_number=1,
+            status="failed",
+            error="Processing failed due to timeout"
+        )
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.error, "Processing failed due to timeout")
+
+
+class TestProcessingQueueError(unittest.TestCase):
+    """Tests for ProcessingQueueError exception."""
+
+    def test_exception_message(self):
+        """Test ProcessingQueueError stores message correctly."""
+        error = ProcessingQueueError("Test message")
+        self.assertEqual(str(error), "Test message")
+
+    def test_exception_inheritance(self):
+        """Test ProcessingQueueError inherits from Exception."""
+        error = ProcessingQueueError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestProcessingQueue(unittest.TestCase):
+    """Tests for ProcessingQueue class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import shutil
+        self.temp_dir = tempfile.mkdtemp()
+        self.queue_dir = f"{self.temp_dir}/queue"
+        self.queue = ProcessingQueue(self.queue_dir)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_queue_initialization(self):
+        """Test ProcessingQueue initialization."""
+        import os
+        queue = ProcessingQueue("/custom/path")
+        self.assertEqual(os.path.normpath(queue.queue_dir), os.path.normpath("/custom/path"))
+
+    def test_queue_default_path(self):
+        """Test ProcessingQueue default path."""
+        import os
+        queue = ProcessingQueue()
+        self.assertEqual(os.path.normpath(queue.queue_dir), os.path.normpath(".ralph/queue"))
+
+    def test_enqueue_creates_directory(self):
+        """Test enqueue creates queue directory if it doesn't exist."""
+        import os
+        self.queue.enqueue(1)
+        self.assertTrue(os.path.exists(self.queue.queue_dir))
+
+    def test_enqueue_returns_queue_item(self):
+        """Test enqueue returns a QueueItem."""
+        item = self.queue.enqueue(42)
+        self.assertIsInstance(item, QueueItem)
+        self.assertEqual(item.issue_number, 42)
+        self.assertEqual(item.status, "pending")
+
+    def test_enqueue_with_priority(self):
+        """Test enqueue with custom priority."""
+        item = self.queue.enqueue(1, priority=5)
+        self.assertEqual(item.priority, 5)
+
+    def test_enqueue_idempotent_for_pending(self):
+        """Test enqueue is idempotent for pending issues."""
+        item1 = self.queue.enqueue(1)
+        item2 = self.queue.enqueue(1)
+        self.assertEqual(item1.issue_number, item2.issue_number)
+        self.assertEqual(self.queue.count(), 1)
+
+    def test_enqueue_idempotent_for_processing(self):
+        """Test enqueue is idempotent for processing issues."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()  # Mark as processing
+        item = self.queue.enqueue(1)  # Try to enqueue again
+        self.assertEqual(item.status, "processing")
+        self.assertEqual(self.queue.count(), 1)
+
+    def test_enqueue_allows_requeue_after_completed(self):
+        """Test enqueue allows re-adding completed issues."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        self.queue.mark_completed(1)
+
+        item = self.queue.enqueue(1)  # Re-enqueue
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(self.queue.count(), 2)  # Both items exist
+
+    def test_dequeue_returns_pending_item(self):
+        """Test dequeue returns a pending item."""
+        self.queue.enqueue(1)
+        item = self.queue.dequeue()
+        self.assertIsNotNone(item)
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.status, "processing")
+
+    def test_dequeue_sets_started_at(self):
+        """Test dequeue sets started_at timestamp."""
+        self.queue.enqueue(1)
+        item = self.queue.dequeue()
+        self.assertIsNotNone(item.started_at)
+
+    def test_dequeue_returns_none_when_empty(self):
+        """Test dequeue returns None when queue is empty."""
+        item = self.queue.dequeue()
+        self.assertIsNone(item)
+
+    def test_dequeue_returns_none_when_all_processing(self):
+        """Test dequeue returns None when all items are processing."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()  # Mark as processing
+        item = self.queue.dequeue()  # Try again
+        self.assertIsNone(item)
+
+    def test_dequeue_priority_order(self):
+        """Test dequeue returns items in priority order."""
+        self.queue.enqueue(1, priority=10)
+        self.queue.enqueue(2, priority=5)
+        self.queue.enqueue(3, priority=15)
+
+        item1 = self.queue.dequeue()
+        self.assertEqual(item1.issue_number, 2)  # Priority 5 first
+
+        item2 = self.queue.dequeue()
+        self.assertEqual(item2.issue_number, 1)  # Priority 10 second
+
+        item3 = self.queue.dequeue()
+        self.assertEqual(item3.issue_number, 3)  # Priority 15 last
+
+    def test_dequeue_fifo_same_priority(self):
+        """Test dequeue returns items in FIFO order for same priority."""
+        import time
+        self.queue.enqueue(1, priority=0)
+        time.sleep(0.01)  # Ensure different timestamps
+        self.queue.enqueue(2, priority=0)
+        time.sleep(0.01)
+        self.queue.enqueue(3, priority=0)
+
+        item1 = self.queue.dequeue()
+        self.assertEqual(item1.issue_number, 1)  # First added
+
+        item2 = self.queue.dequeue()
+        self.assertEqual(item2.issue_number, 2)  # Second added
+
+        item3 = self.queue.dequeue()
+        self.assertEqual(item3.issue_number, 3)  # Third added
+
+    def test_peek_returns_next_item(self):
+        """Test peek returns next pending item without changing state."""
+        self.queue.enqueue(1)
+        item = self.queue.peek()
+        self.assertIsNotNone(item)
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.status, "pending")
+
+    def test_peek_returns_none_when_empty(self):
+        """Test peek returns None when queue is empty."""
+        item = self.queue.peek()
+        self.assertIsNone(item)
+
+    def test_peek_does_not_change_state(self):
+        """Test peek does not modify item state."""
+        self.queue.enqueue(1)
+        self.queue.peek()
+        item = self.queue.get(1)
+        self.assertEqual(item.status, "pending")
+
+    def test_mark_completed(self):
+        """Test mark_completed updates item status."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        item = self.queue.mark_completed(1)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "completed")
+        self.assertIsNotNone(item.completed_at)
+
+    def test_mark_completed_returns_none_for_missing(self):
+        """Test mark_completed returns None for non-existent item."""
+        item = self.queue.mark_completed(999)
+        self.assertIsNone(item)
+
+    def test_mark_failed(self):
+        """Test mark_failed updates item status."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        item = self.queue.mark_failed(1, error="Test error")
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.error, "Test error")
+        self.assertIsNotNone(item.completed_at)
+
+    def test_mark_failed_without_error(self):
+        """Test mark_failed without error message."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        item = self.queue.mark_failed(1)
+        self.assertEqual(item.status, "failed")
+        self.assertIsNone(item.error)
+
+    def test_mark_failed_returns_none_for_missing(self):
+        """Test mark_failed returns None for non-existent item."""
+        item = self.queue.mark_failed(999)
+        self.assertIsNone(item)
+
+    def test_retry(self):
+        """Test retry resets item to pending."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        self.queue.mark_failed(1)
+
+        item = self.queue.retry(1)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "pending")
+        self.assertIsNone(item.started_at)
+        self.assertIsNone(item.completed_at)
+        self.assertIsNone(item.error)
+        self.assertEqual(item.retry_count, 1)
+
+    def test_retry_increments_count(self):
+        """Test retry increments retry_count."""
+        self.queue.enqueue(1)
+
+        # First retry
+        self.queue.dequeue()
+        self.queue.mark_failed(1)
+        item = self.queue.retry(1)
+        self.assertEqual(item.retry_count, 1)
+
+        # Second retry
+        self.queue.dequeue()
+        self.queue.mark_failed(1)
+        item = self.queue.retry(1)
+        self.assertEqual(item.retry_count, 2)
+
+    def test_retry_returns_none_for_missing(self):
+        """Test retry returns None for non-existent item."""
+        item = self.queue.retry(999)
+        self.assertIsNone(item)
+
+    def test_get(self):
+        """Test get returns item by issue number."""
+        self.queue.enqueue(42)
+        item = self.queue.get(42)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.issue_number, 42)
+
+    def test_get_returns_none_for_missing(self):
+        """Test get returns None for non-existent item."""
+        item = self.queue.get(999)
+        self.assertIsNone(item)
+
+    def test_remove(self):
+        """Test remove deletes item from queue."""
+        self.queue.enqueue(1)
+        self.assertTrue(self.queue.remove(1))
+        self.assertIsNone(self.queue.get(1))
+        self.assertEqual(self.queue.count(), 0)
+
+    def test_remove_returns_false_for_missing(self):
+        """Test remove returns False for non-existent item."""
+        self.assertFalse(self.queue.remove(999))
+
+    def test_list_items(self):
+        """Test list_items returns all items."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.enqueue(3)
+
+        items = self.queue.list_items()
+        self.assertEqual(len(items), 3)
+        numbers = [i.issue_number for i in items]
+        self.assertEqual(set(numbers), {1, 2, 3})
+
+    def test_list_items_filter_by_status(self):
+        """Test list_items filters by status."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.dequeue()  # 1 is now processing
+        self.queue.mark_completed(1)
+        self.queue.dequeue()  # 2 is now processing
+        self.queue.enqueue(3)  # Still pending
+
+        pending = self.queue.list_items(status="pending")
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].issue_number, 3)
+
+        processing = self.queue.list_items(status="processing")
+        self.assertEqual(len(processing), 1)
+        self.assertEqual(processing[0].issue_number, 2)
+
+        completed = self.queue.list_items(status="completed")
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].issue_number, 1)
+
+    def test_count(self):
+        """Test count returns total item count."""
+        self.assertEqual(self.queue.count(), 0)
+        self.queue.enqueue(1)
+        self.assertEqual(self.queue.count(), 1)
+        self.queue.enqueue(2)
+        self.assertEqual(self.queue.count(), 2)
+
+    def test_count_by_status(self):
+        """Test count filters by status."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.dequeue()
+
+        self.assertEqual(self.queue.count(status="pending"), 1)
+        self.assertEqual(self.queue.count(status="processing"), 1)
+        self.assertEqual(self.queue.count(status="completed"), 0)
+
+    def test_clear(self):
+        """Test clear removes all items."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+
+        count = self.queue.clear()
+        self.assertEqual(count, 2)
+        self.assertEqual(self.queue.count(), 0)
+
+    def test_clear_by_status(self):
+        """Test clear removes only items with specified status."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.dequeue()  # 1 is processing
+        self.queue.mark_completed(1)
+
+        count = self.queue.clear(status="completed")
+        self.assertEqual(count, 1)
+        self.assertEqual(self.queue.count(), 1)  # 2 (pending) remains
+
+    def test_clear_empty_queue(self):
+        """Test clear returns 0 for empty queue."""
+        count = self.queue.clear()
+        self.assertEqual(count, 0)
+
+    def test_is_empty(self):
+        """Test is_empty checks for pending items."""
+        self.assertTrue(self.queue.is_empty())
+
+        self.queue.enqueue(1)
+        self.assertFalse(self.queue.is_empty())
+
+        self.queue.dequeue()  # Now processing
+        self.assertTrue(self.queue.is_empty())  # No pending
+
+    def test_has_processing(self):
+        """Test has_processing checks for processing items."""
+        self.assertFalse(self.queue.has_processing())
+
+        self.queue.enqueue(1)
+        self.assertFalse(self.queue.has_processing())
+
+        self.queue.dequeue()
+        self.assertTrue(self.queue.has_processing())
+
+        self.queue.mark_completed(1)
+        self.assertFalse(self.queue.has_processing())
+
+    def test_reset_processing(self):
+        """Test reset_processing resets processing items to pending."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.dequeue()  # 1 is processing
+        self.queue.dequeue()  # 2 is processing
+
+        count = self.queue.reset_processing()
+        self.assertEqual(count, 2)
+        self.assertEqual(self.queue.count(status="pending"), 2)
+        self.assertEqual(self.queue.count(status="processing"), 0)
+
+    def test_reset_processing_clears_started_at(self):
+        """Test reset_processing clears started_at timestamp."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+
+        self.queue.reset_processing()
+        item = self.queue.get(1)
+        self.assertIsNone(item.started_at)
+
+    def test_reset_processing_empty_queue(self):
+        """Test reset_processing returns 0 for queue with no processing items."""
+        self.queue.enqueue(1)  # pending only
+        count = self.queue.reset_processing()
+        self.assertEqual(count, 0)
+
+    def test_enqueue_batch(self):
+        """Test enqueue_batch adds multiple items."""
+        items = self.queue.enqueue_batch([1, 2, 3])
+        self.assertEqual(len(items), 3)
+        self.assertEqual(self.queue.count(), 3)
+
+    def test_enqueue_batch_with_priority(self):
+        """Test enqueue_batch with custom priority."""
+        items = self.queue.enqueue_batch([1, 2], priority=5)
+        for item in items:
+            self.assertEqual(item.priority, 5)
+
+    def test_enqueue_batch_idempotent(self):
+        """Test enqueue_batch is idempotent for existing pending items."""
+        self.queue.enqueue(1)
+        items = self.queue.enqueue_batch([1, 2, 3])
+        self.assertEqual(len(items), 3)
+        self.assertEqual(self.queue.count(), 3)  # 1 existed, 2 and 3 new
+
+    def test_enqueue_batch_empty_list(self):
+        """Test enqueue_batch with empty list."""
+        items = self.queue.enqueue_batch([])
+        self.assertEqual(items, [])
+        self.assertEqual(self.queue.count(), 0)
+
+    def test_persistence(self):
+        """Test queue state persists across instances."""
+        self.queue.enqueue(1, priority=5)
+        self.queue.enqueue(2, priority=0)
+        self.queue.dequeue()  # 2 is processing (lower priority number = higher priority)
+
+        # Create new queue instance
+        new_queue = ProcessingQueue(self.queue_dir)
+
+        self.assertEqual(new_queue.count(), 2)
+        self.assertEqual(new_queue.count(status="pending"), 1)
+        self.assertEqual(new_queue.count(status="processing"), 1)
+
+        item = new_queue.get(2)
+        self.assertEqual(item.status, "processing")
+
+    def test_persistence_file_format(self):
+        """Test queue persists as readable JSON."""
+        import os
+
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+
+        file_path = os.path.join(self.queue_dir, "queue.json")
+        self.assertTrue(os.path.exists(file_path))
+
+        with open(file_path, 'r') as f:
+            content = f.read()
+
+        # Should be indented JSON
+        self.assertIn('"items"', content)
+        self.assertIn('\n', content)
+
+    def test_thread_safety(self):
+        """Test queue operations are thread-safe."""
+        import threading
+
+        errors = []
+
+        def enqueue_items():
+            try:
+                for i in range(100):
+                    self.queue.enqueue(i)
+            except Exception as e:
+                errors.append(e)
+
+        def dequeue_items():
+            try:
+                for _ in range(50):
+                    self.queue.dequeue()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=enqueue_items),
+            threading.Thread(target=enqueue_items),
+            threading.Thread(target=dequeue_items),
+        ]
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(errors), 0)
+
+
+class TestProcessingQueueIntegration(unittest.TestCase):
+    """Integration tests for ProcessingQueue workflow."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.queue_dir = f"{self.temp_dir}/queue"
+        self.store_dir = f"{self.temp_dir}/issues"
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.store = IssueStore(self.store_dir)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_full_processing_workflow(self):
+        """Test complete issue processing workflow."""
+        # 1. Issues arrive and get stored + queued
+        issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        for issue in issues:
+            self.store.save(issue)
+            self.queue.enqueue(issue.number)
+
+        self.assertEqual(self.store.count(), 2)
+        self.assertEqual(self.queue.count(), 2)
+
+        # 2. Process first item
+        item = self.queue.dequeue()
+        self.assertEqual(item.issue_number, 1)
+        self.store.update_status(1, "processing")
+
+        # 3. First item completes
+        self.queue.mark_completed(1)
+        self.store.update_status(1, "completed")
+
+        # 4. Process second item
+        item = self.queue.dequeue()
+        self.assertEqual(item.issue_number, 2)
+        self.store.update_status(2, "processing")
+
+        # 5. Second item fails
+        self.queue.mark_failed(2, error="Timeout")
+        self.store.update_status(2, "failed")
+
+        # 6. Verify final state
+        self.assertEqual(self.queue.count(status="completed"), 1)
+        self.assertEqual(self.queue.count(status="failed"), 1)
+        self.assertEqual(self.store.get(1).status, "completed")
+        self.assertEqual(self.store.get(2).status, "failed")
+
+    def test_recovery_after_crash(self):
+        """Test recovering from a simulated crash during processing."""
+        # Setup: items in various states
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.enqueue(3)
+        self.queue.dequeue()  # 1 is processing
+        self.queue.dequeue()  # 2 is processing
+
+        # Simulate crash - create new queue instance
+        new_queue = ProcessingQueue(self.queue_dir)
+
+        # Recovery: reset all processing items
+        reset_count = new_queue.reset_processing()
+        self.assertEqual(reset_count, 2)
+
+        # All items should be pending again
+        self.assertEqual(new_queue.count(status="pending"), 3)
+        self.assertEqual(new_queue.count(status="processing"), 0)
+
+        # Can resume processing
+        item = new_queue.dequeue()
+        self.assertIsNotNone(item)
+
+    def test_retry_failed_items(self):
+        """Test retrying failed items."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        self.queue.mark_failed(1, error="First attempt failed")
+
+        # Verify failed state
+        item = self.queue.get(1)
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.retry_count, 0)
+
+        # Retry
+        self.queue.retry(1)
+        item = self.queue.get(1)
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(item.retry_count, 1)
+
+        # Process again
+        item = self.queue.dequeue()
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.status, "processing")
+
+    def test_priority_processing(self):
+        """Test high-priority items are processed first."""
+        # Add items with different priorities
+        self.queue.enqueue(1, priority=10)  # Low priority
+        self.queue.enqueue(2, priority=1)   # High priority
+        self.queue.enqueue(3, priority=5)   # Medium priority
+
+        # Should process in priority order
+        item1 = self.queue.dequeue()
+        self.assertEqual(item1.issue_number, 2)
+
+        item2 = self.queue.dequeue()
+        self.assertEqual(item2.issue_number, 3)
+
+        item3 = self.queue.dequeue()
+        self.assertEqual(item3.issue_number, 1)
 
 
 if __name__ == "__main__":

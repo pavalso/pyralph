@@ -25,7 +25,6 @@ import json
 import subprocess
 import sys
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple
@@ -1301,6 +1300,463 @@ class IssueStore:
             stored_issues.append(stored)
 
         return stored_issues
+
+
+@dataclass
+class QueueItem:
+    """Represents an item in the processing queue.
+
+    Attributes:
+        issue_number: The GitHub issue number.
+        priority: Processing priority (lower = higher priority). Defaults to 0.
+        added_at: ISO 8601 timestamp when the item was added to the queue.
+        status: Processing status ('pending', 'processing', 'completed', 'failed').
+        started_at: ISO 8601 timestamp when processing started (None if not started).
+        completed_at: ISO 8601 timestamp when processing completed (None if not completed).
+        error: Error message if processing failed (None otherwise).
+        retry_count: Number of times processing has been retried.
+    """
+    issue_number: int
+    priority: int = 0
+    added_at: str = ""
+    status: str = "pending"
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+    retry_count: int = 0
+
+    def __post_init__(self) -> None:
+        """Set added_at timestamp if not provided."""
+        if not self.added_at:
+            from datetime import datetime, timezone
+            self.added_at = datetime.now(timezone.utc).isoformat()
+
+    def to_dict(self) -> dict:
+        """Convert queue item to dictionary for JSON serialization."""
+        return {
+            "issue_number": self.issue_number,
+            "priority": self.priority,
+            "added_at": self.added_at,
+            "status": self.status,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "error": self.error,
+            "retry_count": self.retry_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "QueueItem":
+        """Create a QueueItem from a dictionary.
+
+        Args:
+            data: Dictionary containing queue item data.
+
+        Returns:
+            A QueueItem instance.
+        """
+        return cls(
+            issue_number=data["issue_number"],
+            priority=data.get("priority", 0),
+            added_at=data.get("added_at", ""),
+            status=data.get("status", "pending"),
+            started_at=data.get("started_at"),
+            completed_at=data.get("completed_at"),
+            error=data.get("error"),
+            retry_count=data.get("retry_count", 0),
+        )
+
+
+class ProcessingQueueError(Exception):
+    """Raised when processing queue operations fail."""
+    pass
+
+
+class ProcessingQueue:
+    """Maintains a processing queue for GitHub issues with FIFO ordering and state tracking.
+
+    The queue ensures issues are processed in order (by priority, then by addition time)
+    and tracks the processing state of each issue. Queue state is persisted to disk
+    for recovery after restarts.
+
+    Directory structure:
+        <queue_dir>/
+            queue.json  # Queue state and metadata
+
+    Example:
+        >>> queue = ProcessingQueue(".ralph/queue")
+        >>> queue.enqueue(42)
+        >>> queue.enqueue(43, priority=1)  # Higher priority (lower number)
+        >>> item = queue.dequeue()  # Returns issue 43 first (higher priority)
+        >>> queue.mark_completed(43)
+        >>> item = queue.dequeue()  # Returns issue 42
+    """
+
+    # Valid status transitions
+    VALID_STATUSES = {"pending", "processing", "completed", "failed"}
+
+    def __init__(self, queue_dir: str = ".ralph/queue"):
+        """Initialize the ProcessingQueue.
+
+        Args:
+            queue_dir: Path to the directory for storing queue state.
+                Defaults to ".ralph/queue".
+        """
+        self._queue_dir = Path(queue_dir)
+        self._queue_file = self._queue_dir / "queue.json"
+        self._lock = threading.Lock()
+        self._items: List[QueueItem] = []
+        self._load()
+
+    @property
+    def queue_dir(self) -> Path:
+        """Get the queue directory path."""
+        return self._queue_dir
+
+    def _ensure_dir(self) -> None:
+        """Ensure the queue directory exists."""
+        try:
+            self._queue_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise ProcessingQueueError(f"Failed to create queue directory: {e}")
+
+    def _load(self) -> None:
+        """Load queue state from disk."""
+        if not self._queue_file.exists():
+            return
+
+        try:
+            with open(self._queue_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            items_data = data.get("items", [])
+            self._items = [QueueItem.from_dict(item) for item in items_data]
+        except OSError as e:
+            raise ProcessingQueueError(f"Failed to load queue state: {e}")
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            raise ProcessingQueueError(f"Failed to parse queue state: {e}")
+
+    def _save(self) -> None:
+        """Save queue state to disk."""
+        self._ensure_dir()
+
+        data = {
+            "items": [item.to_dict() for item in self._items],
+        }
+
+        try:
+            with open(self._queue_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+        except OSError as e:
+            raise ProcessingQueueError(f"Failed to save queue state: {e}")
+        except (TypeError, ValueError) as e:
+            raise ProcessingQueueError(f"Failed to serialize queue state: {e}")
+
+    def _sort_items(self) -> None:
+        """Sort items by priority (ascending) and then by added_at (ascending)."""
+        self._items.sort(key=lambda x: (x.priority, x.added_at))
+
+    def enqueue(self, issue_number: int, priority: int = 0) -> QueueItem:
+        """Add an issue to the processing queue.
+
+        If the issue is already in the queue with a non-terminal status
+        (pending or processing), this operation is idempotent and returns
+        the existing item.
+
+        Args:
+            issue_number: The GitHub issue number to add.
+            priority: Processing priority (lower = higher priority). Defaults to 0.
+
+        Returns:
+            The QueueItem that was added or already exists.
+
+        Raises:
+            ProcessingQueueError: If the operation fails.
+        """
+        with self._lock:
+            # Check if already in queue with non-terminal status
+            for item in self._items:
+                if item.issue_number == issue_number and item.status in ("pending", "processing"):
+                    return item
+
+            # Create new queue item
+            item = QueueItem(issue_number=issue_number, priority=priority)
+            self._items.append(item)
+            self._sort_items()
+            self._save()
+            return item
+
+    def dequeue(self) -> Optional[QueueItem]:
+        """Get the next pending issue from the queue and mark it as processing.
+
+        Returns the highest priority pending item (lowest priority number,
+        then earliest added_at time).
+
+        Returns:
+            The QueueItem that is now processing, or None if no pending items.
+
+        Raises:
+            ProcessingQueueError: If the operation fails.
+        """
+        from datetime import datetime, timezone
+
+        with self._lock:
+            for item in self._items:
+                if item.status == "pending":
+                    item.status = "processing"
+                    item.started_at = datetime.now(timezone.utc).isoformat()
+                    self._save()
+                    return item
+            return None
+
+    def peek(self) -> Optional[QueueItem]:
+        """View the next pending issue without removing it from the queue.
+
+        Returns:
+            The next pending QueueItem, or None if no pending items.
+        """
+        with self._lock:
+            for item in self._items:
+                if item.status == "pending":
+                    return item
+            return None
+
+    def mark_completed(self, issue_number: int) -> Optional[QueueItem]:
+        """Mark an issue as completed.
+
+        Args:
+            issue_number: The issue number to mark as completed.
+
+        Returns:
+            The updated QueueItem, or None if the issue is not in the queue.
+
+        Raises:
+            ProcessingQueueError: If the operation fails.
+        """
+        from datetime import datetime, timezone
+
+        with self._lock:
+            for item in self._items:
+                if item.issue_number == issue_number:
+                    item.status = "completed"
+                    item.completed_at = datetime.now(timezone.utc).isoformat()
+                    self._save()
+                    return item
+            return None
+
+    def mark_failed(self, issue_number: int, error: Optional[str] = None) -> Optional[QueueItem]:
+        """Mark an issue as failed.
+
+        Args:
+            issue_number: The issue number to mark as failed.
+            error: Optional error message describing the failure.
+
+        Returns:
+            The updated QueueItem, or None if the issue is not in the queue.
+
+        Raises:
+            ProcessingQueueError: If the operation fails.
+        """
+        from datetime import datetime, timezone
+
+        with self._lock:
+            for item in self._items:
+                if item.issue_number == issue_number:
+                    item.status = "failed"
+                    item.completed_at = datetime.now(timezone.utc).isoformat()
+                    item.error = error
+                    self._save()
+                    return item
+            return None
+
+    def retry(self, issue_number: int) -> Optional[QueueItem]:
+        """Reset a failed or completed issue to pending for retry.
+
+        Args:
+            issue_number: The issue number to retry.
+
+        Returns:
+            The updated QueueItem, or None if the issue is not in the queue.
+
+        Raises:
+            ProcessingQueueError: If the operation fails.
+        """
+        with self._lock:
+            for item in self._items:
+                if item.issue_number == issue_number:
+                    item.status = "pending"
+                    item.started_at = None
+                    item.completed_at = None
+                    item.error = None
+                    item.retry_count += 1
+                    self._sort_items()
+                    self._save()
+                    return item
+            return None
+
+    def get(self, issue_number: int) -> Optional[QueueItem]:
+        """Get a queue item by issue number.
+
+        Args:
+            issue_number: The issue number to look up.
+
+        Returns:
+            The QueueItem if found, None otherwise.
+        """
+        with self._lock:
+            for item in self._items:
+                if item.issue_number == issue_number:
+                    return item
+            return None
+
+    def remove(self, issue_number: int) -> bool:
+        """Remove an issue from the queue.
+
+        Args:
+            issue_number: The issue number to remove.
+
+        Returns:
+            True if the issue was removed, False if it wasn't in the queue.
+
+        Raises:
+            ProcessingQueueError: If the operation fails.
+        """
+        with self._lock:
+            for i, item in enumerate(self._items):
+                if item.issue_number == issue_number:
+                    del self._items[i]
+                    self._save()
+                    return True
+            return False
+
+    def list_items(self, status: Optional[str] = None) -> List[QueueItem]:
+        """List all items in the queue, optionally filtered by status.
+
+        Args:
+            status: Optional status to filter by ('pending', 'processing',
+                'completed', 'failed'). If None, returns all items.
+
+        Returns:
+            List of QueueItem objects.
+        """
+        with self._lock:
+            if status is None:
+                return list(self._items)
+            return [item for item in self._items if item.status == status]
+
+    def count(self, status: Optional[str] = None) -> int:
+        """Count items in the queue, optionally filtered by status.
+
+        Args:
+            status: Optional status to filter by.
+
+        Returns:
+            The number of matching items.
+        """
+        with self._lock:
+            if status is None:
+                return len(self._items)
+            return sum(1 for item in self._items if item.status == status)
+
+    def clear(self, status: Optional[str] = None) -> int:
+        """Clear items from the queue, optionally filtered by status.
+
+        Args:
+            status: Optional status to filter by. If None, clears all items.
+
+        Returns:
+            The number of items that were removed.
+
+        Raises:
+            ProcessingQueueError: If the operation fails.
+        """
+        with self._lock:
+            if status is None:
+                count = len(self._items)
+                self._items = []
+            else:
+                original_count = len(self._items)
+                self._items = [item for item in self._items if item.status != status]
+                count = original_count - len(self._items)
+
+            self._save()
+            return count
+
+    def is_empty(self) -> bool:
+        """Check if the queue has no pending items.
+
+        Returns:
+            True if there are no pending items, False otherwise.
+        """
+        return self.count(status="pending") == 0
+
+    def has_processing(self) -> bool:
+        """Check if there are any items currently being processed.
+
+        Returns:
+            True if there are processing items, False otherwise.
+        """
+        return self.count(status="processing") > 0
+
+    def reset_processing(self) -> int:
+        """Reset all processing items back to pending.
+
+        This is useful for recovery after a crash where items were left
+        in the processing state.
+
+        Returns:
+            The number of items that were reset.
+
+        Raises:
+            ProcessingQueueError: If the operation fails.
+        """
+        count = 0
+        with self._lock:
+            for item in self._items:
+                if item.status == "processing":
+                    item.status = "pending"
+                    item.started_at = None
+                    count += 1
+
+            if count > 0:
+                self._sort_items()
+                self._save()
+
+            return count
+
+    def enqueue_batch(self, issue_numbers: List[int], priority: int = 0) -> List[QueueItem]:
+        """Add multiple issues to the queue.
+
+        Args:
+            issue_numbers: List of issue numbers to add.
+            priority: Processing priority for all items. Defaults to 0.
+
+        Returns:
+            List of QueueItem objects that were added or already exist.
+
+        Raises:
+            ProcessingQueueError: If the operation fails.
+        """
+        items: List[QueueItem] = []
+        with self._lock:
+            for issue_number in issue_numbers:
+                # Check if already in queue with non-terminal status
+                existing = None
+                for item in self._items:
+                    if item.issue_number == issue_number and item.status in ("pending", "processing"):
+                        existing = item
+                        break
+
+                if existing:
+                    items.append(existing)
+                else:
+                    item = QueueItem(issue_number=issue_number, priority=priority)
+                    self._items.append(item)
+                    items.append(item)
+
+            self._sort_items()
+            self._save()
+
+        return items
 
 
 if __name__ == "__main__":
