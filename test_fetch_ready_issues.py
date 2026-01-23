@@ -24,6 +24,8 @@ from fetch_ready_issues import (
     create_draft_issues,
     update_issue_labels,
     mark_issue_processed,
+    create_argument_parser,
+    format_issues_as_text,
 )
 
 
@@ -219,6 +221,156 @@ class TestFetchReadyIssues(unittest.TestCase):
             issues = fetch_ready_issues()
         self.assertEqual(issues[0].labels, [])
 
+    def test_fetch_ready_issues_custom_label(self):
+        """Test fetch_ready_issues uses custom label parameter."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="[]", stderr="")
+            fetch_ready_issues(label="bug")
+
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("--label", call_args)
+        label_idx = call_args.index("--label")
+        self.assertEqual(call_args[label_idx + 1], "bug")
+
+    def test_fetch_ready_issues_default_label(self):
+        """Test fetch_ready_issues uses 'ready' as default label."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="[]", stderr="")
+            fetch_ready_issues()
+
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("ready", call_args)
+
+
+class TestCreateArgumentParser(unittest.TestCase):
+    """Tests for create_argument_parser function."""
+
+    def test_parser_default_values(self):
+        """Test parser has correct default values."""
+        parser = create_argument_parser()
+        args = parser.parse_args([])
+        self.assertEqual(args.label, "ready")
+        self.assertEqual(args.output_format, "json")
+        self.assertFalse(args.verbose)
+        self.assertFalse(args.no_check)
+
+    def test_parser_label_option(self):
+        """Test parser parses --label option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--label", "bug"])
+        self.assertEqual(args.label, "bug")
+
+    def test_parser_format_option_json(self):
+        """Test parser parses --format json option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--format", "json"])
+        self.assertEqual(args.output_format, "json")
+
+    def test_parser_format_option_text(self):
+        """Test parser parses --format text option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--format", "text"])
+        self.assertEqual(args.output_format, "text")
+
+    def test_parser_verbose_option(self):
+        """Test parser parses --verbose option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--verbose"])
+        self.assertTrue(args.verbose)
+
+    def test_parser_no_check_option(self):
+        """Test parser parses --no-check option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--no-check"])
+        self.assertTrue(args.no_check)
+
+    def test_parser_multiple_options(self):
+        """Test parser parses multiple options together."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--label", "feature", "--format", "text", "--verbose", "--no-check"])
+        self.assertEqual(args.label, "feature")
+        self.assertEqual(args.output_format, "text")
+        self.assertTrue(args.verbose)
+        self.assertTrue(args.no_check)
+
+    def test_parser_invalid_format_raises(self):
+        """Test parser raises on invalid format option."""
+        parser = create_argument_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--format", "invalid"])
+
+
+class TestFormatIssuesAsText(unittest.TestCase):
+    """Tests for format_issues_as_text function."""
+
+    def test_format_empty_list(self):
+        """Test format_issues_as_text with empty list."""
+        result = format_issues_as_text([])
+        self.assertEqual(result, "No issues found.")
+
+    def test_format_single_issue(self):
+        """Test format_issues_as_text with single issue."""
+        issues = [
+            Issue(
+                number=42,
+                title="Test Issue",
+                body="Issue body",
+                url="https://github.com/owner/repo/issues/42",
+                labels=["ready", "bug"]
+            )
+        ]
+        result = format_issues_as_text(issues)
+        self.assertIn("Found 1 issue(s):", result)
+        self.assertIn("#42: Test Issue", result)
+        self.assertIn("URL: https://github.com/owner/repo/issues/42", result)
+        self.assertIn("Labels: ready, bug", result)
+        self.assertIn("Body: Issue body", result)
+
+    def test_format_multiple_issues(self):
+        """Test format_issues_as_text with multiple issues."""
+        issues = [
+            Issue(number=1, title="First", body="Body 1", url="http://url1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body 2", url="http://url2", labels=["bug"]),
+        ]
+        result = format_issues_as_text(issues)
+        self.assertIn("Found 2 issue(s):", result)
+        self.assertIn("#1: First", result)
+        self.assertIn("#2: Second", result)
+
+    def test_format_issue_no_labels(self):
+        """Test format_issues_as_text with issue having no labels."""
+        issues = [
+            Issue(number=1, title="Test", body="Body", url="http://url", labels=[])
+        ]
+        result = format_issues_as_text(issues)
+        self.assertNotIn("Labels:", result)
+
+    def test_format_issue_no_body(self):
+        """Test format_issues_as_text with issue having no body."""
+        issues = [
+            Issue(number=1, title="Test", body=None, url="http://url", labels=[])
+        ]
+        result = format_issues_as_text(issues)
+        self.assertNotIn("Body:", result)
+
+    def test_format_long_body_truncated(self):
+        """Test format_issues_as_text truncates long body."""
+        long_body = "A" * 150
+        issues = [
+            Issue(number=1, title="Test", body=long_body, url="http://url", labels=[])
+        ]
+        result = format_issues_as_text(issues)
+        self.assertIn("...", result)
+        self.assertNotIn("A" * 150, result)
+
+    def test_format_body_newlines_replaced(self):
+        """Test format_issues_as_text replaces newlines in body preview."""
+        issues = [
+            Issue(number=1, title="Test", body="Line1\nLine2\nLine3", url="http://url", labels=[])
+        ]
+        result = format_issues_as_text(issues)
+        self.assertIn("Line1 Line2 Line3", result)
+
 
 class TestMain(unittest.TestCase):
     """Tests for main function."""
@@ -227,20 +379,31 @@ class TestMain(unittest.TestCase):
         """Test main returns 1 when gh CLI is not available."""
         with patch("fetch_ready_issues.check_gh_cli", return_value=False):
             with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
-                result = main()
+                result = main([])
         self.assertEqual(result, 1)
         self.assertIn("gh CLI is not installed", mock_stderr.getvalue())
 
-    def test_main_no_issues_found(self):
-        """Test main returns 0 and prints message when no issues found."""
+    def test_main_no_issues_found_json_format(self):
+        """Test main returns 0 and prints JSON when no issues found (json format)."""
         with patch("fetch_ready_issues.check_gh_cli", return_value=True):
             with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]):
                 with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
-                    result = main()
+                    result = main([])
+        self.assertEqual(result, 0)
+        output = json.loads(mock_stdout.getvalue())
+        self.assertEqual(output["count"], 0)
+        self.assertEqual(output["issues"], [])
+
+    def test_main_no_issues_found_text_format(self):
+        """Test main returns 0 and prints message when no issues found (text format)."""
+        with patch("fetch_ready_issues.check_gh_cli", return_value=True):
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]):
+                with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
+                    result = main(["--format", "text"])
         self.assertEqual(result, 0)
         self.assertIn("No open issues", mock_stdout.getvalue())
 
-    def test_main_issues_found(self):
+    def test_main_issues_found_json_format(self):
         """Test main returns 0 and prints JSON when issues found."""
         issues = [
             Issue(number=1, title="Test", body="Body", url="http://url", labels=["ready"])
@@ -248,12 +411,26 @@ class TestMain(unittest.TestCase):
         with patch("fetch_ready_issues.check_gh_cli", return_value=True):
             with patch("fetch_ready_issues.fetch_ready_issues", return_value=issues):
                 with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
-                    result = main()
+                    result = main([])
         self.assertEqual(result, 0)
         output = json.loads(mock_stdout.getvalue())
         self.assertEqual(output["count"], 1)
         self.assertEqual(len(output["issues"]), 1)
         self.assertEqual(output["issues"][0]["number"], 1)
+
+    def test_main_issues_found_text_format(self):
+        """Test main returns 0 and prints text when issues found (text format)."""
+        issues = [
+            Issue(number=42, title="Test Issue", body="Body", url="http://url", labels=["ready"])
+        ]
+        with patch("fetch_ready_issues.check_gh_cli", return_value=True):
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=issues):
+                with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
+                    result = main(["--format", "text"])
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("#42: Test Issue", output)
+        self.assertIn("Found 1 issue(s):", output)
 
     def test_main_github_cli_error(self):
         """Test main returns 1 and prints error on GitHubCLIError."""
@@ -261,9 +438,34 @@ class TestMain(unittest.TestCase):
             with patch("fetch_ready_issues.fetch_ready_issues") as mock_fetch:
                 mock_fetch.side_effect = GitHubCLIError("Test error")
                 with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
-                    result = main()
+                    result = main([])
         self.assertEqual(result, 1)
         self.assertIn("Test error", mock_stderr.getvalue())
+
+    def test_main_custom_label(self):
+        """Test main passes custom label to fetch_ready_issues."""
+        with patch("fetch_ready_issues.check_gh_cli", return_value=True):
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]) as mock_fetch:
+                main(["--label", "bug"])
+        mock_fetch.assert_called_once_with(label="bug")
+
+    def test_main_no_check_skips_auth_check(self):
+        """Test main with --no-check skips gh CLI authentication check."""
+        with patch("fetch_ready_issues.check_gh_cli") as mock_check:
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]):
+                main(["--no-check"])
+        mock_check.assert_not_called()
+
+    def test_main_verbose_output(self):
+        """Test main with --verbose prints verbose output."""
+        with patch("fetch_ready_issues.check_gh_cli", return_value=True):
+            with patch("fetch_ready_issues.fetch_ready_issues", return_value=[]):
+                with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
+                    main(["--verbose", "--label", "test"])
+        stderr_output = mock_stderr.getvalue()
+        self.assertIn("Label filter: test", stderr_output)
+        self.assertIn("Output format: json", stderr_output)
+        self.assertIn("Fetching issues", stderr_output)
 
 
 class TestGitHubCLIError(unittest.TestCase):

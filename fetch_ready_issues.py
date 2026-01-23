@@ -3,7 +3,24 @@
 
 This script uses the GitHub CLI (gh) to fetch all open issues that have the 'ready'
 label from the current repository. The issues can be used as planner inputs for Ralph.
+
+Usage:
+    python fetch_ready_issues.py [options]
+    fetch-issues [options]  # If installed via pip
+
+Options:
+    --label LABEL       Filter issues by label (default: "ready")
+    --format FORMAT     Output format: "json" or "text" (default: "json")
+    --verbose           Enable verbose output
+    --no-check          Skip gh CLI authentication check
+    --help              Show this help message
+
+Examples:
+    fetch-issues --label ready
+    fetch-issues --format text
+    fetch-issues --label bug --verbose
 """
+import argparse
 import json
 import subprocess
 import sys
@@ -54,11 +71,14 @@ def check_gh_cli() -> bool:
         return False
 
 
-def fetch_ready_issues() -> List[Issue]:
-    """Fetch all open issues with the 'ready' label from the current repository.
+def fetch_ready_issues(label: str = "ready") -> List[Issue]:
+    """Fetch all open issues with the specified label from the current repository.
+
+    Args:
+        label: The label to filter issues by. Defaults to "ready".
 
     Returns:
-        List of Issue objects representing open issues with 'ready' label.
+        List of Issue objects representing open issues with the specified label.
 
     Raises:
         GitHubCLIError: If gh CLI command fails.
@@ -67,7 +87,7 @@ def fetch_ready_issues() -> List[Issue]:
         result = subprocess.run(
             [
                 "gh", "issue", "list",
-                "--label", "ready",
+                "--label", label,
                 "--state", "open",
                 "--json", "number,title,body,url,labels"
             ],
@@ -101,29 +121,125 @@ def fetch_ready_issues() -> List[Issue]:
         raise GitHubCLIError(f"Failed to parse gh CLI output: {e}")
 
 
-def main() -> int:
+def create_argument_parser() -> argparse.ArgumentParser:
+    """Create and configure the argument parser for the CLI.
+
+    Returns:
+        Configured ArgumentParser instance.
+    """
+    parser = argparse.ArgumentParser(
+        prog="fetch-issues",
+        description="Fetch open issues from GitHub for use as planner inputs.",
+        epilog="Examples:\n"
+               "  fetch-issues --label ready\n"
+               "  fetch-issues --format text\n"
+               "  fetch-issues --label bug --verbose",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        "--label",
+        default="ready",
+        help="Filter issues by label (default: ready)"
+    )
+
+    parser.add_argument(
+        "--format",
+        choices=["json", "text"],
+        default="json",
+        dest="output_format",
+        help="Output format: json or text (default: json)"
+    )
+
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output"
+    )
+
+    parser.add_argument(
+        "--no-check",
+        action="store_true",
+        dest="no_check",
+        help="Skip gh CLI authentication check"
+    )
+
+    return parser
+
+
+def format_issues_as_text(issues: List[Issue]) -> str:
+    """Format issues as human-readable text.
+
+    Args:
+        issues: List of Issue objects to format.
+
+    Returns:
+        Formatted string with issue information.
+    """
+    if not issues:
+        return "No issues found."
+
+    lines = [f"Found {len(issues)} issue(s):", ""]
+    for issue in issues:
+        lines.append(f"#{issue.number}: {issue.title}")
+        lines.append(f"  URL: {issue.url}")
+        if issue.labels:
+            lines.append(f"  Labels: {', '.join(issue.labels)}")
+        if issue.body:
+            # Show first 100 chars of body
+            body_preview = issue.body[:100].replace('\n', ' ')
+            if len(issue.body) > 100:
+                body_preview += "..."
+            lines.append(f"  Body: {body_preview}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def main(args: Optional[List[str]] = None) -> int:
     """Main entry point.
+
+    Args:
+        args: Command line arguments. If None, uses sys.argv.
 
     Returns:
         Exit code (0 for success, 1 for failure).
     """
-    if not check_gh_cli():
-        print("Error: gh CLI is not installed or not authenticated.", file=sys.stderr)
-        print("Please install gh CLI and run 'gh auth login'.", file=sys.stderr)
-        return 1
+    parser = create_argument_parser()
+    parsed_args = parser.parse_args(args)
+
+    if parsed_args.verbose:
+        print(f"Label filter: {parsed_args.label}", file=sys.stderr)
+        print(f"Output format: {parsed_args.output_format}", file=sys.stderr)
+
+    if not parsed_args.no_check:
+        if not check_gh_cli():
+            print("Error: gh CLI is not installed or not authenticated.", file=sys.stderr)
+            print("Please install gh CLI and run 'gh auth login'.", file=sys.stderr)
+            return 1
 
     try:
-        issues = fetch_ready_issues()
+        if parsed_args.verbose:
+            print(f"Fetching issues with label '{parsed_args.label}'...", file=sys.stderr)
+
+        issues = fetch_ready_issues(label=parsed_args.label)
 
         if not issues:
-            print("No open issues with 'ready' label found.")
+            if parsed_args.output_format == "json":
+                print(json.dumps({"count": 0, "issues": []}, indent=2))
+            else:
+                print(f"No open issues with '{parsed_args.label}' label found.")
             return 0
 
-        output = {
-            "count": len(issues),
-            "issues": [issue.to_dict() for issue in issues]
-        }
-        print(json.dumps(output, indent=2))
+        if parsed_args.output_format == "json":
+            output = {
+                "count": len(issues),
+                "issues": [issue.to_dict() for issue in issues]
+            }
+            print(json.dumps(output, indent=2))
+        else:
+            print(format_issues_as_text(issues))
+
         return 0
 
     except GitHubCLIError as e:
