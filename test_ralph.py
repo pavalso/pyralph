@@ -710,6 +710,208 @@ class TestCliArguments(unittest.TestCase):
 
 
 # ==============================================================================
+# INTENT AND INPUT FLAGS TESTS
+# ==============================================================================
+
+
+class TestIntentFlags(TempConfigTestCase):
+    """Tests for --intent, --intent-file, and --prompt-file CLI flags."""
+
+    def setUp(self):
+        super().setUp()
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
+        self.parser.add_argument("--intent", type=str, metavar="TEXT")
+        self.parser.add_argument("--intent-file", type=str, metavar="FILE")
+        self.parser.add_argument("--prompt-file", type=str, metavar="FILE")
+
+    def test_intent_flag_parses(self):
+        """Test --intent flag accepts inline text."""
+        args = self.parser.parse_args(["--intent", "Build a REST API", "architect"])
+        self.assertEqual(args.intent, "Build a REST API")
+        self.assertEqual(args.phase, "architect")
+
+    def test_intent_file_flag_parses(self):
+        """Test --intent-file flag accepts file path."""
+        args = self.parser.parse_args(["--intent-file", "/path/to/intent.txt"])
+        self.assertEqual(args.intent_file, "/path/to/intent.txt")
+
+    def test_prompt_file_flag_parses(self):
+        """Test --prompt-file flag accepts file path."""
+        args = self.parser.parse_args(["--prompt-file", "/path/to/prompt.md"])
+        self.assertEqual(args.prompt_file, "/path/to/prompt.md")
+
+    def test_all_intent_flags_together(self):
+        """Test intent flags can be combined with phase."""
+        args = self.parser.parse_args(["--intent", "Test intent", "--prompt-file", "custom.md", "planner"])
+        self.assertEqual(args.intent, "Test intent")
+        self.assertEqual(args.prompt_file, "custom.md")
+        self.assertEqual(args.phase, "planner")
+
+
+class TestOrchestratorIntentHandling(TempConfigTestCase):
+    """Tests for RalphOrchestrator intent flag handling."""
+
+    def test_get_intent_returns_inline_intent(self):
+        """Test _get_intent returns inline intent from --intent flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", intent="Build a CLI tool")
+            result = orch._get_intent()
+            self.assertEqual(result, "Build a CLI tool")
+
+    def test_get_intent_returns_file_content(self):
+        """Test _get_intent reads intent from --intent-file."""
+        intent_file = self.temp_path / "intent.txt"
+        intent_file.write_text("Build a web app from file", encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", intent_file=str(intent_file))
+            result = orch._get_intent()
+            self.assertEqual(result, "Build a web app from file")
+
+    def test_get_intent_file_not_found_exits(self):
+        """Test _get_intent exits when intent file not found."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", intent_file="/nonexistent/file.txt")
+            with patch('ralph.sys.exit', side_effect=SystemExit(1)) as mock_exit:
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit):
+                        orch._get_intent()
+                    mock_exit.assert_called_once_with(1)
+                    mock_error.assert_called()
+
+    def test_get_intent_empty_file_exits(self):
+        """Test _get_intent exits when intent file is empty."""
+        intent_file = self.temp_path / "empty_intent.txt"
+        intent_file.write_text("", encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", intent_file=str(intent_file))
+            with patch('ralph.sys.exit', side_effect=SystemExit(1)) as mock_exit:
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit):
+                        orch._get_intent()
+                    mock_exit.assert_called_once_with(1)
+                    mock_error.assert_called()
+
+    def test_get_intent_whitespace_only_file_exits(self):
+        """Test _get_intent exits when intent file contains only whitespace."""
+        intent_file = self.temp_path / "whitespace_intent.txt"
+        intent_file.write_text("   \n\t\n   ", encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", intent_file=str(intent_file))
+            with patch('ralph.sys.exit', side_effect=SystemExit(1)) as mock_exit:
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit):
+                        orch._get_intent()
+                    mock_exit.assert_called_once_with(1)
+                    mock_error.assert_called()
+
+    def test_get_intent_inline_takes_precedence_over_cached(self):
+        """Test inline intent takes precedence over user_intent parameter."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", intent="Inline intent")
+            result = orch._get_intent(user_intent="Cached intent")
+            self.assertEqual(result, "Cached intent")  # user_intent param has highest priority
+
+    def test_orchestrator_stores_intent_flags(self):
+        """Test orchestrator stores all intent-related flags."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(
+                agent_name="mock",
+                intent="Test intent",
+                intent_file="/path/to/file",
+                prompt_file="/path/to/prompt"
+            )
+            self.assertEqual(orch._intent, "Test intent")
+            self.assertEqual(orch._intent_file, "/path/to/file")
+            self.assertEqual(orch._prompt_file_override, "/path/to/prompt")
+
+
+class TestOrchestratorPromptFileOverride(TempConfigTestCase):
+    """Tests for RalphOrchestrator --prompt-file handling."""
+
+    def test_prompt_file_override_is_used(self):
+        """Test _load_user_context uses --prompt-file when provided."""
+        # Create custom prompt file
+        custom_prompt = self.temp_path / "custom_prompt.md"
+        custom_prompt.write_text("Custom user instructions", encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", prompt_file=str(custom_prompt))
+            prd = {"id": "PRD-001", "description": "Test"}
+            task = {"id": "TASK-001", "description": "Test task"}
+            result = orch._load_user_context(prd, task, "pytest")
+            self.assertEqual(result, "Custom user instructions")
+
+    def test_prompt_file_not_found_exits(self):
+        """Test _load_user_context exits when prompt file not found."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", prompt_file="/nonexistent/prompt.md")
+            prd = {"id": "PRD-001", "description": "Test"}
+            task = {"id": "TASK-001", "description": "Test task"}
+            with patch('ralph.sys.exit', side_effect=SystemExit(1)) as mock_exit:
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit):
+                        orch._load_user_context(prd, task, "pytest")
+                    mock_exit.assert_called_once_with(1)
+                    mock_error.assert_called()
+
+    def test_prompt_file_empty_uses_default(self):
+        """Test _load_user_context returns default when prompt file is empty."""
+        empty_prompt = self.temp_path / "empty_prompt.md"
+        empty_prompt.write_text("", encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", prompt_file=str(empty_prompt))
+            prd = {"id": "PRD-001", "description": "Test"}
+            task = {"id": "TASK-001", "description": "Test task"}
+            with patch('ralph.Logger.warning') as mock_warning:
+                result = orch._load_user_context(prd, task, "pytest")
+                self.assertEqual(result, "No specific user preferences provided.")
+                mock_warning.assert_called()
+
+    def test_prompt_file_variables_substituted(self):
+        """Test _load_user_context substitutes variables in prompt file."""
+        custom_prompt = self.temp_path / "var_prompt.md"
+        custom_prompt.write_text("PRD: {{PRD_ID}}, Task: {{TASK_ID}}", encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", prompt_file=str(custom_prompt))
+            prd = {"id": "PRD-001", "description": "Test"}
+            task = {"id": "TASK-002", "description": "Test task"}
+            result = orch._load_user_context(prd, task, "pytest")
+            self.assertIn("PRD-001", result)
+            self.assertIn("TASK-002", result)
+
+
+class TestMainIntentValidation(unittest.TestCase):
+    """Tests for main() intent flag validation."""
+
+    def test_main_rejects_both_intent_flags(self):
+        """Test main() exits when both --intent and --intent-file are provided."""
+        with patch('sys.argv', ['ralph', '--intent', 'Test', '--intent-file', 'file.txt']):
+            with patch('ralph.sys.exit') as mock_exit:
+                with patch('ralph.Logger.error') as mock_error:
+                    with patch('ralph.RalphOrchestrator'):
+                        main()
+                        mock_error.assert_called_with("Cannot use both --intent and --intent-file together.")
+                        mock_exit.assert_called_with(1)
+
+
+# ==============================================================================
 # AGENT ERROR TESTS
 # ==============================================================================
 

@@ -303,7 +303,8 @@ class TemplateManager:
 # ==============================================================================
 
 class RalphOrchestrator:
-    def __init__(self, agent_name: str = "claude", enable_hooks: bool = True, enabled_hook_names: Optional[List[str]] = None) -> None:
+    def __init__(self, agent_name: str = "claude", enable_hooks: bool = True, enabled_hook_names: Optional[List[str]] = None,
+                 intent: Optional[str] = None, intent_file: Optional[str] = None, prompt_file: Optional[str] = None) -> None:
         self.agent = get_agent(agent_name, timeout_seconds=CONF.TIMEOUT_SECONDS)
         if hasattr(self.agent, 'set_logger'): self.agent.set_logger(Logger)
         if hasattr(self.agent, 'set_config'): self.agent.set_config(CONF)
@@ -318,6 +319,10 @@ class RalphOrchestrator:
             self.hooks.disable()
         elif enabled_hook_names is not None:
             self.hooks.set_enabled_hooks(enabled_hook_names)
+        # Store intent flags for non-interactive runs
+        self._intent = intent
+        self._intent_file = intent_file
+        self._prompt_file_override = prompt_file
 
     def run_architect(self, user_intent: str) -> None:
         """
@@ -450,14 +455,24 @@ class RalphOrchestrator:
 
     def _load_user_context(self, prd: Dict[str, Any], task: Dict[str, Any], test_cmd: str) -> str:
         """Load and prepare user context from prompt.md with variable substitution."""
-        prompt_md_path = CONF.BASE_DIR / "prompt.md"
-        if not prompt_md_path.exists():
-            return "No specific user preferences provided."
+        # Use --prompt-file override if provided, otherwise default to prompt.md
+        if self._prompt_file_override:
+            prompt_md_path = Path(self._prompt_file_override)
+            if not prompt_md_path.exists():
+                Logger.error(f"Prompt file not found: {self._prompt_file_override}")
+                sys.exit(1)
+        else:
+            prompt_md_path = CONF.BASE_DIR / "prompt.md"
+            if not prompt_md_path.exists():
+                return "No specific user preferences provided."
 
         raw_text = prompt_md_path.read_text(encoding='utf-8')
-        # Only use prompt.md if it has non-empty content
+        # Only use prompt file if it has non-empty content
         if not raw_text.strip():
-            Logger.warning("prompt.md exists but is empty, using default user context.")
+            if self._prompt_file_override:
+                Logger.warning(f"Prompt file is empty: {self._prompt_file_override}, using default user context.")
+            else:
+                Logger.warning("prompt.md exists but is empty, using default user context.")
             return "No specific user preferences provided."
 
         replacements = {
@@ -621,9 +636,27 @@ class RalphOrchestrator:
         return input(f"{Logger.COLORS['YELLOW']}Run {phase_name} phase? (y/n): {Logger.COLORS['RESET']}").strip().lower() == 'y'
 
     def _get_intent(self, user_intent=None):
-        if user_intent: return user_intent
+        """Get intent from flags or interactive prompt."""
+        if user_intent:
+            return user_intent
+        # Check --intent flag
+        if self._intent:
+            return self._intent
+        # Check --intent-file flag
+        if self._intent_file:
+            intent_path = Path(self._intent_file)
+            if not intent_path.exists():
+                Logger.error(f"Intent file not found: {self._intent_file}")
+                sys.exit(1)
+            content = intent_path.read_text(encoding='utf-8').strip()
+            if not content:
+                Logger.error(f"Intent file is empty: {self._intent_file}")
+                sys.exit(1)
+            return content
+        # Interactive prompt
         intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
-        if not intent: sys.exit(0)
+        if not intent:
+            sys.exit(0)
         return intent
 
     def _run_single_phase(self, phase: str) -> None:
@@ -723,6 +756,10 @@ def main() -> None:
     parser.add_argument("--no-hooks", action="store_true", help="Disable hook execution")
     parser.add_argument("--hooks", nargs="+", metavar="NAME", help="Enable only specified hooks by name")
     parser.add_argument("--agent", choices=list_agents(), default=agent, help=f"Agent (default: {agent})")
+    # Intent and input flags for non-interactive runs
+    parser.add_argument("--intent", type=str, metavar="TEXT", help="Provide intent inline (what to build)")
+    parser.add_argument("--intent-file", type=str, metavar="FILE", help="Load intent from a file")
+    parser.add_argument("--prompt-file", type=str, metavar="FILE", help="Override prompt.md path for user context")
     args = parser.parse_args()
 
     # Configure logger settings
@@ -740,7 +777,19 @@ def main() -> None:
     enable_hooks = not args.no_hooks
     enabled_hook_names = args.hooks if args.hooks else None
 
-    RalphOrchestrator(agent_name=args.agent, enable_hooks=enable_hooks, enabled_hook_names=enabled_hook_names).start(phase=args.phase, accept_all=args.accept_all)
+    # Validate mutually exclusive intent options
+    if args.intent and args.intent_file:
+        Logger.error("Cannot use both --intent and --intent-file together.")
+        sys.exit(1)
+
+    RalphOrchestrator(
+        agent_name=args.agent,
+        enable_hooks=enable_hooks,
+        enabled_hook_names=enabled_hook_names,
+        intent=args.intent,
+        intent_file=args.intent_file,
+        prompt_file=args.prompt_file
+    ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
     main()
