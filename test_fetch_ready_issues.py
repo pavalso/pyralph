@@ -28,6 +28,9 @@ from fetch_ready_issues import (
     PromptTransformerError,
     TransformedPrompt,
     PromptTransformer,
+    PlannerInvokerError,
+    InvocationResult,
+    PlannerInvoker,
     check_gh_cli,
     fetch_ready_issues,
     main,
@@ -3818,6 +3821,551 @@ class TestPromptTransformerIntegration(unittest.TestCase):
         result = new_transformer.transform(42)
         self.assertEqual(result.issue_number, 42)
         self.assertEqual(result.priority, 5)
+
+
+class TestInvocationResult(unittest.TestCase):
+    """Tests for InvocationResult dataclass."""
+
+    def test_invocation_result_success(self):
+        """Test InvocationResult creation with success."""
+        result = InvocationResult(issue_number=42, success=True)
+        self.assertEqual(result.issue_number, 42)
+        self.assertTrue(result.success)
+        self.assertIsNone(result.error)
+
+    def test_invocation_result_failure(self):
+        """Test InvocationResult creation with failure."""
+        result = InvocationResult(
+            issue_number=42,
+            success=False,
+            error="Planner failed"
+        )
+        self.assertEqual(result.issue_number, 42)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "Planner failed")
+
+    def test_invocation_result_default_error(self):
+        """Test InvocationResult default error value."""
+        result = InvocationResult(issue_number=1, success=True)
+        self.assertIsNone(result.error)
+
+
+class TestPlannerInvoker(unittest.TestCase):
+    """Tests for PlannerInvoker class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import os
+
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = os.path.join(self.temp_dir, "issues")
+        self.queue_dir = os.path.join(self.temp_dir, "queue")
+
+        self.store = IssueStore(self.store_dir)
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.transformer = PromptTransformer(self.queue, self.store)
+        self.invoker = PlannerInvoker(self.transformer)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(
+        self, number: int, title: str = "Test", body: str = "Body"
+    ) -> Issue:
+        """Create a test Issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"https://github.com/owner/repo/issues/{number}",
+            labels=["ready"]
+        )
+
+    def test_init_default_values(self):
+        """Test PlannerInvoker initialization with default values."""
+        invoker = PlannerInvoker(self.transformer)
+        self.assertEqual(invoker.transformer, self.transformer)
+        self.assertEqual(invoker.agent_name, "claude")
+        self.assertTrue(invoker.enable_hooks)
+        self.assertFalse(invoker.mark_github_issues)
+
+    def test_init_custom_values(self):
+        """Test PlannerInvoker initialization with custom values."""
+        invoker = PlannerInvoker(
+            self.transformer,
+            agent_name="copilot",
+            enable_hooks=False,
+            mark_github_issues=True
+        )
+        self.assertEqual(invoker.agent_name, "copilot")
+        self.assertFalse(invoker.enable_hooks)
+        self.assertTrue(invoker.mark_github_issues)
+
+    def test_process_next_empty_queue(self):
+        """Test process_next returns None when queue is empty."""
+        result = self.invoker.process_next()
+        self.assertIsNone(result)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_next_success(self, mock_invoke):
+        """Test process_next succeeds when planner succeeds."""
+        mock_invoke.return_value = True
+
+        issue = self._create_issue(42, "Test Issue", "Test body")
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.invoker.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.issue_number, 42)
+        self.assertTrue(result.success)
+        self.assertIsNone(result.error)
+
+        # Verify queue item marked completed
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "completed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_next_planner_returns_false(self, mock_invoke):
+        """Test process_next handles planner returning False."""
+        mock_invoke.return_value = False
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.invoker.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.issue_number, 42)
+        self.assertFalse(result.success)
+        self.assertIsNotNone(result.error)
+        self.assertIn("did not complete successfully", result.error)
+
+        # Verify queue item marked failed
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_next_planner_raises_error(self, mock_invoke):
+        """Test process_next handles PlannerError exception."""
+        mock_invoke.side_effect = PlannerError("Memory directory missing")
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.invoker.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.issue_number, 42)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "Memory directory missing")
+
+        # Verify queue item marked failed
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+
+    def test_process_next_issue_not_in_store(self):
+        """Test process_next handles issue not found in store."""
+        # Enqueue without saving to store
+        self.queue.enqueue(42)
+
+        result = self.invoker.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.issue_number, 42)
+        self.assertFalse(result.success)
+        self.assertIn("not found in store", result.error)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    @patch('fetch_ready_issues.mark_issue_processed')
+    def test_process_next_marks_github_issue(self, mock_mark, mock_invoke):
+        """Test process_next marks GitHub issue when configured."""
+        mock_invoke.return_value = True
+
+        invoker = PlannerInvoker(
+            self.transformer,
+            mark_github_issues=True
+        )
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = invoker.process_next()
+
+        self.assertTrue(result.success)
+        mock_mark.assert_called_once_with(42)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    @patch('fetch_ready_issues.mark_issue_processed')
+    def test_process_next_github_label_error_ignored(self, mock_mark, mock_invoke):
+        """Test process_next ignores GitHub label update errors."""
+        mock_invoke.return_value = True
+        mock_mark.side_effect = GitHubCLIError("Label update failed")
+
+        invoker = PlannerInvoker(
+            self.transformer,
+            mark_github_issues=True
+        )
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = invoker.process_next()
+
+        # Should still succeed despite label error
+        self.assertTrue(result.success)
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "completed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_next_no_github_marking_by_default(self, mock_invoke):
+        """Test process_next doesn't mark GitHub issues by default."""
+        mock_invoke.return_value = True
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        with patch('fetch_ready_issues.mark_issue_processed') as mock_mark:
+            self.invoker.process_next()
+            mock_mark.assert_not_called()
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_empty_queue(self, mock_invoke):
+        """Test process_all returns empty results for empty queue."""
+        results, success_count, failure_count = self.invoker.process_all()
+
+        self.assertEqual(results, [])
+        self.assertEqual(success_count, 0)
+        self.assertEqual(failure_count, 0)
+        mock_invoke.assert_not_called()
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_single_issue_success(self, mock_invoke):
+        """Test process_all with single successful issue."""
+        mock_invoke.return_value = True
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        results, success_count, failure_count = self.invoker.process_all()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(success_count, 1)
+        self.assertEqual(failure_count, 0)
+        self.assertTrue(results[0].success)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_multiple_issues_all_success(self, mock_invoke):
+        """Test process_all with multiple successful issues."""
+        mock_invoke.return_value = True
+
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i, f"Issue {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        results, success_count, failure_count = self.invoker.process_all()
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(success_count, 3)
+        self.assertEqual(failure_count, 0)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_mixed_results(self, mock_invoke):
+        """Test process_all with mixed success and failure."""
+        # First call succeeds, second fails, third succeeds
+        mock_invoke.side_effect = [True, False, True]
+
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i, f"Issue {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        results, success_count, failure_count = self.invoker.process_all()
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(success_count, 2)
+        self.assertEqual(failure_count, 1)
+
+        self.assertTrue(results[0].success)
+        self.assertFalse(results[1].success)
+        self.assertTrue(results[2].success)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_continues_on_failure(self, mock_invoke):
+        """Test process_all continues processing after failure."""
+        mock_invoke.side_effect = [
+            PlannerError("First failed"),
+            True
+        ]
+
+        for i in [1, 2]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        results, success_count, failure_count = self.invoker.process_all()
+
+        # Both should be processed
+        self.assertEqual(len(results), 2)
+        self.assertEqual(success_count, 1)
+        self.assertEqual(failure_count, 1)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_respects_priority_order(self, mock_invoke):
+        """Test process_all processes issues in priority order."""
+        mock_invoke.return_value = True
+        processed_order = []
+
+        def track_calls(user_intent, agent_name="claude", enable_hooks=True):
+            # Extract issue number from prompt
+            import re
+            match = re.search(r'TASK-(\d+)', user_intent)
+            if match:
+                processed_order.append(int(match.group(1)))
+            return True
+
+        mock_invoke.side_effect = track_calls
+
+        # Add issues with different priorities
+        for i, priority in [(3, 10), (1, 5), (2, 1)]:
+            issue = self._create_issue(i, f"Issue {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i, priority=priority)
+
+        self.invoker.process_all()
+
+        # Should process in priority order (lower priority value first)
+        self.assertEqual(processed_order, [2, 1, 3])
+
+    def test_count_pending_empty_queue(self):
+        """Test count_pending returns 0 for empty queue."""
+        self.assertEqual(self.invoker.count_pending(), 0)
+
+    def test_count_pending_with_items(self):
+        """Test count_pending counts pending items."""
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        self.assertEqual(self.invoker.count_pending(), 3)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_count_pending_excludes_completed(self, mock_invoke):
+        """Test count_pending excludes completed items."""
+        mock_invoke.return_value = True
+
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        self.assertEqual(self.invoker.count_pending(), 3)
+
+        # Process one
+        self.invoker.process_next()
+
+        self.assertEqual(self.invoker.count_pending(), 2)
+
+    def test_has_pending_empty_queue(self):
+        """Test has_pending returns False for empty queue."""
+        self.assertFalse(self.invoker.has_pending())
+
+    def test_has_pending_with_items(self):
+        """Test has_pending returns True with pending items."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        self.assertTrue(self.invoker.has_pending())
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_has_pending_after_all_processed(self, mock_invoke):
+        """Test has_pending returns False after all processed."""
+        mock_invoke.return_value = True
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        self.assertTrue(self.invoker.has_pending())
+
+        self.invoker.process_all()
+
+        self.assertFalse(self.invoker.has_pending())
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_invoke_planner_called_with_correct_args(self, mock_invoke):
+        """Test invoke_planner is called with correct arguments."""
+        mock_invoke.return_value = True
+
+        invoker = PlannerInvoker(
+            self.transformer,
+            agent_name="copilot",
+            enable_hooks=False
+        )
+
+        issue = self._create_issue(42, "Test Title", "Test Body")
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        invoker.process_next()
+
+        mock_invoke.assert_called_once()
+        call_kwargs = mock_invoke.call_args[1]
+        self.assertEqual(call_kwargs['agent_name'], "copilot")
+        self.assertEqual(call_kwargs['enable_hooks'], False)
+        self.assertIn("TASK-042", mock_invoke.call_args[1]['user_intent'])
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_transformer_property(self, mock_invoke):
+        """Test transformer property returns the transformer."""
+        self.assertIs(self.invoker.transformer, self.transformer)
+
+    def test_properties_are_readonly(self):
+        """Test that properties cannot be modified."""
+        # These should raise AttributeError
+        with self.assertRaises(AttributeError):
+            self.invoker.transformer = None
+        with self.assertRaises(AttributeError):
+            self.invoker.agent_name = "other"
+        with self.assertRaises(AttributeError):
+            self.invoker.enable_hooks = False
+        with self.assertRaises(AttributeError):
+            self.invoker.mark_github_issues = True
+
+
+class TestPlannerInvokerIntegration(unittest.TestCase):
+    """Integration tests for PlannerInvoker with full pipeline."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import os
+
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = os.path.join(self.temp_dir, "issues")
+        self.queue_dir = os.path.join(self.temp_dir, "queue")
+
+        self.store = IssueStore(self.store_dir)
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.transformer = PromptTransformer(self.queue, self.store)
+        self.invoker = PlannerInvoker(self.transformer)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(
+        self, number: int, title: str = "Test", body: str = "Body"
+    ) -> Issue:
+        """Create a test Issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"https://github.com/owner/repo/issues/{number}",
+            labels=["ready"]
+        )
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_full_pipeline_single_issue(self, mock_invoke):
+        """Test complete pipeline with single issue."""
+        mock_invoke.return_value = True
+
+        # 1. Save issue to store
+        issue = self._create_issue(1, "Add login feature", "Implement user login")
+        self.store.save(issue)
+
+        # 2. Enqueue for processing
+        self.queue.enqueue(1)
+
+        # 3. Verify initial state
+        self.assertEqual(self.invoker.count_pending(), 1)
+        self.assertTrue(self.invoker.has_pending())
+
+        # 4. Process
+        result = self.invoker.process_next()
+
+        # 5. Verify result
+        self.assertTrue(result.success)
+        self.assertEqual(result.issue_number, 1)
+
+        # 6. Verify final state
+        self.assertEqual(self.invoker.count_pending(), 0)
+        self.assertFalse(self.invoker.has_pending())
+        self.assertEqual(self.queue.get(1).status, "completed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_full_pipeline_batch_processing(self, mock_invoke):
+        """Test complete pipeline with batch processing."""
+        mock_invoke.return_value = True
+
+        # Create multiple issues
+        issues_data = [
+            (1, "Feature A", "Description A"),
+            (2, "Feature B", "Description B"),
+            (3, "Feature C", "Description C"),
+        ]
+
+        for num, title, body in issues_data:
+            issue = self._create_issue(num, title, body)
+            self.store.save(issue)
+            self.queue.enqueue(num)
+
+        # Verify initial state
+        self.assertEqual(self.invoker.count_pending(), 3)
+
+        # Process all
+        results, success, failure = self.invoker.process_all()
+
+        # Verify results
+        self.assertEqual(len(results), 3)
+        self.assertEqual(success, 3)
+        self.assertEqual(failure, 0)
+
+        # Verify all completed
+        for num, _, _ in issues_data:
+            self.assertEqual(self.queue.get(num).status, "completed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_recovery_after_restart(self, mock_invoke):
+        """Test state recovery after simulated restart."""
+        mock_invoke.return_value = True
+
+        # Create and partially process
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        # Process one
+        self.invoker.process_next()
+
+        # Simulate restart - create new instances
+        new_store = IssueStore(self.store_dir)
+        new_queue = ProcessingQueue(self.queue_dir)
+        new_transformer = PromptTransformer(new_queue, new_store)
+        new_invoker = PlannerInvoker(new_transformer)
+
+        # Verify state restored
+        self.assertEqual(new_invoker.count_pending(), 2)
+
+        # Process remaining
+        results, success, failure = new_invoker.process_all()
+        self.assertEqual(success, 2)
 
 
 if __name__ == "__main__":

@@ -1995,5 +1995,197 @@ class PromptTransformer:
         return result is not None
 
 
+class PlannerInvokerError(Exception):
+    """Raised when planner invocation operations fail."""
+    pass
+
+
+@dataclass
+class InvocationResult:
+    """Result of invoking the planner for a single issue.
+
+    Attributes:
+        issue_number: The GitHub issue number that was processed.
+        success: Whether the planner invocation succeeded.
+        error: Error message if the invocation failed (None otherwise).
+    """
+    issue_number: int
+    success: bool
+    error: Optional[str] = None
+
+
+class PlannerInvoker:
+    """Invokes Ralph's planner phase for each queued issue to generate PRDs automatically.
+
+    This class orchestrates the automatic PRD generation workflow by:
+    1. Getting the next pending issue from the queue via PromptTransformer
+    2. Invoking Ralph's planner phase with the transformed prompt
+    3. Tracking success/failure status in the queue
+    4. Optionally marking processed GitHub issues with appropriate labels
+
+    Example:
+        >>> store = IssueStore(".ralph/issues")
+        >>> queue = ProcessingQueue(".ralph/queue")
+        >>> transformer = PromptTransformer(queue, store)
+        >>> invoker = PlannerInvoker(transformer)
+        >>> # Process a single issue
+        >>> result = invoker.process_next()
+        >>> # Process all pending issues
+        >>> results = invoker.process_all()
+    """
+
+    def __init__(
+        self,
+        transformer: PromptTransformer,
+        agent_name: str = "claude",
+        enable_hooks: bool = True,
+        mark_github_issues: bool = False
+    ):
+        """Initialize the PlannerInvoker.
+
+        Args:
+            transformer: A PromptTransformer instance for getting prompts.
+            agent_name: The AI agent to use for planning. Defaults to "claude".
+            enable_hooks: Whether to enable Ralph hook execution. Defaults to True.
+            mark_github_issues: Whether to update GitHub issue labels after
+                processing (swap 'ready' for 'processed'). Defaults to False.
+        """
+        self._transformer = transformer
+        self._agent_name = agent_name
+        self._enable_hooks = enable_hooks
+        self._mark_github_issues = mark_github_issues
+
+    @property
+    def transformer(self) -> PromptTransformer:
+        """Get the prompt transformer."""
+        return self._transformer
+
+    @property
+    def agent_name(self) -> str:
+        """Get the agent name used for planning."""
+        return self._agent_name
+
+    @property
+    def enable_hooks(self) -> bool:
+        """Get whether hooks are enabled."""
+        return self._enable_hooks
+
+    @property
+    def mark_github_issues(self) -> bool:
+        """Get whether GitHub issues are marked after processing."""
+        return self._mark_github_issues
+
+    def process_next(self) -> Optional[InvocationResult]:
+        """Process the next pending issue in the queue.
+
+        Dequeues the next pending issue, transforms it to a prompt,
+        and invokes Ralph's planner phase to generate a PRD.
+
+        Returns:
+            An InvocationResult if there was an issue to process,
+            None if the queue is empty.
+        """
+        try:
+            prompt = self._transformer.get_next_prompt()
+        except PromptTransformerError as e:
+            # Issue was dequeued but not found in store - already marked failed
+            # Find the most recently failed item (the one we just tried)
+            failed_items = self._transformer.queue.list_items(status="failed")
+            if failed_items:
+                # Return the last failed item (most recent)
+                return InvocationResult(
+                    issue_number=failed_items[-1].issue_number,
+                    success=False,
+                    error=str(e)
+                )
+            return None
+
+        if prompt is None:
+            return None
+
+        issue_number = prompt.issue_number
+
+        try:
+            success = invoke_planner(
+                user_intent=prompt.prompt,
+                agent_name=self._agent_name,
+                enable_hooks=self._enable_hooks
+            )
+
+            if success:
+                self._transformer.mark_completed(issue_number)
+                if self._mark_github_issues:
+                    try:
+                        mark_issue_processed(issue_number)
+                    except GitHubCLIError:
+                        # Don't fail the whole operation if label update fails
+                        pass
+                return InvocationResult(
+                    issue_number=issue_number,
+                    success=True
+                )
+            else:
+                error_msg = "Planner phase did not complete successfully"
+                self._transformer.mark_failed(issue_number, error=error_msg)
+                return InvocationResult(
+                    issue_number=issue_number,
+                    success=False,
+                    error=error_msg
+                )
+
+        except PlannerError as e:
+            self._transformer.mark_failed(issue_number, error=str(e))
+            return InvocationResult(
+                issue_number=issue_number,
+                success=False,
+                error=str(e)
+            )
+
+    def process_all(self) -> Tuple[List[InvocationResult], int, int]:
+        """Process all pending issues in the queue.
+
+        Iterates through all pending issues, invoking the planner for each.
+        Processing continues even if individual issues fail.
+
+        Returns:
+            A tuple containing:
+                - List of InvocationResult objects with status for each issue
+                - Count of successfully processed issues
+                - Count of failed issues
+        """
+        results: List[InvocationResult] = []
+        success_count = 0
+        failure_count = 0
+
+        while True:
+            result = self.process_next()
+            if result is None:
+                break
+
+            results.append(result)
+            if result.success:
+                success_count += 1
+            else:
+                failure_count += 1
+
+        return results, success_count, failure_count
+
+    def count_pending(self) -> int:
+        """Count the number of pending issues in the queue.
+
+        Returns:
+            The number of issues with 'pending' status.
+        """
+        return self._transformer.count_pending()
+
+    def has_pending(self) -> bool:
+        """Check if there are pending issues to process.
+
+        Returns:
+            True if there are pending issues, False otherwise.
+        """
+        return self.count_pending() > 0
+
+
 if __name__ == "__main__":
     sys.exit(main())
