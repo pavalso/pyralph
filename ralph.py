@@ -319,7 +319,8 @@ class RalphOrchestrator:
         """
         Run the architect phase to initialize project memory.
 
-        Creates .ralph/memory/architecture.md with project structure,
+        Creates both .ralph/memory/architecture.md (internal memory) and
+        ARCH.md (git-tracked documentation) with project structure,
         tech stack, and test command configuration.
 
         Args:
@@ -341,10 +342,12 @@ CAPABILITIES & EXECUTION ENV:
 - All file paths are relative to the project root (CWD).
 - Create files directly on disk; do not rely on stdout for file content.
 
-DELIVERABLE:
-- Create the file: .ralph/memory/architecture.md
+DELIVERABLES:
+- Create TWO files with synchronized content:
+  1) .ralph/memory/architecture.md (internal memory, includes YAML frontmatter)
+  2) ARCH.md (git-tracked documentation in project root, NO frontmatter)
 
-CONTENT REQUIREMENTS for architecture.md:
+CONTENT REQUIREMENTS for .ralph/memory/architecture.md:
 - Use YAML frontmatter:
   ---
   type: wiki
@@ -360,14 +363,25 @@ CONTENT REQUIREMENTS for architecture.md:
      (Exactly this label and backtick format so an automated regex can extract it.)
 - Keep content concise and actionable.
 
+CONTENT REQUIREMENTS for ARCH.md:
+- Start with a heading: # Architecture Decision Record
+- Include the SAME sections as architecture.md (Tech Stack, Overview, Key Components, Risks & Assumptions, Test Command)
+- NO YAML frontmatter (this file is for git-tracked documentation)
+- Content should be synchronized with .ralph/memory/architecture.md
+
 OUTPUT RULES:
-- Do NOT print the file content to stdout.
+- Do NOT print file contents to stdout.
 - You may print a one-line confirmation like:
-  STATUS: CREATED .ralph/memory/architecture.md"""
+  STATUS: CREATED .ralph/memory/architecture.md and ARCH.md"""
 
         success, _, _ = self.agent.run(prompt, "ARCHITECT")
         if not success or not any(CONF.MEMORY_DIR.iterdir()):
-            Logger.info("⚠️ Architect failed.", "RED")
+            Logger.info("⚠️ Architect failed to create memory files.", "RED")
+            sys.exit(1)
+
+        arch_md_path = CONF.BASE_DIR / "ARCH.md"
+        if not arch_md_path.exists():
+            Logger.info("⚠️ Architect failed to create ARCH.md.", "RED")
             sys.exit(1)
 
         Logger.info("✅ Memory Initialized.", "GREEN")

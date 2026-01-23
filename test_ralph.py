@@ -2032,5 +2032,145 @@ class TestOrchestratorUsesAgentError(unittest.TestCase):
             CONF.PROGRESS_FILE = original_progress_file
 
 
+class TestRalphOrchestratorArchitectVerification(unittest.TestCase):
+    """Tests for RalphOrchestrator.run_architect() ARCH.md verification."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.temp_path = Path(self.temp_dir)
+        # Save original config values
+        self.original_base_dir = CONF.BASE_DIR
+        self.original_root_dir = CONF.ROOT_DIR
+        self.original_memory_dir = CONF.MEMORY_DIR
+        self.original_archive_dir = CONF.ARCHIVE_DIR
+        # Set temp paths
+        CONF.BASE_DIR = self.temp_path
+        CONF.ROOT_DIR = self.temp_path / ".ralph"
+        CONF.MEMORY_DIR = self.temp_path / ".ralph" / "memory"
+        CONF.ARCHIVE_DIR = self.temp_path / ".ralph" / "archive"
+
+    def tearDown(self):
+        # Restore original config values
+        CONF.BASE_DIR = self.original_base_dir
+        CONF.ROOT_DIR = self.original_root_dir
+        CONF.MEMORY_DIR = self.original_memory_dir
+        CONF.ARCHIVE_DIR = self.original_archive_dir
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_run_architect_exits_when_arch_md_not_created(self):
+        """Given agent runs successfully but ARCH.md is not created, when run_architect is called, then it exits with code 1."""
+        mock_agent = MagicMock()
+        mock_agent.check_dependencies.return_value = True
+        mock_agent.get_name.return_value = "MockAgent"
+        mock_agent.run.return_value = (True, "STATUS: CREATED", None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            from ralph import RalphOrchestrator
+            orchestrator = RalphOrchestrator(agent_name="mock")
+
+            # Create memory file so memory check passes
+            CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+            (CONF.MEMORY_DIR / "architecture.md").write_text("content", encoding="utf-8")
+
+            # ARCH.md should not exist in temp dir
+            arch_md_path = CONF.BASE_DIR / "ARCH.md"
+            self.assertFalse(arch_md_path.exists())
+
+            with patch('ralph.sys.exit') as mock_exit:
+                with patch('ralph.Logger.info'):  # Suppress Logger output
+                    orchestrator.run_architect("test intent")
+                mock_exit.assert_called_once_with(1)
+
+    def test_run_architect_succeeds_when_arch_md_created(self):
+        """Given agent runs successfully and ARCH.md is created, when run_architect is called, then it completes without exit."""
+        mock_agent = MagicMock()
+        mock_agent.check_dependencies.return_value = True
+        mock_agent.get_name.return_value = "MockAgent"
+        mock_agent.run.return_value = (True, "STATUS: CREATED", None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            from ralph import RalphOrchestrator
+            orchestrator = RalphOrchestrator(agent_name="mock")
+
+            # Create memory file so memory check passes
+            CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+            (CONF.MEMORY_DIR / "architecture.md").write_text("content", encoding="utf-8")
+
+            # Create ARCH.md
+            arch_md_path = CONF.BASE_DIR / "ARCH.md"
+            arch_md_path.write_text("# Architecture\n", encoding="utf-8")
+
+            with patch('ralph.sys.exit') as mock_exit:
+                with patch('ralph.Logger.info'):  # Suppress Logger output
+                    orchestrator.run_architect("test intent")
+                mock_exit.assert_not_called()
+
+    def test_run_architect_logs_error_when_arch_md_missing(self):
+        """Given agent runs successfully but ARCH.md is not created, when run_architect is called, then it logs an error about ARCH.md."""
+        mock_agent = MagicMock()
+        mock_agent.check_dependencies.return_value = True
+        mock_agent.get_name.return_value = "MockAgent"
+        mock_agent.run.return_value = (True, "STATUS: CREATED", None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            from ralph import RalphOrchestrator
+            orchestrator = RalphOrchestrator(agent_name="mock")
+
+            CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+            (CONF.MEMORY_DIR / "architecture.md").write_text("content", encoding="utf-8")
+
+            with patch('ralph.sys.exit'):
+                with patch('ralph.Logger.info') as mock_info:
+                    orchestrator.run_architect("test intent")
+                    # Check that error message about ARCH.md was logged
+                    calls = [str(call) for call in mock_info.call_args_list]
+                    arch_md_error_logged = any("ARCH.md" in call for call in calls)
+                    self.assertTrue(arch_md_error_logged)
+
+    def test_run_architect_checks_arch_md_in_project_root(self):
+        """Given agent runs, when run_architect is called, then it checks for ARCH.md in CONF.BASE_DIR."""
+        mock_agent = MagicMock()
+        mock_agent.check_dependencies.return_value = True
+        mock_agent.get_name.return_value = "MockAgent"
+        mock_agent.run.return_value = (True, "STATUS: CREATED", None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            from ralph import RalphOrchestrator
+            orchestrator = RalphOrchestrator(agent_name="mock")
+
+            CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+            (CONF.MEMORY_DIR / "architecture.md").write_text("content", encoding="utf-8")
+
+            # Create ARCH.md in the correct location (project root)
+            expected_arch_path = CONF.BASE_DIR / "ARCH.md"
+            expected_arch_path.write_text("# Architecture\n", encoding="utf-8")
+
+            with patch('ralph.sys.exit') as mock_exit:
+                with patch('ralph.Logger.info'):  # Suppress Logger output
+                    orchestrator.run_architect("test intent")
+                mock_exit.assert_not_called()
+
+    def test_run_architect_still_checks_memory_files(self):
+        """Given agent runs but memory files are not created, when run_architect is called, then it exits for memory failure."""
+        mock_agent = MagicMock()
+        mock_agent.check_dependencies.return_value = True
+        mock_agent.get_name.return_value = "MockAgent"
+        mock_agent.run.return_value = (True, "STATUS: CREATED", None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            from ralph import RalphOrchestrator
+            orchestrator = RalphOrchestrator(agent_name="mock")
+
+            # Don't create any memory files
+            CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+            # Memory dir exists but is empty
+
+            with patch('ralph.sys.exit') as mock_exit:
+                with patch('ralph.Logger.info'):  # Suppress Logger output
+                    orchestrator.run_architect("test intent")
+                # sys.exit should be called at least once (for memory failure)
+                mock_exit.assert_called_with(1)
+
+
 if __name__ == "__main__":
     unittest.main()
