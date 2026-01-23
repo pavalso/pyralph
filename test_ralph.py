@@ -24,6 +24,7 @@ from ralph import (
     MemoryManager,
     RalphOrchestrator,
     Shell,
+    TemplateManager,
     get_version,
     main,
 )
@@ -2107,6 +2108,309 @@ class TestRalphOrchestratorArchitectVerification(unittest.TestCase):
                     orchestrator.run_architect("test intent")
                 # sys.exit should be called at least once (for memory failure)
                 mock_exit.assert_called_with(1)
+
+
+class TestTemplateManagerDeveloperTemplate(unittest.TestCase):
+    """Tests for TemplateManager developer template with mandatory instructions."""
+
+    def test_developer_template_contains_mandatory_instructions_header(self):
+        """Given developer template exists, when loaded, then it contains MANDATORY INSTRUCTIONS header."""
+        template = TemplateManager.DEFAULT_TEMPLATES["developer.txt"]
+        self.assertIn("## MANDATORY INSTRUCTIONS (MUST FOLLOW)", template)
+
+    def test_developer_template_contains_mandatory_instructions_footer(self):
+        """Given developer template exists, when loaded, then it contains END MANDATORY INSTRUCTIONS marker."""
+        template = TemplateManager.DEFAULT_TEMPLATES["developer.txt"]
+        self.assertIn("## END MANDATORY INSTRUCTIONS", template)
+
+    def test_developer_template_contains_must_strictly_adhere_instruction(self):
+        """Given developer template exists, when loaded, then it instructs agent to strictly adhere."""
+        template = TemplateManager.DEFAULT_TEMPLATES["developer.txt"]
+        self.assertIn("MUST strictly adhere", template)
+
+    def test_developer_template_contains_user_context_placeholder(self):
+        """Given developer template exists, when loaded, then it contains user_context placeholder."""
+        template = TemplateManager.DEFAULT_TEMPLATES["developer.txt"]
+        self.assertIn("{{user_context}}", template)
+
+    def test_developer_template_user_context_inside_mandatory_section(self):
+        """Given developer template, when rendered, then user_context is within mandatory instructions section."""
+        template = TemplateManager.DEFAULT_TEMPLATES["developer.txt"]
+        start_marker = "## MANDATORY INSTRUCTIONS (MUST FOLLOW)"
+        end_marker = "## END MANDATORY INSTRUCTIONS"
+        start_idx = template.find(start_marker)
+        end_idx = template.find(end_marker)
+        context_idx = template.find("{{user_context}}")
+        self.assertGreater(context_idx, start_idx)
+        self.assertLess(context_idx, end_idx)
+
+    def test_developer_template_renders_user_preferences(self):
+        """Given user preferences, when developer template is rendered, then preferences appear in mandatory section."""
+        user_prefs = "Always use snake_case for variables"
+        rendered = TemplateManager.render(
+            "developer.txt",
+            task_id="TASK-001",
+            task_description="Test task",
+            memory_tree="(Memory Empty)",
+            user_context=user_prefs,
+            test_cmd="pytest",
+            prev_errors=""
+        )
+        self.assertIn(user_prefs, rendered)
+        self.assertIn("## MANDATORY INSTRUCTIONS (MUST FOLLOW)", rendered)
+        self.assertIn("## END MANDATORY INSTRUCTIONS", rendered)
+
+    def test_developer_template_no_longer_uses_prefs_label(self):
+        """Given developer template, when loaded, then it does not use the old PREFS label."""
+        template = TemplateManager.DEFAULT_TEMPLATES["developer.txt"]
+        self.assertNotIn("PREFS:", template)
+
+    def test_developer_template_user_context_appears_before_context(self):
+        """Given developer template, when loaded, then user_context appears before CONTEXT section for higher priority."""
+        template = TemplateManager.DEFAULT_TEMPLATES["developer.txt"]
+        mandatory_section_start = template.find("## MANDATORY INSTRUCTIONS")
+        context_section = template.find("CONTEXT:")
+        self.assertGreater(context_section, mandatory_section_start,
+            "User context (MANDATORY INSTRUCTIONS) should appear before CONTEXT for higher priority")
+
+    def test_developer_template_user_context_immediately_after_task(self):
+        """Given developer template, when loaded, then MANDATORY INSTRUCTIONS appears right after TASK section."""
+        template = TemplateManager.DEFAULT_TEMPLATES["developer.txt"]
+        task_idx = template.find("TASK:")
+        mandatory_idx = template.find("## MANDATORY INSTRUCTIONS")
+        context_idx = template.find("CONTEXT:")
+        # MANDATORY INSTRUCTIONS should be between TASK and CONTEXT
+        self.assertGreater(mandatory_idx, task_idx)
+        self.assertLess(mandatory_idx, context_idx)
+
+
+class TestPromptMdValidation(unittest.TestCase):
+    """Tests for prompt.md content validation in _execute_task."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.temp_path = Path(self.temp_dir)
+        self.original_base_dir = CONF.BASE_DIR
+        self.original_root_dir = CONF.ROOT_DIR
+        self.original_memory_dir = CONF.MEMORY_DIR
+        self.original_archive_dir = CONF.ARCHIVE_DIR
+        self.original_templates_dir = CONF.TEMPLATES_DIR
+        self.original_prd_file = CONF.PRD_FILE
+        self.original_progress_file = CONF.PROGRESS_FILE
+        self.original_log_file = CONF.LOG_FILE
+
+        CONF.BASE_DIR = self.temp_path
+        CONF.ROOT_DIR = self.temp_path / ".ralph"
+        CONF.MEMORY_DIR = CONF.ROOT_DIR / "memory"
+        CONF.ARCHIVE_DIR = CONF.ROOT_DIR / "archive"
+        CONF.TEMPLATES_DIR = CONF.ROOT_DIR / "templates"
+        CONF.PRD_FILE = CONF.ROOT_DIR / "prd.json"
+        CONF.PROGRESS_FILE = CONF.ROOT_DIR / "progress.txt"
+        CONF.LOG_FILE = CONF.ROOT_DIR / "ralph_log.txt"
+
+    def tearDown(self):
+        CONF.BASE_DIR = self.original_base_dir
+        CONF.ROOT_DIR = self.original_root_dir
+        CONF.MEMORY_DIR = self.original_memory_dir
+        CONF.ARCHIVE_DIR = self.original_archive_dir
+        CONF.TEMPLATES_DIR = self.original_templates_dir
+        CONF.PRD_FILE = self.original_prd_file
+        CONF.PROGRESS_FILE = self.original_progress_file
+        CONF.LOG_FILE = self.original_log_file
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_empty_prompt_md_uses_default_context(self):
+        """Given empty prompt.md, when _execute_task runs, then default user context is used."""
+        CONF.ensure_directories()
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        # Create empty prompt.md
+        prompt_md_path = CONF.BASE_DIR / "prompt.md"
+        prompt_md_path.write_text("", encoding="utf-8")
+
+        # Create PRD
+        prd = {"id": "PRD-001", "description": "Test", "userStories": [
+            {"id": "TASK-001", "description": "Test task", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding="utf-8")
+
+        with patch("ralph.get_agent") as mock_get_agent:
+            mock_agent = MagicMock()
+            mock_agent.check_dependencies.return_value = True
+            mock_agent.get_name.return_value = "mock"
+            mock_agent.run.return_value = (True, "STATUS: SUCCESS", None)
+            mock_get_agent.return_value = mock_agent
+
+            with patch("ralph.Shell.run") as mock_shell:
+                mock_shell.return_value = ("", "", 0)
+
+                with patch("ralph.Logger.warning") as mock_warning:
+                    orchestrator = RalphOrchestrator(agent_name="mock")
+                    orchestrator._execute_task(prd, prd["userStories"][0], "pytest")
+
+                    # Verify warning was logged
+                    mock_warning.assert_called_with(
+                        "prompt.md exists but is empty, using default user context."
+                    )
+
+    def test_whitespace_only_prompt_md_uses_default_context(self):
+        """Given prompt.md with only whitespace, when _execute_task runs, then default user context is used."""
+        CONF.ensure_directories()
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        # Create whitespace-only prompt.md
+        prompt_md_path = CONF.BASE_DIR / "prompt.md"
+        prompt_md_path.write_text("   \n\t\n   ", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "description": "Test", "userStories": [
+            {"id": "TASK-001", "description": "Test task", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding="utf-8")
+
+        with patch("ralph.get_agent") as mock_get_agent:
+            mock_agent = MagicMock()
+            mock_agent.check_dependencies.return_value = True
+            mock_agent.get_name.return_value = "mock"
+            mock_agent.run.return_value = (True, "STATUS: SUCCESS", None)
+            mock_get_agent.return_value = mock_agent
+
+            with patch("ralph.Shell.run") as mock_shell:
+                mock_shell.return_value = ("", "", 0)
+
+                with patch("ralph.Logger.warning") as mock_warning:
+                    orchestrator = RalphOrchestrator(agent_name="mock")
+                    orchestrator._execute_task(prd, prd["userStories"][0], "pytest")
+
+                    mock_warning.assert_called_with(
+                        "prompt.md exists but is empty, using default user context."
+                    )
+
+    def test_non_empty_prompt_md_content_is_used(self):
+        """Given non-empty prompt.md, when _execute_task runs, then its content is used."""
+        CONF.ensure_directories()
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        # Create non-empty prompt.md
+        prompt_md_path = CONF.BASE_DIR / "prompt.md"
+        prompt_md_path.write_text("Use snake_case for all variables", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "description": "Test", "userStories": [
+            {"id": "TASK-001", "description": "Test task", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding="utf-8")
+
+        captured_prompt = []
+
+        with patch("ralph.get_agent") as mock_get_agent:
+            mock_agent = MagicMock()
+            mock_agent.check_dependencies.return_value = True
+            mock_agent.get_name.return_value = "mock"
+
+            def capture_run(prompt, tag):
+                captured_prompt.append(prompt)
+                return (True, "STATUS: SUCCESS", None)
+
+            mock_agent.run.side_effect = capture_run
+            mock_get_agent.return_value = mock_agent
+
+            with patch("ralph.Shell.run") as mock_shell:
+                mock_shell.return_value = ("", "", 0)
+
+                with patch("ralph.Logger.warning") as mock_warning:
+                    orchestrator = RalphOrchestrator(agent_name="mock")
+                    orchestrator._execute_task(prd, prd["userStories"][0], "pytest")
+
+                    # Verify warning was NOT called
+                    mock_warning.assert_not_called()
+
+        # Verify the prompt contains the user context from prompt.md
+        self.assertEqual(len(captured_prompt), 1)
+        self.assertIn("Use snake_case for all variables", captured_prompt[0])
+
+    def test_missing_prompt_md_uses_default_context(self):
+        """Given no prompt.md file, when _execute_task runs, then default user context is used."""
+        CONF.ensure_directories()
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        # Do NOT create prompt.md
+        prd = {"id": "PRD-001", "description": "Test", "userStories": [
+            {"id": "TASK-001", "description": "Test task", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding="utf-8")
+
+        captured_prompt = []
+
+        with patch("ralph.get_agent") as mock_get_agent:
+            mock_agent = MagicMock()
+            mock_agent.check_dependencies.return_value = True
+            mock_agent.get_name.return_value = "mock"
+
+            def capture_run(prompt, tag):
+                captured_prompt.append(prompt)
+                return (True, "STATUS: SUCCESS", None)
+
+            mock_agent.run.side_effect = capture_run
+            mock_get_agent.return_value = mock_agent
+
+            with patch("ralph.Shell.run") as mock_shell:
+                mock_shell.return_value = ("", "", 0)
+
+                with patch("ralph.Logger.warning") as mock_warning:
+                    orchestrator = RalphOrchestrator(agent_name="mock")
+                    orchestrator._execute_task(prd, prd["userStories"][0], "pytest")
+
+                    # No warning because file doesn't exist (different from empty file)
+                    mock_warning.assert_not_called()
+
+        # Verify the prompt contains the default context
+        self.assertEqual(len(captured_prompt), 1)
+        self.assertIn("No specific user preferences provided", captured_prompt[0])
+
+    def test_prompt_md_variables_not_replaced_when_empty(self):
+        """Given empty prompt.md, when _execute_task runs, then variable placeholders are not in output."""
+        CONF.ensure_directories()
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        # Create empty prompt.md
+        prompt_md_path = CONF.BASE_DIR / "prompt.md"
+        prompt_md_path.write_text("", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "description": "Test PRD", "userStories": [
+            {"id": "TASK-001", "description": "Test task", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding="utf-8")
+
+        captured_prompt = []
+
+        with patch("ralph.get_agent") as mock_get_agent:
+            mock_agent = MagicMock()
+            mock_agent.check_dependencies.return_value = True
+            mock_agent.get_name.return_value = "mock"
+
+            def capture_run(prompt, tag):
+                captured_prompt.append(prompt)
+                return (True, "STATUS: SUCCESS", None)
+
+            mock_agent.run.side_effect = capture_run
+            mock_get_agent.return_value = mock_agent
+
+            with patch("ralph.Shell.run") as mock_shell:
+                mock_shell.return_value = ("", "", 0)
+
+                with patch("ralph.Logger.warning"):
+                    orchestrator = RalphOrchestrator(agent_name="mock")
+                    orchestrator._execute_task(prd, prd["userStories"][0], "pytest")
+
+        # Verify the default context is used (no variable placeholders)
+        self.assertEqual(len(captured_prompt), 1)
+        self.assertIn("No specific user preferences provided", captured_prompt[0])
+        # Make sure no unreplaced variables from prompt.md
+        self.assertNotIn("{{PRD_ID}}", captured_prompt[0])
 
 
 if __name__ == "__main__":
