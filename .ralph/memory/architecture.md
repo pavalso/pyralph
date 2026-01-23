@@ -107,6 +107,8 @@ To add a new AI backend:
 - **Shell Execution**: Uses `shell=True` which carries injection risks if prompts contain malicious input
 - **Timeout**: Default 600s timeout; long-running tasks may fail
 - **Verification**: Relies on deterministic test command exit codes for success validation
+- **Git dependency**: Commits changes after verified tasks
+- **No pinned dependencies**: `dependencies = []` in pyproject.toml — relies on system Python packages
 
 ## CLI Interface
 
@@ -173,7 +175,7 @@ ralph execute --accept-all --verbose --agent claude
 - **planner**: Requires memory to exist (run `architect` first)
 - **execute**: Requires PRD to exist (run `planner` first)
 
-When running `all` phases, Ralph automatically skips phases whose artifacts already exist.
+When running `all` phases, Ralph automatically skips phases whose artifacts already exist. 1d6d00f8516ec6f8e11d85a16e8cd916bf9ea17f
 
 ## Test Command
 

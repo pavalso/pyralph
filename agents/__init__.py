@@ -1,6 +1,6 @@
 """Agent implementations for Ralph orchestrator."""
 
-from .base import BaseAgent
+from .base import BaseAgent, AgentError
 from .claude import ClaudeAgent
 from .copilot import GithubAgent
 
@@ -44,4 +44,4 @@ def list_agents():
     return list(AVAILABLE_AGENTS.keys())
 
 
-__all__ = ["BaseAgent", "ClaudeAgent", "get_agent", "list_agents", "AVAILABLE_AGENTS"]
+__all__ = ["BaseAgent", "AgentError", "ClaudeAgent", "get_agent", "list_agents", "AVAILABLE_AGENTS"]
