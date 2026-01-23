@@ -4855,5 +4855,420 @@ class TestExtensibilityFlagsCLI(unittest.TestCase):
             self.assertEqual(call_kwargs['plugin'], ['/plugin.py'])
 
 
+# ==============================================================================
+# SAFETY AND PRIVACY FLAGS TESTS (TASK-012)
+# ==============================================================================
+
+
+class TestLoggerRedaction(unittest.TestCase):
+    """Tests for Logger redaction functionality."""
+
+    def setUp(self):
+        self._original_redact_patterns = Logger.redact_patterns.copy() if Logger.redact_patterns else []
+        Logger.redact_patterns = []
+
+    def tearDown(self):
+        Logger.redact_patterns = self._original_redact_patterns
+
+    def test_set_redact_patterns_sets_patterns(self):
+        """Test set_redact_patterns sets the patterns list."""
+        patterns = [r'api_key=\w+', r'password=\w+']
+        Logger.set_redact_patterns(patterns)
+        self.assertEqual(Logger.redact_patterns, patterns)
+
+    def test_set_redact_patterns_replaces_existing(self):
+        """Test set_redact_patterns replaces existing patterns."""
+        Logger.redact_patterns = ['old_pattern']
+        Logger.set_redact_patterns(['new_pattern'])
+        self.assertEqual(Logger.redact_patterns, ['new_pattern'])
+
+    def test_redact_content_with_no_patterns(self):
+        """Test _redact_content returns content unchanged when no patterns."""
+        Logger.redact_patterns = []
+        content = "api_key=secret123"
+        result = Logger._redact_content(content)
+        self.assertEqual(result, content)
+
+    def test_redact_content_with_single_pattern(self):
+        """Test _redact_content redacts matching content."""
+        Logger.redact_patterns = [r'api_key=\w+']
+        content = "The api_key=secret123 is here"
+        result = Logger._redact_content(content)
+        self.assertEqual(result, "The [REDACTED] is here")
+
+    def test_redact_content_with_multiple_patterns(self):
+        """Test _redact_content applies multiple patterns."""
+        Logger.redact_patterns = [r'api_key=\w+', r'password=\w+']
+        content = "api_key=secret123 and password=mypass"
+        result = Logger._redact_content(content)
+        self.assertEqual(result, "[REDACTED] and [REDACTED]")
+
+    def test_redact_content_with_invalid_regex(self):
+        """Test _redact_content skips invalid regex patterns."""
+        Logger.redact_patterns = [r'[invalid', r'valid_pattern']
+        content = "valid_pattern here"
+        result = Logger._redact_content(content)
+        self.assertEqual(result, "[REDACTED] here")
+
+    def test_redact_content_multiple_matches(self):
+        """Test _redact_content redacts all occurrences of a pattern."""
+        Logger.redact_patterns = [r'secret\d+']
+        content = "secret123 and secret456 and secret789"
+        result = Logger._redact_content(content)
+        self.assertEqual(result, "[REDACTED] and [REDACTED] and [REDACTED]")
+
+
+class TestLoggerRedactFromFile(unittest.TestCase):
+    """Tests for Logger.add_redact_patterns_from_file."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.temp_path = Path(self.temp_dir)
+        self._original_redact_patterns = Logger.redact_patterns.copy() if Logger.redact_patterns else []
+        Logger.redact_patterns = []
+
+    def tearDown(self):
+        Logger.redact_patterns = self._original_redact_patterns
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_add_redact_patterns_from_file_loads_patterns(self):
+        """Test loading patterns from file."""
+        redact_file = self.temp_path / "redact.txt"
+        redact_file.write_text("api_key=\\w+\npassword=\\w+\n", encoding='utf-8')
+        Logger.add_redact_patterns_from_file(str(redact_file))
+        self.assertEqual(Logger.redact_patterns, ['api_key=\\w+', 'password=\\w+'])
+
+    def test_add_redact_patterns_from_file_ignores_empty_lines(self):
+        """Test that empty lines are ignored."""
+        redact_file = self.temp_path / "redact.txt"
+        redact_file.write_text("pattern1\n\n  \npattern2\n", encoding='utf-8')
+        Logger.add_redact_patterns_from_file(str(redact_file))
+        self.assertEqual(Logger.redact_patterns, ['pattern1', 'pattern2'])
+
+    def test_add_redact_patterns_from_file_ignores_comments(self):
+        """Test that comment lines (starting with #) are ignored."""
+        redact_file = self.temp_path / "redact.txt"
+        redact_file.write_text("# This is a comment\npattern1\n# Another comment\npattern2\n", encoding='utf-8')
+        Logger.add_redact_patterns_from_file(str(redact_file))
+        self.assertEqual(Logger.redact_patterns, ['pattern1', 'pattern2'])
+
+    def test_add_redact_patterns_from_file_appends_to_existing(self):
+        """Test that patterns are appended to existing patterns."""
+        Logger.redact_patterns = ['existing_pattern']
+        redact_file = self.temp_path / "redact.txt"
+        redact_file.write_text("new_pattern\n", encoding='utf-8')
+        Logger.add_redact_patterns_from_file(str(redact_file))
+        self.assertEqual(Logger.redact_patterns, ['existing_pattern', 'new_pattern'])
+
+    def test_add_redact_patterns_from_file_nonexistent_file(self):
+        """Test that non-existent file is silently ignored."""
+        Logger.redact_patterns = []
+        Logger.add_redact_patterns_from_file("/nonexistent/file.txt")
+        self.assertEqual(Logger.redact_patterns, [])
+
+
+class TestLoggerNoLogPrompts(unittest.TestCase):
+    """Tests for Logger.no_log_prompts flag."""
+
+    def setUp(self):
+        self._original_no_log_prompts = Logger.no_log_prompts
+        self._original_custom_log_file = Logger.custom_log_file
+        self.temp_dir = tempfile.mkdtemp()
+        self.log_file = Path(self.temp_dir) / "test_log.txt"
+        self._original_log_file = CONF.LOG_FILE
+        CONF.LOG_FILE = self.log_file
+        Logger.custom_log_file = None  # Ensure we use CONF.LOG_FILE
+        Logger.no_log_prompts = False
+
+    def tearDown(self):
+        Logger.no_log_prompts = self._original_no_log_prompts
+        Logger.custom_log_file = self._original_custom_log_file
+        CONF.LOG_FILE = self._original_log_file
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_set_no_log_prompts_true(self):
+        """Test set_no_log_prompts(True) enables flag."""
+        Logger.set_no_log_prompts(True)
+        self.assertTrue(Logger.no_log_prompts)
+
+    def test_set_no_log_prompts_false(self):
+        """Test set_no_log_prompts(False) disables flag."""
+        Logger.no_log_prompts = True
+        Logger.set_no_log_prompts(False)
+        self.assertFalse(Logger.no_log_prompts)
+
+    def test_file_log_skips_prompts_when_no_log_prompts(self):
+        """Test file_log skips PROMPT type when no_log_prompts is True."""
+        Logger.set_no_log_prompts(True)
+        Logger.file_log("This is a prompt", "PROMPT", "TEST")
+        self.assertFalse(self.log_file.exists())
+
+    def test_file_log_logs_prompts_when_not_set(self):
+        """Test file_log logs PROMPT type when no_log_prompts is False."""
+        Logger.set_no_log_prompts(False)
+        Logger.file_log("This is a prompt", "PROMPT", "TEST")
+        self.assertTrue(self.log_file.exists())
+        content = self.log_file.read_text(encoding='utf-8')
+        self.assertIn("This is a prompt", content)
+
+    def test_file_log_still_logs_responses_when_no_log_prompts(self):
+        """Test file_log still logs RESPONSE type when no_log_prompts is True."""
+        Logger.set_no_log_prompts(True)
+        Logger.file_log("This is a response", "RESPONSE", "TEST")
+        self.assertTrue(self.log_file.exists())
+        content = self.log_file.read_text(encoding='utf-8')
+        self.assertIn("This is a response", content)
+
+
+class TestLoggerNoLogResponses(unittest.TestCase):
+    """Tests for Logger.no_log_responses flag."""
+
+    def setUp(self):
+        self._original_no_log_responses = Logger.no_log_responses
+        self._original_custom_log_file = Logger.custom_log_file
+        self.temp_dir = tempfile.mkdtemp()
+        self.log_file = Path(self.temp_dir) / "test_log.txt"
+        self._original_log_file = CONF.LOG_FILE
+        CONF.LOG_FILE = self.log_file
+        Logger.custom_log_file = None  # Ensure we use CONF.LOG_FILE
+        Logger.no_log_responses = False
+
+    def tearDown(self):
+        Logger.no_log_responses = self._original_no_log_responses
+        Logger.custom_log_file = self._original_custom_log_file
+        CONF.LOG_FILE = self._original_log_file
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_set_no_log_responses_true(self):
+        """Test set_no_log_responses(True) enables flag."""
+        Logger.set_no_log_responses(True)
+        self.assertTrue(Logger.no_log_responses)
+
+    def test_set_no_log_responses_false(self):
+        """Test set_no_log_responses(False) disables flag."""
+        Logger.no_log_responses = True
+        Logger.set_no_log_responses(False)
+        self.assertFalse(Logger.no_log_responses)
+
+    def test_file_log_skips_responses_when_no_log_responses(self):
+        """Test file_log skips RESPONSE type when no_log_responses is True."""
+        Logger.set_no_log_responses(True)
+        Logger.file_log("This is a response", "RESPONSE", "TEST")
+        self.assertFalse(self.log_file.exists())
+
+    def test_file_log_logs_responses_when_not_set(self):
+        """Test file_log logs RESPONSE type when no_log_responses is False."""
+        Logger.set_no_log_responses(False)
+        Logger.file_log("This is a response", "RESPONSE", "TEST")
+        self.assertTrue(self.log_file.exists())
+        content = self.log_file.read_text(encoding='utf-8')
+        self.assertIn("This is a response", content)
+
+    def test_file_log_still_logs_prompts_when_no_log_responses(self):
+        """Test file_log still logs PROMPT type when no_log_responses is True."""
+        Logger.set_no_log_responses(True)
+        Logger.file_log("This is a prompt", "PROMPT", "TEST")
+        self.assertTrue(self.log_file.exists())
+        content = self.log_file.read_text(encoding='utf-8')
+        self.assertIn("This is a prompt", content)
+
+
+class TestFileLogRedaction(unittest.TestCase):
+    """Tests for redaction in file_log."""
+
+    def setUp(self):
+        self._original_redact_patterns = Logger.redact_patterns.copy() if Logger.redact_patterns else []
+        self._original_custom_log_file = Logger.custom_log_file
+        Logger.redact_patterns = []
+        self.temp_dir = tempfile.mkdtemp()
+        self.log_file = Path(self.temp_dir) / "test_log.txt"
+        self._original_log_file = CONF.LOG_FILE
+        CONF.LOG_FILE = self.log_file
+        Logger.custom_log_file = None  # Ensure we use CONF.LOG_FILE
+
+    def tearDown(self):
+        Logger.redact_patterns = self._original_redact_patterns
+        Logger.custom_log_file = self._original_custom_log_file
+        CONF.LOG_FILE = self._original_log_file
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_file_log_applies_redaction(self):
+        """Test file_log applies redaction patterns to content."""
+        Logger.set_redact_patterns([r'secret_key=\w+'])
+        Logger.file_log("Content with secret_key=abc123 here", "INFO", "TEST")
+        content = self.log_file.read_text(encoding='utf-8')
+        self.assertIn("[REDACTED]", content)
+        self.assertNotIn("secret_key=abc123", content)
+
+    def test_file_log_redacts_in_prompts(self):
+        """Test file_log applies redaction to PROMPT type."""
+        Logger.set_redact_patterns([r'API_KEY=\w+'])
+        Logger.file_log("API call with API_KEY=xyz789", "PROMPT", "TEST")
+        content = self.log_file.read_text(encoding='utf-8')
+        self.assertIn("[REDACTED]", content)
+        self.assertNotIn("API_KEY=xyz789", content)
+
+    def test_file_log_redacts_in_responses(self):
+        """Test file_log applies redaction to RESPONSE type."""
+        Logger.set_redact_patterns([r'"token":\s*"\w+"'])
+        Logger.file_log('Response: {"token": "secret123"}', "RESPONSE", "TEST")
+        content = self.log_file.read_text(encoding='utf-8')
+        self.assertIn("[REDACTED]", content)
+        self.assertNotIn("secret123", content)
+
+
+class TestCLIPrivacyFlags(unittest.TestCase):
+    """Tests for CLI parsing of privacy flags."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", nargs="?", default="all")
+        self.parser.add_argument("--redact", nargs="+", metavar="PATTERN")
+        self.parser.add_argument("--redact-file", type=str, metavar="FILE")
+        self.parser.add_argument("--no-log-prompts", action="store_true")
+        self.parser.add_argument("--no-log-responses", action="store_true")
+
+    def test_redact_flag_parses_single_pattern(self):
+        """Test --redact with single pattern."""
+        args = self.parser.parse_args(["--redact", "pattern1"])
+        self.assertEqual(args.redact, ["pattern1"])
+
+    def test_redact_flag_parses_multiple_patterns(self):
+        """Test --redact with multiple patterns."""
+        args = self.parser.parse_args(["--redact", "pattern1", "pattern2", "pattern3"])
+        self.assertEqual(args.redact, ["pattern1", "pattern2", "pattern3"])
+
+    def test_redact_file_flag_parses(self):
+        """Test --redact-file flag is parsed."""
+        args = self.parser.parse_args(["--redact-file", "/path/to/file.txt"])
+        self.assertEqual(args.redact_file, "/path/to/file.txt")
+
+    def test_no_log_prompts_flag_parses(self):
+        """Test --no-log-prompts flag is parsed."""
+        args = self.parser.parse_args(["--no-log-prompts"])
+        self.assertTrue(args.no_log_prompts)
+
+    def test_no_log_responses_flag_parses(self):
+        """Test --no-log-responses flag is parsed."""
+        args = self.parser.parse_args(["--no-log-responses"])
+        self.assertTrue(args.no_log_responses)
+
+    def test_all_privacy_flags_combined(self):
+        """Test all privacy flags can be used together."""
+        args = self.parser.parse_args([
+            "--redact", "pattern1", "pattern2",
+            "--redact-file", "/path/to/file.txt",
+            "--no-log-prompts",
+            "--no-log-responses",
+            "execute"
+        ])
+        self.assertEqual(args.redact, ["pattern1", "pattern2"])
+        self.assertEqual(args.redact_file, "/path/to/file.txt")
+        self.assertTrue(args.no_log_prompts)
+        self.assertTrue(args.no_log_responses)
+        self.assertEqual(args.phase, "execute")
+
+    def test_privacy_flags_default_values(self):
+        """Test privacy flags have correct default values."""
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.redact)
+        self.assertIsNone(args.redact_file)
+        self.assertFalse(args.no_log_prompts)
+        self.assertFalse(args.no_log_responses)
+
+
+class TestMainPrivacyFlagsIntegration(unittest.TestCase):
+    """Integration tests for main() with privacy flags."""
+
+    def setUp(self):
+        self._original_redact_patterns = Logger.redact_patterns.copy() if Logger.redact_patterns else []
+        self._original_no_log_prompts = Logger.no_log_prompts
+        self._original_no_log_responses = Logger.no_log_responses
+        Logger.redact_patterns = []
+        Logger.no_log_prompts = False
+        Logger.no_log_responses = False
+
+    def tearDown(self):
+        Logger.redact_patterns = self._original_redact_patterns
+        Logger.no_log_prompts = self._original_no_log_prompts
+        Logger.no_log_responses = self._original_no_log_responses
+
+    def test_main_configures_redact_patterns(self):
+        """Test main() configures redact patterns from --redact flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value.start = MagicMock()
+            with patch('sys.argv', ['ralph', '--redact', 'api_key=\\w+', 'password=\\w+']):
+                main()
+            self.assertEqual(Logger.redact_patterns, ['api_key=\\w+', 'password=\\w+'])
+
+    def test_main_configures_no_log_prompts(self):
+        """Test main() configures no_log_prompts from --no-log-prompts flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value.start = MagicMock()
+            with patch('sys.argv', ['ralph', '--no-log-prompts']):
+                main()
+            self.assertTrue(Logger.no_log_prompts)
+
+    def test_main_configures_no_log_responses(self):
+        """Test main() configures no_log_responses from --no-log-responses flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value.start = MagicMock()
+            with patch('sys.argv', ['ralph', '--no-log-responses']):
+                main()
+            self.assertTrue(Logger.no_log_responses)
+
+
+class TestCombinedPrivacyFlags(unittest.TestCase):
+    """Tests for combined privacy flag behavior."""
+
+    def setUp(self):
+        self._original_redact_patterns = Logger.redact_patterns.copy() if Logger.redact_patterns else []
+        self._original_no_log_prompts = Logger.no_log_prompts
+        self._original_no_log_responses = Logger.no_log_responses
+        self._original_custom_log_file = Logger.custom_log_file
+        Logger.redact_patterns = []
+        Logger.no_log_prompts = False
+        Logger.no_log_responses = False
+        self.temp_dir = tempfile.mkdtemp()
+        self.log_file = Path(self.temp_dir) / "test_log.txt"
+        self._original_log_file = CONF.LOG_FILE
+        CONF.LOG_FILE = self.log_file
+        Logger.custom_log_file = None  # Ensure we use CONF.LOG_FILE
+
+    def tearDown(self):
+        Logger.redact_patterns = self._original_redact_patterns
+        Logger.no_log_prompts = self._original_no_log_prompts
+        Logger.no_log_responses = self._original_no_log_responses
+        Logger.custom_log_file = self._original_custom_log_file
+        CONF.LOG_FILE = self._original_log_file
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_no_log_prompts_and_responses_both_skip(self):
+        """Test both no_log flags together skip both types."""
+        Logger.set_no_log_prompts(True)
+        Logger.set_no_log_responses(True)
+        Logger.file_log("A prompt", "PROMPT", "TEST")
+        Logger.file_log("A response", "RESPONSE", "TEST")
+        Logger.file_log("An error", "ERROR", "TEST")
+        self.assertTrue(self.log_file.exists())
+        content = self.log_file.read_text(encoding='utf-8')
+        self.assertNotIn("A prompt", content)
+        self.assertNotIn("A response", content)
+        self.assertIn("An error", content)
+
+    def test_redaction_only_applies_to_logged_content(self):
+        """Test redaction only applies to content that gets logged."""
+        Logger.set_redact_patterns([r'secret=\w+'])
+        Logger.set_no_log_prompts(True)
+        # This prompt won't be logged, so redaction doesn't matter
+        Logger.file_log("secret=abc123 in prompt", "PROMPT", "TEST")
+        # This response will be logged and redacted
+        Logger.file_log("secret=xyz789 in response", "RESPONSE", "TEST")
+        content = self.log_file.read_text(encoding='utf-8')
+        self.assertNotIn("secret=abc123", content)  # Never logged
+        self.assertNotIn("secret=xyz789", content)  # Logged but redacted
+        self.assertIn("[REDACTED]", content)
+
+
 if __name__ == "__main__":
     unittest.main()
