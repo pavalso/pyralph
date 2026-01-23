@@ -1175,5 +1175,487 @@ class TestEventLifecycle(TempConfigTestCase):
         self.assertIn(EventType.PHASE_END, events)
 
 
+# ==============================================================================
+# ISSUE WATCHER TESTS (TASK-006)
+# ==============================================================================
+
+from fetch_ready_issues import (
+    Issue, IssueStore, IssueStoreError, StoredIssue,
+    ProcessingQueue, ProcessingQueueError, QueueItem,
+    PromptTransformer, PromptTransformerError, TransformedPrompt,
+    IssueWatcher, WatcherConfig, WatcherStatus, IssueWatcherError,
+    create_watcher_parser, watcher_main,
+    GitHubPoller, PollerConfig,
+)
+
+
+class IssueWatcherTestCase(unittest.TestCase):
+    """Base test class for IssueWatcher tests with temp directories."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.temp_path = Path(self.temp_dir)
+        self.store_dir = str(self.temp_path / "issues")
+        self.queue_dir = str(self.temp_path / "queue")
+        self.pid_file = str(self.temp_path / "watcher.pid")
+        self.log_file = str(self.temp_path / "watcher.log")
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def create_sample_issue(self, number=1, title="Test Issue", body="Test body"):
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"https://github.com/test/repo/issues/{number}",
+            labels=["ready"]
+        )
+
+
+class TestIssueStore(IssueWatcherTestCase):
+    """Tests for IssueStore class."""
+
+    def test_save_and_get(self):
+        store = IssueStore(self.store_dir)
+        issue = self.create_sample_issue()
+        stored = store.save(issue)
+        self.assertEqual(stored.number, 1)
+        self.assertEqual(stored.title, "Test Issue")
+        self.assertEqual(stored.status, "pending")
+        retrieved = store.get(1)
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.number, 1)
+
+    def test_exists(self):
+        store = IssueStore(self.store_dir)
+        self.assertFalse(store.exists(1))
+        store.save(self.create_sample_issue())
+        self.assertTrue(store.exists(1))
+
+    def test_delete(self):
+        store = IssueStore(self.store_dir)
+        store.save(self.create_sample_issue())
+        self.assertTrue(store.delete(1))
+        self.assertFalse(store.exists(1))
+        self.assertFalse(store.delete(999))
+
+    def test_list_issues(self):
+        store = IssueStore(self.store_dir)
+        store.save(self.create_sample_issue(1))
+        store.save(self.create_sample_issue(2))
+        issues = store.list_issues()
+        self.assertEqual(len(issues), 2)
+        self.assertEqual(issues[0].number, 1)
+        self.assertEqual(issues[1].number, 2)
+
+    def test_list_issues_by_status(self):
+        store = IssueStore(self.store_dir)
+        store.save(self.create_sample_issue(1), status="pending")
+        store.save(self.create_sample_issue(2), status="completed")
+        pending = store.list_issues(status="pending")
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].number, 1)
+
+    def test_update_status(self):
+        store = IssueStore(self.store_dir)
+        store.save(self.create_sample_issue())
+        updated = store.update_status(1, "completed")
+        self.assertEqual(updated.status, "completed")
+        retrieved = store.get(1)
+        self.assertEqual(retrieved.status, "completed")
+
+    def test_count(self):
+        store = IssueStore(self.store_dir)
+        self.assertEqual(store.count(), 0)
+        store.save(self.create_sample_issue(1))
+        store.save(self.create_sample_issue(2))
+        self.assertEqual(store.count(), 2)
+
+    def test_clear(self):
+        store = IssueStore(self.store_dir)
+        store.save(self.create_sample_issue(1))
+        store.save(self.create_sample_issue(2))
+        deleted = store.clear()
+        self.assertEqual(deleted, 2)
+        self.assertEqual(store.count(), 0)
+
+
+class TestProcessingQueue(IssueWatcherTestCase):
+    """Tests for ProcessingQueue class."""
+
+    def test_enqueue_and_dequeue(self):
+        queue = ProcessingQueue(self.queue_dir)
+        item = queue.enqueue(42)
+        self.assertEqual(item.issue_number, 42)
+        self.assertEqual(item.status, "pending")
+        dequeued = queue.dequeue()
+        self.assertEqual(dequeued.issue_number, 42)
+        self.assertEqual(dequeued.status, "processing")
+
+    def test_enqueue_idempotent(self):
+        queue = ProcessingQueue(self.queue_dir)
+        item1 = queue.enqueue(42)
+        item2 = queue.enqueue(42)
+        self.assertEqual(item1.issue_number, item2.issue_number)
+        self.assertEqual(queue.count(), 1)
+
+    def test_priority_ordering(self):
+        queue = ProcessingQueue(self.queue_dir)
+        queue.enqueue(1, priority=10)
+        queue.enqueue(2, priority=1)
+        queue.enqueue(3, priority=5)
+        item = queue.dequeue()
+        self.assertEqual(item.issue_number, 2)  # Lowest priority value first
+
+    def test_mark_completed(self):
+        queue = ProcessingQueue(self.queue_dir)
+        queue.enqueue(42)
+        queue.dequeue()
+        completed = queue.mark_completed(42)
+        self.assertEqual(completed.status, "completed")
+        self.assertIsNotNone(completed.completed_at)
+
+    def test_mark_failed(self):
+        queue = ProcessingQueue(self.queue_dir)
+        queue.enqueue(42)
+        queue.dequeue()
+        failed = queue.mark_failed(42, error="Test error")
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.error, "Test error")
+
+    def test_retry(self):
+        queue = ProcessingQueue(self.queue_dir)
+        queue.enqueue(42)
+        queue.dequeue()
+        queue.mark_failed(42)
+        retried = queue.retry(42)
+        self.assertEqual(retried.status, "pending")
+        self.assertEqual(retried.retry_count, 1)
+
+    def test_list_items(self):
+        queue = ProcessingQueue(self.queue_dir)
+        queue.enqueue(1)
+        queue.enqueue(2)
+        queue.dequeue()  # Mark first as processing
+        pending = queue.list_items(status="pending")
+        processing = queue.list_items(status="processing")
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(len(processing), 1)
+
+    def test_reset_processing(self):
+        queue = ProcessingQueue(self.queue_dir)
+        queue.enqueue(1)
+        queue.enqueue(2)
+        queue.dequeue()
+        queue.dequeue()
+        reset_count = queue.reset_processing()
+        self.assertEqual(reset_count, 2)
+        self.assertEqual(queue.count(status="pending"), 2)
+
+
+class TestPromptTransformer(IssueWatcherTestCase):
+    """Tests for PromptTransformer class."""
+
+    def test_transform(self):
+        store = IssueStore(self.store_dir)
+        queue = ProcessingQueue(self.queue_dir)
+        transformer = PromptTransformer(queue, store)
+        issue = self.create_sample_issue(42, "Fix bug", "Bug description")
+        store.save(issue)
+        prompt = transformer.transform(42)
+        self.assertEqual(prompt.issue_number, 42)
+        self.assertIn("TASK-042", prompt.prompt)
+        self.assertIn("Fix bug", prompt.prompt)
+
+    def test_transform_missing_issue(self):
+        store = IssueStore(self.store_dir)
+        queue = ProcessingQueue(self.queue_dir)
+        transformer = PromptTransformer(queue, store)
+        with self.assertRaises(PromptTransformerError):
+            transformer.transform(999)
+
+    def test_get_pending_prompts(self):
+        store = IssueStore(self.store_dir)
+        queue = ProcessingQueue(self.queue_dir)
+        transformer = PromptTransformer(queue, store)
+        store.save(self.create_sample_issue(1))
+        store.save(self.create_sample_issue(2))
+        queue.enqueue(1)
+        queue.enqueue(2)
+        prompts = transformer.get_pending_prompts()
+        self.assertEqual(len(prompts), 2)
+
+    def test_count_pending(self):
+        store = IssueStore(self.store_dir)
+        queue = ProcessingQueue(self.queue_dir)
+        transformer = PromptTransformer(queue, store)
+        store.save(self.create_sample_issue(1))
+        queue.enqueue(1)
+        self.assertEqual(transformer.count_pending(), 1)
+
+
+class TestWatcherConfig(IssueWatcherTestCase):
+    """Tests for WatcherConfig dataclass."""
+
+    def test_defaults(self):
+        config = WatcherConfig()
+        self.assertEqual(config.label, "ready")
+        self.assertEqual(config.poll_interval, 60.0)
+        self.assertEqual(config.agent_name, "claude")
+        self.assertTrue(config.enable_hooks)
+        self.assertTrue(config.auto_process)
+
+    def test_custom_values(self):
+        config = WatcherConfig(
+            label="bug",
+            poll_interval=30.0,
+            agent_name="copilot",
+            auto_process=False
+        )
+        self.assertEqual(config.label, "bug")
+        self.assertEqual(config.poll_interval, 30.0)
+        self.assertEqual(config.agent_name, "copilot")
+        self.assertFalse(config.auto_process)
+
+
+class TestWatcherStatus(IssueWatcherTestCase):
+    """Tests for WatcherStatus dataclass."""
+
+    def test_to_dict(self):
+        status = WatcherStatus(
+            running=True,
+            pid=12345,
+            issues_stored=10,
+            issues_pending=3,
+            issues_processing=1,
+            issues_completed=5,
+            issues_failed=1
+        )
+        d = status.to_dict()
+        self.assertTrue(d["running"])
+        self.assertEqual(d["pid"], 12345)
+        self.assertEqual(d["issues_stored"], 10)
+
+
+class TestIssueWatcher(IssueWatcherTestCase):
+    """Tests for IssueWatcher class."""
+
+    def test_init_default_config(self):
+        watcher = IssueWatcher()
+        self.assertIsNotNone(watcher.config)
+        self.assertEqual(watcher.config.label, "ready")
+
+    def test_init_custom_config(self):
+        config = WatcherConfig(
+            label="bug",
+            poll_interval=30.0,
+            store_dir=self.store_dir,
+            queue_dir=self.queue_dir,
+            pid_file=self.pid_file,
+            log_file=self.log_file
+        )
+        watcher = IssueWatcher(config)
+        self.assertEqual(watcher.config.label, "bug")
+        self.assertEqual(watcher.config.poll_interval, 30.0)
+
+    def test_get_status_not_running(self):
+        config = WatcherConfig(
+            store_dir=self.store_dir,
+            queue_dir=self.queue_dir,
+            pid_file=self.pid_file
+        )
+        watcher = IssueWatcher(config)
+        status = watcher.get_status()
+        self.assertFalse(status.running)
+        self.assertIsNone(status.pid)
+
+    def test_store_and_queue_access(self):
+        config = WatcherConfig(
+            store_dir=self.store_dir,
+            queue_dir=self.queue_dir
+        )
+        watcher = IssueWatcher(config)
+        self.assertIsNotNone(watcher.store)
+        self.assertIsNotNone(watcher.queue)
+
+
+class TestGitHubPoller(IssueWatcherTestCase):
+    """Tests for GitHubPoller class."""
+
+    def test_init_default_config(self):
+        poller = GitHubPoller()
+        self.assertEqual(poller.config.label, "ready")
+        self.assertEqual(poller.config.interval, 60.0)
+
+    def test_init_custom_config(self):
+        config = PollerConfig(label="bug", interval=30.0)
+        poller = GitHubPoller(config)
+        self.assertEqual(poller.config.label, "bug")
+        self.assertEqual(poller.config.interval, 30.0)
+
+    def test_interval_property(self):
+        poller = GitHubPoller()
+        self.assertEqual(poller.interval, 60.0)
+        poller.interval = 30.0
+        self.assertEqual(poller.interval, 30.0)
+
+    def test_interval_validation(self):
+        poller = GitHubPoller()
+        with self.assertRaises(ValueError):
+            poller.interval = 0
+        with self.assertRaises(ValueError):
+            poller.interval = -10
+
+    def test_is_running_initial(self):
+        poller = GitHubPoller()
+        self.assertFalse(poller.is_running)
+
+    def test_seen_issues(self):
+        poller = GitHubPoller()
+        self.assertEqual(poller.seen_issues, set())
+
+    def test_reset_seen_issues(self):
+        poller = GitHubPoller()
+        poller._seen_issue_numbers.add(1)
+        poller._seen_issue_numbers.add(2)
+        poller.reset_seen_issues()
+        self.assertEqual(poller.seen_issues, set())
+
+
+class TestWatcherCLI(IssueWatcherTestCase):
+    """Tests for watcher CLI argument parsing."""
+
+    def test_parser_creation(self):
+        parser = create_watcher_parser()
+        self.assertIsNotNone(parser)
+        self.assertEqual(parser.prog, "ralph-watch")
+
+    def test_start_command_defaults(self):
+        parser = create_watcher_parser()
+        args = parser.parse_args(["start"])
+        self.assertEqual(args.command, "start")
+        self.assertEqual(args.label, "ready")
+        self.assertEqual(args.interval, 60.0)
+        self.assertEqual(args.agent, "claude")
+
+    def test_start_command_custom(self):
+        parser = create_watcher_parser()
+        args = parser.parse_args([
+            "start",
+            "--label", "bug",
+            "--interval", "30",
+            "--agent", "copilot",
+            "--no-hooks",
+            "--mark-issues"
+        ])
+        self.assertEqual(args.label, "bug")
+        self.assertEqual(args.interval, 30.0)
+        self.assertEqual(args.agent, "copilot")
+        self.assertTrue(args.no_hooks)
+        self.assertTrue(args.mark_issues)
+
+    def test_stop_command(self):
+        parser = create_watcher_parser()
+        args = parser.parse_args(["stop"])
+        self.assertEqual(args.command, "stop")
+
+    def test_status_command(self):
+        parser = create_watcher_parser()
+        args = parser.parse_args(["status"])
+        self.assertEqual(args.command, "status")
+
+    def test_status_json_flag(self):
+        parser = create_watcher_parser()
+        args = parser.parse_args(["status", "--json"])
+        self.assertTrue(args.json_output)
+
+    def test_poll_command(self):
+        parser = create_watcher_parser()
+        args = parser.parse_args(["poll", "--label", "bug"])
+        self.assertEqual(args.command, "poll")
+        self.assertEqual(args.label, "bug")
+
+    def test_process_command(self):
+        parser = create_watcher_parser()
+        args = parser.parse_args(["process", "--agent", "copilot", "--no-hooks"])
+        self.assertEqual(args.command, "process")
+        self.assertEqual(args.agent, "copilot")
+        self.assertTrue(args.no_hooks)
+
+    def test_no_command_returns_1(self):
+        with patch('sys.stdout', new_callable=StringIO):
+            result = watcher_main([])
+        self.assertEqual(result, 1)
+
+
+class TestStoredIssue(IssueWatcherTestCase):
+    """Tests for StoredIssue dataclass."""
+
+    def test_to_dict(self):
+        stored = StoredIssue(
+            number=42,
+            title="Test",
+            body="Body",
+            url="https://github.com/test/issues/42",
+            labels=["ready"],
+            stored_at="2024-01-01T00:00:00Z",
+            status="pending"
+        )
+        d = stored.to_dict()
+        self.assertEqual(d["number"], 42)
+        self.assertEqual(d["title"], "Test")
+        self.assertEqual(d["status"], "pending")
+
+    def test_from_dict(self):
+        data = {
+            "number": 42,
+            "title": "Test",
+            "body": "Body",
+            "url": "https://github.com/test/issues/42",
+            "labels": ["ready"],
+            "stored_at": "2024-01-01T00:00:00Z",
+            "status": "pending"
+        }
+        stored = StoredIssue.from_dict(data)
+        self.assertEqual(stored.number, 42)
+        self.assertEqual(stored.title, "Test")
+
+    def test_from_issue(self):
+        issue = self.create_sample_issue(42)
+        stored = StoredIssue.from_issue(issue)
+        self.assertEqual(stored.number, 42)
+        self.assertEqual(stored.status, "pending")
+        self.assertIsNotNone(stored.stored_at)
+
+
+class TestQueueItem(IssueWatcherTestCase):
+    """Tests for QueueItem dataclass."""
+
+    def test_to_dict(self):
+        item = QueueItem(issue_number=42, priority=5)
+        d = item.to_dict()
+        self.assertEqual(d["issue_number"], 42)
+        self.assertEqual(d["priority"], 5)
+        self.assertEqual(d["status"], "pending")
+
+    def test_from_dict(self):
+        data = {
+            "issue_number": 42,
+            "priority": 5,
+            "added_at": "2024-01-01T00:00:00Z",
+            "status": "processing"
+        }
+        item = QueueItem.from_dict(data)
+        self.assertEqual(item.issue_number, 42)
+        self.assertEqual(item.priority, 5)
+        self.assertEqual(item.status, "processing")
+
+    def test_auto_timestamp(self):
+        item = QueueItem(issue_number=42)
+        self.assertIsNotNone(item.added_at)
+        self.assertNotEqual(item.added_at, "")
+
+
 if __name__ == '__main__':
     unittest.main()
