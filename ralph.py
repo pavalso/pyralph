@@ -621,9 +621,9 @@ def main():
     )
 
     parser.add_argument(
-        "--accept-all",
+        "--accept-all", "-y",
         action="store_true",
-        help="Skip user feedback prompts and proceed with all phases"
+        help="Skip user feedback prompts and proceed with all phases (-y, --accept-all). The -y flag is a shortcut for --accept-all."
     )
 
     parser.add_argument(

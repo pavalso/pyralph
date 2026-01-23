@@ -37,9 +37,13 @@ pip install -e .
 
 ```bash
 ralph
+ralph --accept-all
+ralph -y
 ```
 
 Starts or resumes the agent loop. If no project plan exists, prompts for a project description first.
+
+You can use the `--accept-all` flag (or its shortcut `-y`) to skip all prompts and run every phase automatically.
 
 ### State Management
 

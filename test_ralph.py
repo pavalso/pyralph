@@ -1,5 +1,7 @@
 import unittest
 
+import subprocess
+
 class TestAlwaysPass(unittest.TestCase):
     def test_pass(self):
         self.assertTrue(True)
