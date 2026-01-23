@@ -8,7 +8,7 @@ import datetime
 import argparse
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Import agents
 from agents import get_agent, list_agents
@@ -33,7 +33,7 @@ class Config:
     MAX_RETRIES: int = 3
     TIMEOUT_SECONDS: int = 600
 
-    def ensure_directories(self):
+    def ensure_directories(self) -> None:
         for path in [self.ROOT_DIR, self.MEMORY_DIR, self.ARCHIVE_DIR, self.TEMPLATES_DIR]:
             path.mkdir(exist_ok=True, parents=True)
 
@@ -71,7 +71,7 @@ class Logger:
     def error(msg: str): Logger._print_colored(msg, "RED", prefix="[ERROR] ")
 
     @staticmethod
-    def file_log(content: str, type: str, tag: str = "UNKNOWN"):
+    def file_log(content: str, type: str, tag: str = "UNKNOWN") -> None:
         icons = {"PROMPT": "➡️", "RESPONSE": "⬅️", "ERROR": "❌", "INFO": "ℹ️"}
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         entry = f"\n{'='*60}\n{icons.get(type, '❓')} [{ts}] TYPE: {type} | TAG: {tag}\n{'='*60}\n{content}\n"
@@ -84,10 +84,20 @@ class Shell:
 
     @staticmethod
     def run(command: str, timeout: int = 30) -> Tuple[str, str, int]:
+        """
+        Execute a shell command and capture its output.
+
+        Args:
+            command: The shell command to execute
+            timeout: Maximum seconds to wait for command completion
+
+        Returns:
+            Tuple of (stdout, stderr, return_code)
+        """
         try:
             # shell=True defaults to CWD, which is what we want
             result = subprocess.run(
-                command, shell=True, capture_output=True, 
+                command, shell=True, capture_output=True,
                 text=True, encoding='utf-8', timeout=timeout
             )
             return result.stdout, result.stderr, result.returncode
@@ -98,10 +108,16 @@ class Shell:
 
     @staticmethod
     def get_file_tree() -> str:
+        """
+        Generate a file tree representation of the project directory.
+
+        Returns:
+            String representation of the directory tree (depth 2)
+        """
         # We explicitly list '.' to ensure we are looking at CWD
         stdout, _, code = Shell.run("tree -L 2 --noreport -I 'node_modules|venv|.git|.ralph|__pycache__'")
         if code == 0 and stdout.strip(): return stdout
-        
+
         # Fallback python walker using CWD
         lines = []
         for path in CONF.BASE_DIR.glob('*'):
@@ -113,7 +129,19 @@ class JsonUtils:
     """Robust JSON parsing for LLM outputs."""
 
     @staticmethod
-    def parse(text: str) -> dict:
+    def parse(text: str) -> Dict[str, Any]:
+        """
+        Parse JSON from LLM output, handling markdown fences and comments.
+
+        Args:
+            text: Raw text potentially containing JSON with markdown fences
+
+        Returns:
+            Parsed JSON as a dictionary
+
+        Raises:
+            json.JSONDecodeError: If the text cannot be parsed as valid JSON
+        """
         match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
         if match: text = match.group(1)
         start, end = text.find('{'), text.rfind('}')
@@ -127,7 +155,7 @@ class JsonUtils:
 
 class MemoryManager:
     @staticmethod
-    def validate_memory() -> dict:
+    def validate_memory() -> Dict[str, Any]:
         result = {'valid': True, 'corrupted': [], 'empty': [], 'total': 0}
         if not CONF.MEMORY_DIR.exists(): return result
         for path in CONF.MEMORY_DIR.rglob('*'):
@@ -196,7 +224,7 @@ class TemplateManager:
 # ==============================================================================
 
 class RalphOrchestrator:
-    def __init__(self, agent_name: str = "claude"):
+    def __init__(self, agent_name: str = "claude") -> None:
         self.agent = get_agent(agent_name, timeout_seconds=CONF.TIMEOUT_SECONDS)
         if hasattr(self.agent, 'set_logger'): self.agent.set_logger(Logger)
         if hasattr(self.agent, 'set_config'): self.agent.set_config(CONF)
@@ -206,7 +234,16 @@ class RalphOrchestrator:
         CONF.ensure_directories()
         self._validate_memory_on_startup()
 
-    def run_architect(self, user_intent: str):
+    def run_architect(self, user_intent: str) -> None:
+        """
+        Run the architect phase to initialize project memory.
+
+        Creates .ralph/memory/architecture.md with project structure,
+        tech stack, and test command configuration.
+
+        Args:
+            user_intent: Description of what the user wants to build
+        """
         Logger.info("\n🕵️  Architect: Initializing Memory...", "CYAN")
 
         prompt = TemplateManager.render(
@@ -222,7 +259,16 @@ class RalphOrchestrator:
 
         Logger.info("✅ Memory Initialized.", "GREEN")
 
-    def run_planner(self, user_intent: str):
+    def run_planner(self, user_intent: str) -> None:
+        """
+        Run the planner phase to create a Product Requirements Document.
+
+        Generates a PRD with user stories and acceptance criteria,
+        saved to .ralph/prd.json.
+
+        Args:
+            user_intent: Description of what the user wants to build
+        """
         Logger.info("\n🧠 Planner: Creating PRD...", "CYAN")
         memory_map = self.memory.get_structure()
 
@@ -244,30 +290,57 @@ class RalphOrchestrator:
                 return
             except Exception as e:
                 Logger.info(f"⚠️ JSON Error (Attempt {attempt+1}): {e}", "YELLOW")
-        
+
         Logger.info("❌ Planning Failed.", "RED")
         sys.exit(1)
 
-    def execute_loop(self):
+    def execute_loop(self) -> None:
+        """
+        Execute all pending tasks from the PRD.
+
+        Iterates through user stories, executing each pending task
+        with verification. Continues to next task on failure instead
+        of terminating. Archives the PRD upon completion.
+        """
         prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
         test_cmd = self.memory.extract_test_command()
 
         Logger.info(f"\n🚀 Starting Loop. Verify Command: '{test_cmd}'", "YELLOW")
 
+        failed_tasks: List[str] = []
+
         for task in prd.get('userStories', []):
-            if task.get('status') == 'completed': continue
+            if task.get('status') == 'completed':
+                continue
+            # Reset failed tasks to pending so they can be retried
+            if task.get('status') == 'failed':
+                task['status'] = 'pending'
 
             Logger.info(f"\n▶️  Task {task['id']}: {task['description']}", "CYAN")
-            self._execute_task(prd, task, test_cmd)
+            success = self._execute_task(prd, task, test_cmd)
 
-            # Save state
+            # Save state after each task attempt
             CONF.PRD_FILE.write_text(json.dumps(prd, indent=2), encoding='utf-8')
 
-        Logger.info("\n🎉 All Tasks Complete.", "GREEN")
+            if not success:
+                failed_tasks.append(task['id'])
+
+        # Report summary
+        if failed_tasks:
+            Logger.info(f"\n⚠️  {len(failed_tasks)} task(s) failed: {', '.join(failed_tasks)}", "YELLOW")
+            Logger.info("Run 'ralph execute' again to retry failed tasks.", "YELLOW")
+        else:
+            Logger.info("\n🎉 All Tasks Complete.", "GREEN")
 
         self._archive_prd()
 
-    def _execute_task(self, prd: dict, task: dict, test_cmd: str):
+    def _execute_task(self, prd: Dict[str, Any], task: Dict[str, Any], test_cmd: str) -> bool:
+        """
+        Execute a single task with retries.
+
+        Returns:
+            True if task completed successfully, False if max retries exhausted.
+        """
         retries = 0
 
         safe_prd_id = "".join(c for c in prd['id'] if c.isalnum() or c in ('-', '_'))
@@ -319,7 +392,7 @@ class RalphOrchestrator:
 
                     task['status'] = 'completed'
                     if CONF.PROGRESS_FILE.exists(): CONF.PROGRESS_FILE.unlink()
-                    return
+                    return True
                 else:
                     Logger.info("   🛑 Agent Hallucinated Success.", "RED")
                     error = AgentError(
@@ -344,10 +417,11 @@ class RalphOrchestrator:
 
             retries += 1
 
-        Logger.info(f"🛑 Max retries for {task['id']}.", "RED")
-        sys.exit(1)
+        Logger.info(f"🛑 Max retries for {task['id']}. Marking as failed and continuing.", "RED")
+        task['status'] = 'failed'
+        return False
 
-    def _record_failure(self, retry, reason, detail, agent_error=None):
+    def _record_failure(self, retry: int, reason: str, detail: str, agent_error: Optional[AgentError] = None) -> None:
         if agent_error:
             msg = (
                 f"Attempt {retry+1} Failed: {reason}\n"
@@ -362,14 +436,14 @@ class RalphOrchestrator:
         Logger.file_log(msg, "FAILURE_RECORD", f"RETRY-{retry+1}")
         Logger.info(f"   ⚠️ Retry {retry+1}/{CONF.MAX_RETRIES}: {reason}", "RED")
 
-    def _archive_prd(self):
+    def _archive_prd(self) -> None:
         if not CONF.PRD_FILE.exists(): return
         ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         dest = CONF.ARCHIVE_DIR / f"prd_{ts}.json"
         shutil.move(str(CONF.PRD_FILE), str(dest))
         Logger.info(f"📦 PRD Archived to {dest}", "MAGENTA")
 
-    def _validate_memory_on_startup(self):
+    def _validate_memory_on_startup(self) -> None:
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()): return
         result = self.memory.validate_memory()
         if result['total'] == 0: return
@@ -387,7 +461,14 @@ class RalphOrchestrator:
         if not intent: sys.exit(0)
         return intent
 
-    def start(self, phase: str = "all", accept_all: bool = False):
+    def start(self, phase: str = "all", accept_all: bool = False) -> None:
+        """
+        Start the Ralph orchestrator.
+
+        Args:
+            phase: Which phase to run ("architect", "planner", "execute", or "all")
+            accept_all: If True, skip user confirmation prompts
+        """
         Logger.info(f"🤖 Ralph {self.agent.get_name()} Agent active in: {CONF.BASE_DIR}", "GREEN")
         user_intent = None
 
@@ -428,7 +509,8 @@ def get_version() -> str:
     except Exception: pass
     return "unknown"
 
-def main():
+def main() -> None:
+    """Entry point for the ralph CLI."""
     agent = list_agents()[0]
     parser = argparse.ArgumentParser(description="Ralph - Autonomous Software Development Agent",
         epilog="Examples: ralph | ralph architect | ralph -y execute", formatter_class=argparse.RawDescriptionHelpFormatter)
