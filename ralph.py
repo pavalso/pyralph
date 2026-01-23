@@ -238,7 +238,8 @@ class RalphOrchestrator:
         """
         Run the architect phase to initialize project memory.
 
-        Creates .ralph/memory/architecture.md with project structure,
+        Creates both .ralph/memory/architecture.md (internal memory) and
+        ARCH.md (git-tracked documentation) with project structure,
         tech stack, and test command configuration.
 
         Args:
