@@ -131,5 +131,36 @@ def main() -> int:
         return 1
 
 
+def issue_to_prompt(issue: Issue) -> str:
+    """Transform a GitHub issue into a planner-compatible prompt format.
+
+    Converts an Issue object into a structured prompt string that Ralph's planner
+    phase can process. The format follows Ralph's user_intent convention.
+
+    Args:
+        issue: An Issue object containing GitHub issue data.
+
+    Returns:
+        A formatted prompt string containing the task ID, title, and description.
+    """
+    task_id = f"TASK-{issue.number:03d}"
+    body = issue.body.strip() if issue.body and issue.body.strip() else "No description provided."
+    return f"{task_id}: {issue.title}\n\nDescription:\n{body}"
+
+
+def issues_to_prompts(issues: List[Issue]) -> List[str]:
+    """Transform a list of GitHub issues into planner-compatible prompts.
+
+    Batch converts multiple Issue objects into formatted prompt strings.
+
+    Args:
+        issues: List of Issue objects to transform.
+
+    Returns:
+        List of formatted prompt strings, one per issue.
+    """
+    return [issue_to_prompt(issue) for issue in issues]
+
+
 if __name__ == "__main__":
     sys.exit(main())

@@ -11,6 +11,8 @@ from fetch_ready_issues import (
     check_gh_cli,
     fetch_ready_issues,
     main,
+    issue_to_prompt,
+    issues_to_prompts,
 )
 
 
@@ -265,6 +267,158 @@ class TestGitHubCLIError(unittest.TestCase):
         """Test GitHubCLIError inherits from Exception."""
         error = GitHubCLIError("Test")
         self.assertIsInstance(error, Exception)
+
+
+class TestIssueToPrompt(unittest.TestCase):
+    """Tests for issue_to_prompt function."""
+
+    def test_basic_issue_transformation(self):
+        """Test basic issue transformation to prompt format."""
+        issue = Issue(
+            number=42,
+            title="Add user authentication",
+            body="Implement OAuth2 login flow",
+            url="https://github.com/owner/repo/issues/42",
+            labels=["ready", "feature"]
+        )
+        result = issue_to_prompt(issue)
+        self.assertIn("TASK-042", result)
+        self.assertIn("Add user authentication", result)
+        self.assertIn("Implement OAuth2 login flow", result)
+
+    def test_issue_number_padding(self):
+        """Test issue number is zero-padded to 3 digits."""
+        issue = Issue(
+            number=1,
+            title="Test",
+            body="Body",
+            url="http://url",
+            labels=[]
+        )
+        result = issue_to_prompt(issue)
+        self.assertIn("TASK-001", result)
+
+    def test_large_issue_number(self):
+        """Test large issue numbers are handled correctly."""
+        issue = Issue(
+            number=1234,
+            title="Test",
+            body="Body",
+            url="http://url",
+            labels=[]
+        )
+        result = issue_to_prompt(issue)
+        self.assertIn("TASK-1234", result)
+
+    def test_none_body_uses_placeholder(self):
+        """Test None body is replaced with placeholder text."""
+        issue = Issue(
+            number=5,
+            title="No description issue",
+            body=None,
+            url="http://url",
+            labels=["ready"]
+        )
+        result = issue_to_prompt(issue)
+        self.assertIn("TASK-005", result)
+        self.assertIn("No description issue", result)
+        self.assertIn("No description provided.", result)
+
+    def test_empty_body_uses_placeholder(self):
+        """Test empty/whitespace body is replaced with placeholder text."""
+        issue = Issue(
+            number=6,
+            title="Empty body issue",
+            body="   ",
+            url="http://url",
+            labels=[]
+        )
+        result = issue_to_prompt(issue)
+        self.assertIn("No description provided.", result)
+
+    def test_body_whitespace_is_stripped(self):
+        """Test body whitespace is trimmed."""
+        issue = Issue(
+            number=7,
+            title="Test",
+            body="  Description with whitespace  ",
+            url="http://url",
+            labels=[]
+        )
+        result = issue_to_prompt(issue)
+        self.assertIn("Description with whitespace", result)
+        self.assertNotIn("  Description", result)
+
+    def test_multiline_body_preserved(self):
+        """Test multiline body content is preserved."""
+        issue = Issue(
+            number=8,
+            title="Multiline test",
+            body="Line 1\nLine 2\nLine 3",
+            url="http://url",
+            labels=[]
+        )
+        result = issue_to_prompt(issue)
+        self.assertIn("Line 1\nLine 2\nLine 3", result)
+
+    def test_prompt_format_structure(self):
+        """Test the overall prompt format structure."""
+        issue = Issue(
+            number=10,
+            title="Test Title",
+            body="Test Body",
+            url="http://url",
+            labels=[]
+        )
+        result = issue_to_prompt(issue)
+        expected = "TASK-010: Test Title\n\nDescription:\nTest Body"
+        self.assertEqual(result, expected)
+
+
+class TestIssuesToPrompts(unittest.TestCase):
+    """Tests for issues_to_prompts function."""
+
+    def test_empty_list(self):
+        """Test empty list returns empty list."""
+        result = issues_to_prompts([])
+        self.assertEqual(result, [])
+
+    def test_single_issue(self):
+        """Test single issue is transformed correctly."""
+        issues = [
+            Issue(number=1, title="Test", body="Body", url="http://url", labels=[])
+        ]
+        result = issues_to_prompts(issues)
+        self.assertEqual(len(result), 1)
+        self.assertIn("TASK-001", result[0])
+
+    def test_multiple_issues(self):
+        """Test multiple issues are all transformed."""
+        issues = [
+            Issue(number=1, title="First", body="Body 1", url="http://url1", labels=[]),
+            Issue(number=2, title="Second", body="Body 2", url="http://url2", labels=[]),
+            Issue(number=3, title="Third", body="Body 3", url="http://url3", labels=[]),
+        ]
+        result = issues_to_prompts(issues)
+        self.assertEqual(len(result), 3)
+        self.assertIn("TASK-001", result[0])
+        self.assertIn("First", result[0])
+        self.assertIn("TASK-002", result[1])
+        self.assertIn("Second", result[1])
+        self.assertIn("TASK-003", result[2])
+        self.assertIn("Third", result[2])
+
+    def test_preserves_order(self):
+        """Test issues order is preserved in output."""
+        issues = [
+            Issue(number=99, title="Ninety-nine", body="B", url="http://url", labels=[]),
+            Issue(number=1, title="One", body="B", url="http://url", labels=[]),
+            Issue(number=50, title="Fifty", body="B", url="http://url", labels=[]),
+        ]
+        result = issues_to_prompts(issues)
+        self.assertIn("TASK-099", result[0])
+        self.assertIn("TASK-001", result[1])
+        self.assertIn("TASK-050", result[2])
 
 
 if __name__ == "__main__":
