@@ -10,6 +10,9 @@ from fetch_ready_issues import (
     GitHubCLIError,
     PlannerError,
     PlannerResult,
+    UserStory,
+    CreatedIssue,
+    CreateIssueResult,
     check_gh_cli,
     fetch_ready_issues,
     main,
@@ -17,6 +20,8 @@ from fetch_ready_issues import (
     issues_to_prompts,
     invoke_planner,
     process_ready_issues,
+    create_draft_issue,
+    create_draft_issues,
 )
 
 
@@ -712,6 +717,324 @@ class TestProcessReadyIssues(unittest.TestCase):
         self.assertEqual(call_count[0], 2)
         self.assertEqual(success, 1)
         self.assertEqual(failure, 1)
+
+
+class TestUserStory(unittest.TestCase):
+    """Tests for UserStory dataclass."""
+
+    def test_user_story_creation(self):
+        """Test UserStory dataclass creation with all fields."""
+        story = UserStory(
+            title="Add user authentication",
+            body="Implement OAuth2 login flow for users"
+        )
+        self.assertEqual(story.title, "Add user authentication")
+        self.assertEqual(story.body, "Implement OAuth2 login flow for users")
+
+    def test_user_story_empty_body(self):
+        """Test UserStory with empty body."""
+        story = UserStory(title="Test", body="")
+        self.assertEqual(story.body, "")
+
+
+class TestCreatedIssue(unittest.TestCase):
+    """Tests for CreatedIssue dataclass."""
+
+    def test_created_issue_creation(self):
+        """Test CreatedIssue dataclass creation."""
+        issue = CreatedIssue(
+            number=42,
+            url="https://github.com/owner/repo/issues/42",
+            title="Test Issue"
+        )
+        self.assertEqual(issue.number, 42)
+        self.assertEqual(issue.url, "https://github.com/owner/repo/issues/42")
+        self.assertEqual(issue.title, "Test Issue")
+
+
+class TestCreateIssueResult(unittest.TestCase):
+    """Tests for CreateIssueResult dataclass."""
+
+    def test_successful_result(self):
+        """Test CreateIssueResult for successful creation."""
+        created = CreatedIssue(number=1, url="http://url", title="Test")
+        result = CreateIssueResult(
+            title="Test",
+            success=True,
+            issue=created
+        )
+        self.assertEqual(result.title, "Test")
+        self.assertTrue(result.success)
+        self.assertIsNotNone(result.issue)
+        self.assertIsNone(result.error)
+
+    def test_failed_result(self):
+        """Test CreateIssueResult for failed creation."""
+        result = CreateIssueResult(
+            title="Test",
+            success=False,
+            error="gh CLI failed"
+        )
+        self.assertEqual(result.title, "Test")
+        self.assertFalse(result.success)
+        self.assertIsNone(result.issue)
+        self.assertEqual(result.error, "gh CLI failed")
+
+
+class TestCreateDraftIssue(unittest.TestCase):
+    """Tests for create_draft_issue function."""
+
+    def test_create_draft_issue_success(self):
+        """Test create_draft_issue returns CreatedIssue on success."""
+        story = UserStory(title="Test Issue", body="Test body")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="https://github.com/owner/repo/issues/42\n",
+                stderr=""
+            )
+            result = create_draft_issue(story)
+
+        self.assertIsInstance(result, CreatedIssue)
+        self.assertEqual(result.number, 42)
+        self.assertEqual(result.url, "https://github.com/owner/repo/issues/42")
+        self.assertEqual(result.title, "Test Issue")
+
+    def test_create_draft_issue_correct_command(self):
+        """Test create_draft_issue calls gh with correct arguments."""
+        story = UserStory(title="My Title", body="My Body")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="https://github.com/owner/repo/issues/1\n",
+                stderr=""
+            )
+            create_draft_issue(story)
+
+        call_args = mock_run.call_args[0][0]
+        self.assertEqual(call_args[0], "gh")
+        self.assertEqual(call_args[1], "issue")
+        self.assertEqual(call_args[2], "create")
+        self.assertIn("--title", call_args)
+        self.assertIn("My Title", call_args)
+        self.assertIn("--body", call_args)
+        self.assertIn("My Body", call_args)
+        self.assertIn("--label", call_args)
+        self.assertIn("draft", call_args)
+
+    def test_create_draft_issue_cli_error(self):
+        """Test create_draft_issue raises GitHubCLIError on CLI failure."""
+        story = UserStory(title="Test", body="Body")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="Error: label 'draft' not found"
+            )
+            with self.assertRaises(GitHubCLIError) as context:
+                create_draft_issue(story)
+        self.assertIn("gh CLI failed", str(context.exception))
+
+    def test_create_draft_issue_empty_output(self):
+        """Test create_draft_issue raises GitHubCLIError on empty output."""
+        story = UserStory(title="Test", body="Body")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="",
+                stderr=""
+            )
+            with self.assertRaises(GitHubCLIError) as context:
+                create_draft_issue(story)
+        self.assertIn("empty output", str(context.exception))
+
+    def test_create_draft_issue_invalid_url(self):
+        """Test create_draft_issue raises GitHubCLIError on invalid URL format."""
+        story = UserStory(title="Test", body="Body")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="not-a-valid-url",
+                stderr=""
+            )
+            with self.assertRaises(GitHubCLIError) as context:
+                create_draft_issue(story)
+        self.assertIn("Failed to parse issue number", str(context.exception))
+
+    def test_create_draft_issue_timeout(self):
+        """Test create_draft_issue raises GitHubCLIError on timeout."""
+        story = UserStory(title="Test", body="Body")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=60)
+            with self.assertRaises(GitHubCLIError) as context:
+                create_draft_issue(story)
+        self.assertIn("timed out", str(context.exception))
+
+    def test_create_draft_issue_trailing_slash_url(self):
+        """Test create_draft_issue handles URL with trailing slash."""
+        story = UserStory(title="Test", body="Body")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="https://github.com/owner/repo/issues/99/\n",
+                stderr=""
+            )
+            result = create_draft_issue(story)
+
+        self.assertEqual(result.number, 99)
+
+
+class TestCreateDraftIssues(unittest.TestCase):
+    """Tests for create_draft_issues function."""
+
+    def test_empty_stories_list(self):
+        """Test create_draft_issues with empty list."""
+        results, success, failure = create_draft_issues([])
+        self.assertEqual(results, [])
+        self.assertEqual(success, 0)
+        self.assertEqual(failure, 0)
+
+    def test_single_successful_story(self):
+        """Test create_draft_issues with one successful story."""
+        stories = [UserStory(title="Test", body="Body")]
+
+        with patch('fetch_ready_issues.create_draft_issue') as mock_create:
+            mock_create.return_value = CreatedIssue(
+                number=1,
+                url="http://url/1",
+                title="Test"
+            )
+            results, success, failure = create_draft_issues(stories)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "Test")
+        self.assertTrue(results[0].success)
+        self.assertIsNotNone(results[0].issue)
+        self.assertIsNone(results[0].error)
+        self.assertEqual(success, 1)
+        self.assertEqual(failure, 0)
+
+    def test_single_failed_story(self):
+        """Test create_draft_issues with one failed story."""
+        stories = [UserStory(title="Test", body="Body")]
+
+        with patch('fetch_ready_issues.create_draft_issue') as mock_create:
+            mock_create.side_effect = GitHubCLIError("Failed to create")
+            results, success, failure = create_draft_issues(stories)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "Test")
+        self.assertFalse(results[0].success)
+        self.assertIsNone(results[0].issue)
+        self.assertEqual(results[0].error, "Failed to create")
+        self.assertEqual(success, 0)
+        self.assertEqual(failure, 1)
+
+    def test_multiple_stories_all_success(self):
+        """Test create_draft_issues with multiple successful stories."""
+        stories = [
+            UserStory(title="First", body="Body 1"),
+            UserStory(title="Second", body="Body 2"),
+            UserStory(title="Third", body="Body 3"),
+        ]
+
+        call_count = [0]
+        def mock_create(story):
+            call_count[0] += 1
+            return CreatedIssue(
+                number=call_count[0],
+                url=f"http://url/{call_count[0]}",
+                title=story.title
+            )
+
+        with patch('fetch_ready_issues.create_draft_issue', side_effect=mock_create):
+            results, success, failure = create_draft_issues(stories)
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(success, 3)
+        self.assertEqual(failure, 0)
+
+    def test_multiple_stories_mixed_results(self):
+        """Test create_draft_issues with mixed success/failure results."""
+        stories = [
+            UserStory(title="First", body="Body 1"),
+            UserStory(title="Second", body="Body 2"),
+            UserStory(title="Third", body="Body 3"),
+        ]
+
+        def mock_create(story):
+            if story.title == "Second":
+                raise GitHubCLIError("Failed to create Second")
+            return CreatedIssue(
+                number=1,
+                url="http://url/1",
+                title=story.title
+            )
+
+        with patch('fetch_ready_issues.create_draft_issue', side_effect=mock_create):
+            results, success, failure = create_draft_issues(stories)
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(success, 2)
+        self.assertEqual(failure, 1)
+
+        self.assertTrue(results[0].success)
+        self.assertFalse(results[1].success)
+        self.assertTrue(results[2].success)
+
+    def test_continues_after_failure(self):
+        """Test create_draft_issues continues processing after a failure."""
+        stories = [
+            UserStory(title="First", body="Body 1"),
+            UserStory(title="Second", body="Body 2"),
+        ]
+
+        call_count = [0]
+        def mock_create(story):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise GitHubCLIError("First failed")
+            return CreatedIssue(number=2, url="http://url/2", title=story.title)
+
+        with patch('fetch_ready_issues.create_draft_issue', side_effect=mock_create):
+            results, success, failure = create_draft_issues(stories)
+
+        # Both stories were processed
+        self.assertEqual(len(results), 2)
+        self.assertEqual(call_count[0], 2)
+        self.assertEqual(success, 1)
+        self.assertEqual(failure, 1)
+
+    def test_preserves_order(self):
+        """Test create_draft_issues preserves order of results."""
+        stories = [
+            UserStory(title="A", body="Body"),
+            UserStory(title="B", body="Body"),
+            UserStory(title="C", body="Body"),
+        ]
+
+        call_count = [0]
+        def mock_create(story):
+            call_count[0] += 1
+            return CreatedIssue(
+                number=call_count[0],
+                url=f"http://url/{call_count[0]}",
+                title=story.title
+            )
+
+        with patch('fetch_ready_issues.create_draft_issue', side_effect=mock_create):
+            results, _, _ = create_draft_issues(stories)
+
+        self.assertEqual(results[0].title, "A")
+        self.assertEqual(results[1].title, "B")
+        self.assertEqual(results[2].title, "C")
 
 
 if __name__ == "__main__":
