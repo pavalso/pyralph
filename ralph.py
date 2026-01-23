@@ -258,6 +258,11 @@ class RalphOrchestrator:
             Logger.info("⚠️ Architect failed.", "RED")
             sys.exit(1)
 
+        arch_md_path = CONF.BASE_DIR / "ARCH.md"
+        if not arch_md_path.exists():
+            Logger.info("⚠️ Architect failed: ARCH.md was not created.", "RED")
+            sys.exit(1)
+
         Logger.info("✅ Memory Initialized.", "GREEN")
 
     def run_planner(self, user_intent: str) -> None:
