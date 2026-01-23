@@ -22,6 +22,15 @@ from fetch_ready_issues import (
     StoredIssue,
     IssueStoreError,
     IssueStore,
+    QueueItem,
+    ProcessingQueueError,
+    ProcessingQueue,
+    PromptTransformerError,
+    TransformedPrompt,
+    PromptTransformer,
+    PlannerInvokerError,
+    InvocationResult,
+    PlannerInvoker,
     check_gh_cli,
     fetch_ready_issues,
     main,
@@ -2640,6 +2649,2534 @@ class TestIssueStoreIntegration(unittest.TestCase):
         self.assertEqual(len(incomplete), 2)
         incomplete_numbers = {i.number for i in incomplete}
         self.assertEqual(incomplete_numbers, {2, 3})
+
+
+class TestQueueItem(unittest.TestCase):
+    """Tests for QueueItem dataclass."""
+
+    def test_queue_item_creation(self):
+        """Test QueueItem dataclass creation with all fields."""
+        item = QueueItem(
+            issue_number=42,
+            priority=1,
+            added_at="2024-01-15T10:30:00+00:00",
+            status="pending",
+            started_at=None,
+            completed_at=None,
+            error=None,
+            retry_count=0
+        )
+        self.assertEqual(item.issue_number, 42)
+        self.assertEqual(item.priority, 1)
+        self.assertEqual(item.added_at, "2024-01-15T10:30:00+00:00")
+        self.assertEqual(item.status, "pending")
+        self.assertIsNone(item.started_at)
+        self.assertIsNone(item.completed_at)
+        self.assertIsNone(item.error)
+        self.assertEqual(item.retry_count, 0)
+
+    def test_queue_item_default_values(self):
+        """Test QueueItem default values."""
+        item = QueueItem(issue_number=1)
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.priority, 0)
+        self.assertIsNotNone(item.added_at)  # Auto-generated
+        self.assertEqual(item.status, "pending")
+        self.assertIsNone(item.started_at)
+        self.assertIsNone(item.completed_at)
+        self.assertIsNone(item.error)
+        self.assertEqual(item.retry_count, 0)
+
+    def test_queue_item_auto_timestamp(self):
+        """Test QueueItem auto-generates timestamp if not provided."""
+        item = QueueItem(issue_number=1)
+        self.assertIsNotNone(item.added_at)
+        self.assertIn("T", item.added_at)  # ISO format
+
+    def test_queue_item_to_dict(self):
+        """Test QueueItem.to_dict() method."""
+        item = QueueItem(
+            issue_number=10,
+            priority=2,
+            added_at="2024-01-15T10:30:00+00:00",
+            status="completed",
+            started_at="2024-01-15T10:31:00+00:00",
+            completed_at="2024-01-15T10:32:00+00:00",
+            error=None,
+            retry_count=1
+        )
+        result = item.to_dict()
+        self.assertEqual(result, {
+            "issue_number": 10,
+            "priority": 2,
+            "added_at": "2024-01-15T10:30:00+00:00",
+            "status": "completed",
+            "started_at": "2024-01-15T10:31:00+00:00",
+            "completed_at": "2024-01-15T10:32:00+00:00",
+            "error": None,
+            "retry_count": 1
+        })
+
+    def test_queue_item_from_dict(self):
+        """Test QueueItem.from_dict() class method."""
+        data = {
+            "issue_number": 5,
+            "priority": 1,
+            "added_at": "2024-01-15T10:30:00+00:00",
+            "status": "processing",
+            "started_at": "2024-01-15T10:31:00+00:00",
+            "completed_at": None,
+            "error": None,
+            "retry_count": 0
+        }
+        item = QueueItem.from_dict(data)
+        self.assertEqual(item.issue_number, 5)
+        self.assertEqual(item.priority, 1)
+        self.assertEqual(item.status, "processing")
+        self.assertEqual(item.started_at, "2024-01-15T10:31:00+00:00")
+
+    def test_queue_item_from_dict_missing_optional_fields(self):
+        """Test QueueItem.from_dict() with missing optional fields."""
+        data = {
+            "issue_number": 1,
+        }
+        item = QueueItem.from_dict(data)
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.priority, 0)
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(item.retry_count, 0)
+
+    def test_queue_item_with_error(self):
+        """Test QueueItem with error message."""
+        item = QueueItem(
+            issue_number=1,
+            status="failed",
+            error="Processing failed due to timeout"
+        )
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.error, "Processing failed due to timeout")
+
+
+class TestProcessingQueueError(unittest.TestCase):
+    """Tests for ProcessingQueueError exception."""
+
+    def test_exception_message(self):
+        """Test ProcessingQueueError stores message correctly."""
+        error = ProcessingQueueError("Test message")
+        self.assertEqual(str(error), "Test message")
+
+    def test_exception_inheritance(self):
+        """Test ProcessingQueueError inherits from Exception."""
+        error = ProcessingQueueError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestProcessingQueue(unittest.TestCase):
+    """Tests for ProcessingQueue class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import shutil
+        self.temp_dir = tempfile.mkdtemp()
+        self.queue_dir = f"{self.temp_dir}/queue"
+        self.queue = ProcessingQueue(self.queue_dir)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_queue_initialization(self):
+        """Test ProcessingQueue initialization."""
+        import os
+        queue = ProcessingQueue("/custom/path")
+        self.assertEqual(os.path.normpath(queue.queue_dir), os.path.normpath("/custom/path"))
+
+    def test_queue_default_path(self):
+        """Test ProcessingQueue default path."""
+        import os
+        queue = ProcessingQueue()
+        self.assertEqual(os.path.normpath(queue.queue_dir), os.path.normpath(".ralph/queue"))
+
+    def test_enqueue_creates_directory(self):
+        """Test enqueue creates queue directory if it doesn't exist."""
+        import os
+        self.queue.enqueue(1)
+        self.assertTrue(os.path.exists(self.queue.queue_dir))
+
+    def test_enqueue_returns_queue_item(self):
+        """Test enqueue returns a QueueItem."""
+        item = self.queue.enqueue(42)
+        self.assertIsInstance(item, QueueItem)
+        self.assertEqual(item.issue_number, 42)
+        self.assertEqual(item.status, "pending")
+
+    def test_enqueue_with_priority(self):
+        """Test enqueue with custom priority."""
+        item = self.queue.enqueue(1, priority=5)
+        self.assertEqual(item.priority, 5)
+
+    def test_enqueue_idempotent_for_pending(self):
+        """Test enqueue is idempotent for pending issues."""
+        item1 = self.queue.enqueue(1)
+        item2 = self.queue.enqueue(1)
+        self.assertEqual(item1.issue_number, item2.issue_number)
+        self.assertEqual(self.queue.count(), 1)
+
+    def test_enqueue_idempotent_for_processing(self):
+        """Test enqueue is idempotent for processing issues."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()  # Mark as processing
+        item = self.queue.enqueue(1)  # Try to enqueue again
+        self.assertEqual(item.status, "processing")
+        self.assertEqual(self.queue.count(), 1)
+
+    def test_enqueue_allows_requeue_after_completed(self):
+        """Test enqueue allows re-adding completed issues."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        self.queue.mark_completed(1)
+
+        item = self.queue.enqueue(1)  # Re-enqueue
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(self.queue.count(), 2)  # Both items exist
+
+    def test_dequeue_returns_pending_item(self):
+        """Test dequeue returns a pending item."""
+        self.queue.enqueue(1)
+        item = self.queue.dequeue()
+        self.assertIsNotNone(item)
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.status, "processing")
+
+    def test_dequeue_sets_started_at(self):
+        """Test dequeue sets started_at timestamp."""
+        self.queue.enqueue(1)
+        item = self.queue.dequeue()
+        self.assertIsNotNone(item.started_at)
+
+    def test_dequeue_returns_none_when_empty(self):
+        """Test dequeue returns None when queue is empty."""
+        item = self.queue.dequeue()
+        self.assertIsNone(item)
+
+    def test_dequeue_returns_none_when_all_processing(self):
+        """Test dequeue returns None when all items are processing."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()  # Mark as processing
+        item = self.queue.dequeue()  # Try again
+        self.assertIsNone(item)
+
+    def test_dequeue_priority_order(self):
+        """Test dequeue returns items in priority order."""
+        self.queue.enqueue(1, priority=10)
+        self.queue.enqueue(2, priority=5)
+        self.queue.enqueue(3, priority=15)
+
+        item1 = self.queue.dequeue()
+        self.assertEqual(item1.issue_number, 2)  # Priority 5 first
+
+        item2 = self.queue.dequeue()
+        self.assertEqual(item2.issue_number, 1)  # Priority 10 second
+
+        item3 = self.queue.dequeue()
+        self.assertEqual(item3.issue_number, 3)  # Priority 15 last
+
+    def test_dequeue_fifo_same_priority(self):
+        """Test dequeue returns items in FIFO order for same priority."""
+        import time
+        self.queue.enqueue(1, priority=0)
+        time.sleep(0.01)  # Ensure different timestamps
+        self.queue.enqueue(2, priority=0)
+        time.sleep(0.01)
+        self.queue.enqueue(3, priority=0)
+
+        item1 = self.queue.dequeue()
+        self.assertEqual(item1.issue_number, 1)  # First added
+
+        item2 = self.queue.dequeue()
+        self.assertEqual(item2.issue_number, 2)  # Second added
+
+        item3 = self.queue.dequeue()
+        self.assertEqual(item3.issue_number, 3)  # Third added
+
+    def test_peek_returns_next_item(self):
+        """Test peek returns next pending item without changing state."""
+        self.queue.enqueue(1)
+        item = self.queue.peek()
+        self.assertIsNotNone(item)
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.status, "pending")
+
+    def test_peek_returns_none_when_empty(self):
+        """Test peek returns None when queue is empty."""
+        item = self.queue.peek()
+        self.assertIsNone(item)
+
+    def test_peek_does_not_change_state(self):
+        """Test peek does not modify item state."""
+        self.queue.enqueue(1)
+        self.queue.peek()
+        item = self.queue.get(1)
+        self.assertEqual(item.status, "pending")
+
+    def test_mark_completed(self):
+        """Test mark_completed updates item status."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        item = self.queue.mark_completed(1)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "completed")
+        self.assertIsNotNone(item.completed_at)
+
+    def test_mark_completed_returns_none_for_missing(self):
+        """Test mark_completed returns None for non-existent item."""
+        item = self.queue.mark_completed(999)
+        self.assertIsNone(item)
+
+    def test_mark_failed(self):
+        """Test mark_failed updates item status."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        item = self.queue.mark_failed(1, error="Test error")
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.error, "Test error")
+        self.assertIsNotNone(item.completed_at)
+
+    def test_mark_failed_without_error(self):
+        """Test mark_failed without error message."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        item = self.queue.mark_failed(1)
+        self.assertEqual(item.status, "failed")
+        self.assertIsNone(item.error)
+
+    def test_mark_failed_returns_none_for_missing(self):
+        """Test mark_failed returns None for non-existent item."""
+        item = self.queue.mark_failed(999)
+        self.assertIsNone(item)
+
+    def test_retry(self):
+        """Test retry resets item to pending."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        self.queue.mark_failed(1)
+
+        item = self.queue.retry(1)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "pending")
+        self.assertIsNone(item.started_at)
+        self.assertIsNone(item.completed_at)
+        self.assertIsNone(item.error)
+        self.assertEqual(item.retry_count, 1)
+
+    def test_retry_increments_count(self):
+        """Test retry increments retry_count."""
+        self.queue.enqueue(1)
+
+        # First retry
+        self.queue.dequeue()
+        self.queue.mark_failed(1)
+        item = self.queue.retry(1)
+        self.assertEqual(item.retry_count, 1)
+
+        # Second retry
+        self.queue.dequeue()
+        self.queue.mark_failed(1)
+        item = self.queue.retry(1)
+        self.assertEqual(item.retry_count, 2)
+
+    def test_retry_returns_none_for_missing(self):
+        """Test retry returns None for non-existent item."""
+        item = self.queue.retry(999)
+        self.assertIsNone(item)
+
+    def test_get(self):
+        """Test get returns item by issue number."""
+        self.queue.enqueue(42)
+        item = self.queue.get(42)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.issue_number, 42)
+
+    def test_get_returns_none_for_missing(self):
+        """Test get returns None for non-existent item."""
+        item = self.queue.get(999)
+        self.assertIsNone(item)
+
+    def test_remove(self):
+        """Test remove deletes item from queue."""
+        self.queue.enqueue(1)
+        self.assertTrue(self.queue.remove(1))
+        self.assertIsNone(self.queue.get(1))
+        self.assertEqual(self.queue.count(), 0)
+
+    def test_remove_returns_false_for_missing(self):
+        """Test remove returns False for non-existent item."""
+        self.assertFalse(self.queue.remove(999))
+
+    def test_list_items(self):
+        """Test list_items returns all items."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.enqueue(3)
+
+        items = self.queue.list_items()
+        self.assertEqual(len(items), 3)
+        numbers = [i.issue_number for i in items]
+        self.assertEqual(set(numbers), {1, 2, 3})
+
+    def test_list_items_filter_by_status(self):
+        """Test list_items filters by status."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.dequeue()  # 1 is now processing
+        self.queue.mark_completed(1)
+        self.queue.dequeue()  # 2 is now processing
+        self.queue.enqueue(3)  # Still pending
+
+        pending = self.queue.list_items(status="pending")
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].issue_number, 3)
+
+        processing = self.queue.list_items(status="processing")
+        self.assertEqual(len(processing), 1)
+        self.assertEqual(processing[0].issue_number, 2)
+
+        completed = self.queue.list_items(status="completed")
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].issue_number, 1)
+
+    def test_count(self):
+        """Test count returns total item count."""
+        self.assertEqual(self.queue.count(), 0)
+        self.queue.enqueue(1)
+        self.assertEqual(self.queue.count(), 1)
+        self.queue.enqueue(2)
+        self.assertEqual(self.queue.count(), 2)
+
+    def test_count_by_status(self):
+        """Test count filters by status."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.dequeue()
+
+        self.assertEqual(self.queue.count(status="pending"), 1)
+        self.assertEqual(self.queue.count(status="processing"), 1)
+        self.assertEqual(self.queue.count(status="completed"), 0)
+
+    def test_clear(self):
+        """Test clear removes all items."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+
+        count = self.queue.clear()
+        self.assertEqual(count, 2)
+        self.assertEqual(self.queue.count(), 0)
+
+    def test_clear_by_status(self):
+        """Test clear removes only items with specified status."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.dequeue()  # 1 is processing
+        self.queue.mark_completed(1)
+
+        count = self.queue.clear(status="completed")
+        self.assertEqual(count, 1)
+        self.assertEqual(self.queue.count(), 1)  # 2 (pending) remains
+
+    def test_clear_empty_queue(self):
+        """Test clear returns 0 for empty queue."""
+        count = self.queue.clear()
+        self.assertEqual(count, 0)
+
+    def test_is_empty(self):
+        """Test is_empty checks for pending items."""
+        self.assertTrue(self.queue.is_empty())
+
+        self.queue.enqueue(1)
+        self.assertFalse(self.queue.is_empty())
+
+        self.queue.dequeue()  # Now processing
+        self.assertTrue(self.queue.is_empty())  # No pending
+
+    def test_has_processing(self):
+        """Test has_processing checks for processing items."""
+        self.assertFalse(self.queue.has_processing())
+
+        self.queue.enqueue(1)
+        self.assertFalse(self.queue.has_processing())
+
+        self.queue.dequeue()
+        self.assertTrue(self.queue.has_processing())
+
+        self.queue.mark_completed(1)
+        self.assertFalse(self.queue.has_processing())
+
+    def test_reset_processing(self):
+        """Test reset_processing resets processing items to pending."""
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.dequeue()  # 1 is processing
+        self.queue.dequeue()  # 2 is processing
+
+        count = self.queue.reset_processing()
+        self.assertEqual(count, 2)
+        self.assertEqual(self.queue.count(status="pending"), 2)
+        self.assertEqual(self.queue.count(status="processing"), 0)
+
+    def test_reset_processing_clears_started_at(self):
+        """Test reset_processing clears started_at timestamp."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+
+        self.queue.reset_processing()
+        item = self.queue.get(1)
+        self.assertIsNone(item.started_at)
+
+    def test_reset_processing_empty_queue(self):
+        """Test reset_processing returns 0 for queue with no processing items."""
+        self.queue.enqueue(1)  # pending only
+        count = self.queue.reset_processing()
+        self.assertEqual(count, 0)
+
+    def test_enqueue_batch(self):
+        """Test enqueue_batch adds multiple items."""
+        items = self.queue.enqueue_batch([1, 2, 3])
+        self.assertEqual(len(items), 3)
+        self.assertEqual(self.queue.count(), 3)
+
+    def test_enqueue_batch_with_priority(self):
+        """Test enqueue_batch with custom priority."""
+        items = self.queue.enqueue_batch([1, 2], priority=5)
+        for item in items:
+            self.assertEqual(item.priority, 5)
+
+    def test_enqueue_batch_idempotent(self):
+        """Test enqueue_batch is idempotent for existing pending items."""
+        self.queue.enqueue(1)
+        items = self.queue.enqueue_batch([1, 2, 3])
+        self.assertEqual(len(items), 3)
+        self.assertEqual(self.queue.count(), 3)  # 1 existed, 2 and 3 new
+
+    def test_enqueue_batch_empty_list(self):
+        """Test enqueue_batch with empty list."""
+        items = self.queue.enqueue_batch([])
+        self.assertEqual(items, [])
+        self.assertEqual(self.queue.count(), 0)
+
+    def test_persistence(self):
+        """Test queue state persists across instances."""
+        self.queue.enqueue(1, priority=5)
+        self.queue.enqueue(2, priority=0)
+        self.queue.dequeue()  # 2 is processing (lower priority number = higher priority)
+
+        # Create new queue instance
+        new_queue = ProcessingQueue(self.queue_dir)
+
+        self.assertEqual(new_queue.count(), 2)
+        self.assertEqual(new_queue.count(status="pending"), 1)
+        self.assertEqual(new_queue.count(status="processing"), 1)
+
+        item = new_queue.get(2)
+        self.assertEqual(item.status, "processing")
+
+    def test_persistence_file_format(self):
+        """Test queue persists as readable JSON."""
+        import os
+
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+
+        file_path = os.path.join(self.queue_dir, "queue.json")
+        self.assertTrue(os.path.exists(file_path))
+
+        with open(file_path, 'r') as f:
+            content = f.read()
+
+        # Should be indented JSON
+        self.assertIn('"items"', content)
+        self.assertIn('\n', content)
+
+    def test_thread_safety(self):
+        """Test queue operations are thread-safe."""
+        import threading
+
+        errors = []
+
+        def enqueue_items():
+            try:
+                for i in range(100):
+                    self.queue.enqueue(i)
+            except Exception as e:
+                errors.append(e)
+
+        def dequeue_items():
+            try:
+                for _ in range(50):
+                    self.queue.dequeue()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=enqueue_items),
+            threading.Thread(target=enqueue_items),
+            threading.Thread(target=dequeue_items),
+        ]
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(errors), 0)
+
+
+class TestProcessingQueueIntegration(unittest.TestCase):
+    """Integration tests for ProcessingQueue workflow."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.queue_dir = f"{self.temp_dir}/queue"
+        self.store_dir = f"{self.temp_dir}/issues"
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.store = IssueStore(self.store_dir)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_full_processing_workflow(self):
+        """Test complete issue processing workflow."""
+        # 1. Issues arrive and get stored + queued
+        issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        for issue in issues:
+            self.store.save(issue)
+            self.queue.enqueue(issue.number)
+
+        self.assertEqual(self.store.count(), 2)
+        self.assertEqual(self.queue.count(), 2)
+
+        # 2. Process first item
+        item = self.queue.dequeue()
+        self.assertEqual(item.issue_number, 1)
+        self.store.update_status(1, "processing")
+
+        # 3. First item completes
+        self.queue.mark_completed(1)
+        self.store.update_status(1, "completed")
+
+        # 4. Process second item
+        item = self.queue.dequeue()
+        self.assertEqual(item.issue_number, 2)
+        self.store.update_status(2, "processing")
+
+        # 5. Second item fails
+        self.queue.mark_failed(2, error="Timeout")
+        self.store.update_status(2, "failed")
+
+        # 6. Verify final state
+        self.assertEqual(self.queue.count(status="completed"), 1)
+        self.assertEqual(self.queue.count(status="failed"), 1)
+        self.assertEqual(self.store.get(1).status, "completed")
+        self.assertEqual(self.store.get(2).status, "failed")
+
+    def test_recovery_after_crash(self):
+        """Test recovering from a simulated crash during processing."""
+        # Setup: items in various states
+        self.queue.enqueue(1)
+        self.queue.enqueue(2)
+        self.queue.enqueue(3)
+        self.queue.dequeue()  # 1 is processing
+        self.queue.dequeue()  # 2 is processing
+
+        # Simulate crash - create new queue instance
+        new_queue = ProcessingQueue(self.queue_dir)
+
+        # Recovery: reset all processing items
+        reset_count = new_queue.reset_processing()
+        self.assertEqual(reset_count, 2)
+
+        # All items should be pending again
+        self.assertEqual(new_queue.count(status="pending"), 3)
+        self.assertEqual(new_queue.count(status="processing"), 0)
+
+        # Can resume processing
+        item = new_queue.dequeue()
+        self.assertIsNotNone(item)
+
+    def test_retry_failed_items(self):
+        """Test retrying failed items."""
+        self.queue.enqueue(1)
+        self.queue.dequeue()
+        self.queue.mark_failed(1, error="First attempt failed")
+
+        # Verify failed state
+        item = self.queue.get(1)
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.retry_count, 0)
+
+        # Retry
+        self.queue.retry(1)
+        item = self.queue.get(1)
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(item.retry_count, 1)
+
+        # Process again
+        item = self.queue.dequeue()
+        self.assertEqual(item.issue_number, 1)
+        self.assertEqual(item.status, "processing")
+
+    def test_priority_processing(self):
+        """Test high-priority items are processed first."""
+        # Add items with different priorities
+        self.queue.enqueue(1, priority=10)  # Low priority
+        self.queue.enqueue(2, priority=1)   # High priority
+        self.queue.enqueue(3, priority=5)   # Medium priority
+
+        # Should process in priority order
+        item1 = self.queue.dequeue()
+        self.assertEqual(item1.issue_number, 2)
+
+        item2 = self.queue.dequeue()
+        self.assertEqual(item2.issue_number, 3)
+
+        item3 = self.queue.dequeue()
+        self.assertEqual(item3.issue_number, 1)
+
+
+class TestPromptTransformerError(unittest.TestCase):
+    """Tests for PromptTransformerError exception."""
+
+    def test_exception_message(self):
+        """Test PromptTransformerError stores message correctly."""
+        error = PromptTransformerError("Test message")
+        self.assertEqual(str(error), "Test message")
+
+    def test_exception_inheritance(self):
+        """Test PromptTransformerError inherits from Exception."""
+        error = PromptTransformerError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestTransformedPrompt(unittest.TestCase):
+    """Tests for TransformedPrompt dataclass."""
+
+    def test_creation_with_defaults(self):
+        """Test TransformedPrompt creation with default priority."""
+        prompt = TransformedPrompt(
+            issue_number=42,
+            prompt="TASK-042: Test\n\nDescription:\nBody"
+        )
+        self.assertEqual(prompt.issue_number, 42)
+        self.assertEqual(prompt.prompt, "TASK-042: Test\n\nDescription:\nBody")
+        self.assertEqual(prompt.priority, 0)
+
+    def test_creation_with_priority(self):
+        """Test TransformedPrompt creation with custom priority."""
+        prompt = TransformedPrompt(
+            issue_number=10,
+            prompt="TASK-010: Feature\n\nDescription:\nDetails",
+            priority=5
+        )
+        self.assertEqual(prompt.issue_number, 10)
+        self.assertEqual(prompt.priority, 5)
+
+    def test_prompt_content(self):
+        """Test TransformedPrompt stores prompt content correctly."""
+        content = "TASK-001: Add login\n\nDescription:\nImplement OAuth"
+        prompt = TransformedPrompt(issue_number=1, prompt=content)
+        self.assertEqual(prompt.prompt, content)
+
+
+class TestPromptTransformer(unittest.TestCase):
+    """Tests for PromptTransformer class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import shutil
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = f"{self.temp_dir}/store"
+        self.queue_dir = f"{self.temp_dir}/queue"
+        self.store = IssueStore(self.store_dir)
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.transformer = PromptTransformer(self.queue, self.store)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(self, number, title="Test Issue", body="Test body"):
+        """Helper to create an Issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"https://github.com/owner/repo/issues/{number}",
+            labels=["ready"]
+        )
+
+    def test_properties(self):
+        """Test queue and store properties."""
+        self.assertIs(self.transformer.queue, self.queue)
+        self.assertIs(self.transformer.store, self.store)
+
+    def test_transform_single_issue(self):
+        """Test transforming a single issue to prompt."""
+        issue = self._create_issue(42, "Add feature", "Feature description")
+        self.store.save(issue)
+        self.queue.enqueue(42, priority=5)
+
+        result = self.transformer.transform(42)
+
+        self.assertIsInstance(result, TransformedPrompt)
+        self.assertEqual(result.issue_number, 42)
+        self.assertIn("TASK-042", result.prompt)
+        self.assertIn("Add feature", result.prompt)
+        self.assertIn("Feature description", result.prompt)
+        self.assertEqual(result.priority, 5)
+
+    def test_transform_issue_not_in_store(self):
+        """Test transform raises error when issue not in store."""
+        self.queue.enqueue(999)
+
+        with self.assertRaises(PromptTransformerError) as ctx:
+            self.transformer.transform(999)
+
+        self.assertIn("999", str(ctx.exception))
+        self.assertIn("not found", str(ctx.exception))
+
+    def test_transform_issue_not_in_queue(self):
+        """Test transform works for issue in store but not in queue."""
+        issue = self._create_issue(50, "Test", "Body")
+        self.store.save(issue)
+
+        result = self.transformer.transform(50)
+
+        self.assertEqual(result.issue_number, 50)
+        self.assertEqual(result.priority, 0)  # Default priority
+
+    def test_transform_preserves_none_body(self):
+        """Test transform handles None body correctly."""
+        issue = Issue(
+            number=1,
+            title="No body",
+            body=None,
+            url="http://url",
+            labels=[]
+        )
+        self.store.save(issue)
+
+        result = self.transformer.transform(1)
+
+        self.assertIn("No description provided.", result.prompt)
+
+    def test_transform_batch(self):
+        """Test transforming multiple issues."""
+        for i in range(1, 4):
+            issue = self._create_issue(i, f"Issue {i}", f"Body {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        results = self.transformer.transform_batch([1, 2, 3])
+
+        self.assertEqual(len(results), 3)
+        for i, result in enumerate(results, 1):
+            self.assertEqual(result.issue_number, i)
+            self.assertIn(f"TASK-00{i}", result.prompt)
+
+    def test_transform_batch_skips_missing(self):
+        """Test transform_batch skips issues not in store."""
+        issue = self._create_issue(1, "Test", "Body")
+        self.store.save(issue)
+
+        results = self.transformer.transform_batch([1, 999, 2])
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].issue_number, 1)
+
+    def test_transform_batch_empty_list(self):
+        """Test transform_batch with empty list."""
+        results = self.transformer.transform_batch([])
+        self.assertEqual(results, [])
+
+    def test_get_pending_prompts(self):
+        """Test getting all pending prompts."""
+        for i in range(1, 4):
+            issue = self._create_issue(i, f"Issue {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i, priority=3 - i)  # Priority: 2, 1, 0
+
+        prompts = self.transformer.get_pending_prompts()
+
+        self.assertEqual(len(prompts), 3)
+        # Should be ordered by priority (lower = higher priority)
+        self.assertEqual(prompts[0].issue_number, 3)  # priority 0
+        self.assertEqual(prompts[1].issue_number, 2)  # priority 1
+        self.assertEqual(prompts[2].issue_number, 1)  # priority 2
+
+    def test_get_pending_prompts_empty_queue(self):
+        """Test get_pending_prompts with empty queue."""
+        prompts = self.transformer.get_pending_prompts()
+        self.assertEqual(prompts, [])
+
+    def test_get_pending_prompts_skips_non_pending(self):
+        """Test get_pending_prompts only returns pending items."""
+        for i in range(1, 4):
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        # Mark some as non-pending
+        self.queue.dequeue()  # Marks first as processing
+        self.queue.mark_completed(1)
+
+        prompts = self.transformer.get_pending_prompts()
+
+        self.assertEqual(len(prompts), 2)
+        numbers = [p.issue_number for p in prompts]
+        self.assertNotIn(1, numbers)
+
+    def test_get_next_prompt(self):
+        """Test getting and dequeuing next prompt."""
+        issue = self._create_issue(42, "Test Issue")
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.transformer.get_next_prompt()
+
+        self.assertIsInstance(result, TransformedPrompt)
+        self.assertEqual(result.issue_number, 42)
+        # Item should now be marked as processing
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "processing")
+
+    def test_get_next_prompt_empty_queue(self):
+        """Test get_next_prompt returns None for empty queue."""
+        result = self.transformer.get_next_prompt()
+        self.assertIsNone(result)
+
+    def test_get_next_prompt_issue_not_in_store(self):
+        """Test get_next_prompt marks as failed when issue not in store."""
+        self.queue.enqueue(999)
+
+        with self.assertRaises(PromptTransformerError):
+            self.transformer.get_next_prompt()
+
+        # Issue should be marked as failed
+        item = self.queue.get(999)
+        self.assertEqual(item.status, "failed")
+        self.assertIn("not found", item.error)
+
+    def test_get_next_prompt_respects_priority(self):
+        """Test get_next_prompt returns highest priority item."""
+        for i, priority in [(1, 10), (2, 1), (3, 5)]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i, priority=priority)
+
+        result = self.transformer.get_next_prompt()
+
+        self.assertEqual(result.issue_number, 2)  # Priority 1 (highest)
+
+    def test_peek_next_prompt(self):
+        """Test peeking at next prompt without dequeuing."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.transformer.peek_next_prompt()
+
+        self.assertIsInstance(result, TransformedPrompt)
+        self.assertEqual(result.issue_number, 42)
+        # Item should still be pending
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "pending")
+
+    def test_peek_next_prompt_empty_queue(self):
+        """Test peek_next_prompt returns None for empty queue."""
+        result = self.transformer.peek_next_prompt()
+        self.assertIsNone(result)
+
+    def test_peek_next_prompt_issue_not_in_store(self):
+        """Test peek_next_prompt returns None when issue not in store."""
+        self.queue.enqueue(999)
+
+        result = self.transformer.peek_next_prompt()
+
+        self.assertIsNone(result)
+        # Item should still be pending (not marked as failed)
+        item = self.queue.get(999)
+        self.assertEqual(item.status, "pending")
+
+    def test_count_pending(self):
+        """Test counting pending items."""
+        for i in range(1, 5):
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        self.assertEqual(self.transformer.count_pending(), 4)
+
+        self.queue.dequeue()  # Mark one as processing
+        self.assertEqual(self.transformer.count_pending(), 3)
+
+    def test_count_pending_empty(self):
+        """Test count_pending returns 0 for empty queue."""
+        self.assertEqual(self.transformer.count_pending(), 0)
+
+    def test_count_transformable(self):
+        """Test counting transformable items."""
+        # Add 3 issues to store and queue
+        for i in range(1, 4):
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        # Add 2 issues only to queue (not in store)
+        self.queue.enqueue(100)
+        self.queue.enqueue(101)
+
+        self.assertEqual(self.transformer.count_pending(), 5)
+        self.assertEqual(self.transformer.count_transformable(), 3)
+
+    def test_count_transformable_excludes_non_pending(self):
+        """Test count_transformable only counts pending items."""
+        for i in range(1, 4):
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        self.queue.dequeue()  # Mark as processing
+
+        self.assertEqual(self.transformer.count_transformable(), 2)
+
+    def test_mark_completed(self):
+        """Test marking issue as completed."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+        self.queue.dequeue()  # Mark as processing
+
+        result = self.transformer.mark_completed(42)
+
+        self.assertTrue(result)
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "completed")
+
+    def test_mark_completed_not_found(self):
+        """Test mark_completed returns False for unknown issue."""
+        result = self.transformer.mark_completed(999)
+        self.assertFalse(result)
+
+    def test_mark_failed(self):
+        """Test marking issue as failed."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+        self.queue.dequeue()
+
+        result = self.transformer.mark_failed(42, error="Test error")
+
+        self.assertTrue(result)
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.error, "Test error")
+
+    def test_mark_failed_not_found(self):
+        """Test mark_failed returns False for unknown issue."""
+        result = self.transformer.mark_failed(999)
+        self.assertFalse(result)
+
+    def test_mark_failed_without_error_message(self):
+        """Test marking issue as failed without error message."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+        self.queue.dequeue()
+
+        result = self.transformer.mark_failed(42)
+
+        self.assertTrue(result)
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+        self.assertIsNone(item.error)
+
+
+class TestPromptTransformerIntegration(unittest.TestCase):
+    """Integration tests for PromptTransformer with real queue and store."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = f"{self.temp_dir}/store"
+        self.queue_dir = f"{self.temp_dir}/queue"
+        self.store = IssueStore(self.store_dir)
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.transformer = PromptTransformer(self.queue, self.store)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(self, number, title="Test", body="Body"):
+        """Helper to create an Issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"http://url/{number}",
+            labels=["ready"]
+        )
+
+    def test_full_processing_workflow(self):
+        """Test complete workflow from queue to completion."""
+        # Store and queue issues
+        for i in range(1, 4):
+            issue = self._create_issue(i, f"Task {i}", f"Description {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        # Process all issues
+        processed = []
+        while True:
+            prompt = self.transformer.get_next_prompt()
+            if prompt is None:
+                break
+            processed.append(prompt)
+            self.transformer.mark_completed(prompt.issue_number)
+
+        self.assertEqual(len(processed), 3)
+        for p in processed:
+            item = self.queue.get(p.issue_number)
+            self.assertEqual(item.status, "completed")
+
+    def test_retry_failed_workflow(self):
+        """Test workflow with retry after failure."""
+        issue = self._create_issue(42, "Feature", "Add new feature")
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        # Get and fail the prompt
+        prompt = self.transformer.get_next_prompt()
+        self.transformer.mark_failed(42, error="First attempt failed")
+
+        # Verify failed status
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+
+        # Retry
+        self.queue.retry(42)
+
+        # Process again
+        prompt = self.transformer.get_next_prompt()
+        self.assertEqual(prompt.issue_number, 42)
+
+        # Complete this time
+        self.transformer.mark_completed(42)
+
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "completed")
+
+    def test_prompt_format_matches_ralph_expectation(self):
+        """Test transformed prompt format matches Ralph planner expectations."""
+        issue = self._create_issue(
+            number=7,
+            title="Add user authentication",
+            body="Implement OAuth2 login flow with Google provider"
+        )
+        self.store.save(issue)
+
+        result = self.transformer.transform(7)
+
+        # Verify format matches Ralph's expected input
+        expected = "TASK-007: Add user authentication\n\nDescription:\nImplement OAuth2 login flow with Google provider"
+        self.assertEqual(result.prompt, expected)
+
+    def test_persistence_across_instances(self):
+        """Test transformer works with persisted queue/store state."""
+        # Add data with first instances
+        issue = self._create_issue(42, "Test", "Body")
+        self.store.save(issue)
+        self.queue.enqueue(42, priority=5)
+
+        # Create new instances pointing to same dirs
+        new_store = IssueStore(self.store_dir)
+        new_queue = ProcessingQueue(self.queue_dir)
+        new_transformer = PromptTransformer(new_queue, new_store)
+
+        # Verify data persisted
+        result = new_transformer.transform(42)
+        self.assertEqual(result.issue_number, 42)
+        self.assertEqual(result.priority, 5)
+
+
+class TestInvocationResult(unittest.TestCase):
+    """Tests for InvocationResult dataclass."""
+
+    def test_invocation_result_success(self):
+        """Test InvocationResult creation with success."""
+        result = InvocationResult(issue_number=42, success=True)
+        self.assertEqual(result.issue_number, 42)
+        self.assertTrue(result.success)
+        self.assertIsNone(result.error)
+
+    def test_invocation_result_failure(self):
+        """Test InvocationResult creation with failure."""
+        result = InvocationResult(
+            issue_number=42,
+            success=False,
+            error="Planner failed"
+        )
+        self.assertEqual(result.issue_number, 42)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "Planner failed")
+
+    def test_invocation_result_default_error(self):
+        """Test InvocationResult default error value."""
+        result = InvocationResult(issue_number=1, success=True)
+        self.assertIsNone(result.error)
+
+
+class TestPlannerInvoker(unittest.TestCase):
+    """Tests for PlannerInvoker class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import os
+
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = os.path.join(self.temp_dir, "issues")
+        self.queue_dir = os.path.join(self.temp_dir, "queue")
+
+        self.store = IssueStore(self.store_dir)
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.transformer = PromptTransformer(self.queue, self.store)
+        self.invoker = PlannerInvoker(self.transformer)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(
+        self, number: int, title: str = "Test", body: str = "Body"
+    ) -> Issue:
+        """Create a test Issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"https://github.com/owner/repo/issues/{number}",
+            labels=["ready"]
+        )
+
+    def test_init_default_values(self):
+        """Test PlannerInvoker initialization with default values."""
+        invoker = PlannerInvoker(self.transformer)
+        self.assertEqual(invoker.transformer, self.transformer)
+        self.assertEqual(invoker.agent_name, "claude")
+        self.assertTrue(invoker.enable_hooks)
+        self.assertFalse(invoker.mark_github_issues)
+
+    def test_init_custom_values(self):
+        """Test PlannerInvoker initialization with custom values."""
+        invoker = PlannerInvoker(
+            self.transformer,
+            agent_name="copilot",
+            enable_hooks=False,
+            mark_github_issues=True
+        )
+        self.assertEqual(invoker.agent_name, "copilot")
+        self.assertFalse(invoker.enable_hooks)
+        self.assertTrue(invoker.mark_github_issues)
+
+    def test_process_next_empty_queue(self):
+        """Test process_next returns None when queue is empty."""
+        result = self.invoker.process_next()
+        self.assertIsNone(result)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_next_success(self, mock_invoke):
+        """Test process_next succeeds when planner succeeds."""
+        mock_invoke.return_value = True
+
+        issue = self._create_issue(42, "Test Issue", "Test body")
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.invoker.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.issue_number, 42)
+        self.assertTrue(result.success)
+        self.assertIsNone(result.error)
+
+        # Verify queue item marked completed
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "completed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_next_planner_returns_false(self, mock_invoke):
+        """Test process_next handles planner returning False."""
+        mock_invoke.return_value = False
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.invoker.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.issue_number, 42)
+        self.assertFalse(result.success)
+        self.assertIsNotNone(result.error)
+        self.assertIn("did not complete successfully", result.error)
+
+        # Verify queue item marked failed
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_next_planner_raises_error(self, mock_invoke):
+        """Test process_next handles PlannerError exception."""
+        mock_invoke.side_effect = PlannerError("Memory directory missing")
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.invoker.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.issue_number, 42)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "Memory directory missing")
+
+        # Verify queue item marked failed
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+
+    def test_process_next_issue_not_in_store(self):
+        """Test process_next handles issue not found in store."""
+        # Enqueue without saving to store
+        self.queue.enqueue(42)
+
+        result = self.invoker.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.issue_number, 42)
+        self.assertFalse(result.success)
+        self.assertIn("not found in store", result.error)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    @patch('fetch_ready_issues.mark_issue_processed')
+    def test_process_next_marks_github_issue(self, mock_mark, mock_invoke):
+        """Test process_next marks GitHub issue when configured."""
+        mock_invoke.return_value = True
+
+        invoker = PlannerInvoker(
+            self.transformer,
+            mark_github_issues=True
+        )
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = invoker.process_next()
+
+        self.assertTrue(result.success)
+        mock_mark.assert_called_once_with(42)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    @patch('fetch_ready_issues.mark_issue_processed')
+    def test_process_next_github_label_error_ignored(self, mock_mark, mock_invoke):
+        """Test process_next ignores GitHub label update errors."""
+        mock_invoke.return_value = True
+        mock_mark.side_effect = GitHubCLIError("Label update failed")
+
+        invoker = PlannerInvoker(
+            self.transformer,
+            mark_github_issues=True
+        )
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = invoker.process_next()
+
+        # Should still succeed despite label error
+        self.assertTrue(result.success)
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "completed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_next_no_github_marking_by_default(self, mock_invoke):
+        """Test process_next doesn't mark GitHub issues by default."""
+        mock_invoke.return_value = True
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        with patch('fetch_ready_issues.mark_issue_processed') as mock_mark:
+            self.invoker.process_next()
+            mock_mark.assert_not_called()
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_empty_queue(self, mock_invoke):
+        """Test process_all returns empty results for empty queue."""
+        results, success_count, failure_count = self.invoker.process_all()
+
+        self.assertEqual(results, [])
+        self.assertEqual(success_count, 0)
+        self.assertEqual(failure_count, 0)
+        mock_invoke.assert_not_called()
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_single_issue_success(self, mock_invoke):
+        """Test process_all with single successful issue."""
+        mock_invoke.return_value = True
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        results, success_count, failure_count = self.invoker.process_all()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(success_count, 1)
+        self.assertEqual(failure_count, 0)
+        self.assertTrue(results[0].success)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_multiple_issues_all_success(self, mock_invoke):
+        """Test process_all with multiple successful issues."""
+        mock_invoke.return_value = True
+
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i, f"Issue {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        results, success_count, failure_count = self.invoker.process_all()
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(success_count, 3)
+        self.assertEqual(failure_count, 0)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_mixed_results(self, mock_invoke):
+        """Test process_all with mixed success and failure."""
+        # First call succeeds, second fails, third succeeds
+        mock_invoke.side_effect = [True, False, True]
+
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i, f"Issue {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        results, success_count, failure_count = self.invoker.process_all()
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(success_count, 2)
+        self.assertEqual(failure_count, 1)
+
+        self.assertTrue(results[0].success)
+        self.assertFalse(results[1].success)
+        self.assertTrue(results[2].success)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_continues_on_failure(self, mock_invoke):
+        """Test process_all continues processing after failure."""
+        mock_invoke.side_effect = [
+            PlannerError("First failed"),
+            True
+        ]
+
+        for i in [1, 2]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        results, success_count, failure_count = self.invoker.process_all()
+
+        # Both should be processed
+        self.assertEqual(len(results), 2)
+        self.assertEqual(success_count, 1)
+        self.assertEqual(failure_count, 1)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_process_all_respects_priority_order(self, mock_invoke):
+        """Test process_all processes issues in priority order."""
+        mock_invoke.return_value = True
+        processed_order = []
+
+        def track_calls(user_intent, agent_name="claude", enable_hooks=True):
+            # Extract issue number from prompt
+            import re
+            match = re.search(r'TASK-(\d+)', user_intent)
+            if match:
+                processed_order.append(int(match.group(1)))
+            return True
+
+        mock_invoke.side_effect = track_calls
+
+        # Add issues with different priorities
+        for i, priority in [(3, 10), (1, 5), (2, 1)]:
+            issue = self._create_issue(i, f"Issue {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i, priority=priority)
+
+        self.invoker.process_all()
+
+        # Should process in priority order (lower priority value first)
+        self.assertEqual(processed_order, [2, 1, 3])
+
+    def test_count_pending_empty_queue(self):
+        """Test count_pending returns 0 for empty queue."""
+        self.assertEqual(self.invoker.count_pending(), 0)
+
+    def test_count_pending_with_items(self):
+        """Test count_pending counts pending items."""
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        self.assertEqual(self.invoker.count_pending(), 3)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_count_pending_excludes_completed(self, mock_invoke):
+        """Test count_pending excludes completed items."""
+        mock_invoke.return_value = True
+
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        self.assertEqual(self.invoker.count_pending(), 3)
+
+        # Process one
+        self.invoker.process_next()
+
+        self.assertEqual(self.invoker.count_pending(), 2)
+
+    def test_has_pending_empty_queue(self):
+        """Test has_pending returns False for empty queue."""
+        self.assertFalse(self.invoker.has_pending())
+
+    def test_has_pending_with_items(self):
+        """Test has_pending returns True with pending items."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        self.assertTrue(self.invoker.has_pending())
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_has_pending_after_all_processed(self, mock_invoke):
+        """Test has_pending returns False after all processed."""
+        mock_invoke.return_value = True
+
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        self.assertTrue(self.invoker.has_pending())
+
+        self.invoker.process_all()
+
+        self.assertFalse(self.invoker.has_pending())
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_invoke_planner_called_with_correct_args(self, mock_invoke):
+        """Test invoke_planner is called with correct arguments."""
+        mock_invoke.return_value = True
+
+        invoker = PlannerInvoker(
+            self.transformer,
+            agent_name="copilot",
+            enable_hooks=False
+        )
+
+        issue = self._create_issue(42, "Test Title", "Test Body")
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        invoker.process_next()
+
+        mock_invoke.assert_called_once()
+        call_kwargs = mock_invoke.call_args[1]
+        self.assertEqual(call_kwargs['agent_name'], "copilot")
+        self.assertEqual(call_kwargs['enable_hooks'], False)
+        self.assertIn("TASK-042", mock_invoke.call_args[1]['user_intent'])
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_transformer_property(self, mock_invoke):
+        """Test transformer property returns the transformer."""
+        self.assertIs(self.invoker.transformer, self.transformer)
+
+    def test_properties_are_readonly(self):
+        """Test that properties cannot be modified."""
+        # These should raise AttributeError
+        with self.assertRaises(AttributeError):
+            self.invoker.transformer = None
+        with self.assertRaises(AttributeError):
+            self.invoker.agent_name = "other"
+        with self.assertRaises(AttributeError):
+            self.invoker.enable_hooks = False
+        with self.assertRaises(AttributeError):
+            self.invoker.mark_github_issues = True
+
+
+class TestPlannerInvokerIntegration(unittest.TestCase):
+    """Integration tests for PlannerInvoker with full pipeline."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import os
+
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = os.path.join(self.temp_dir, "issues")
+        self.queue_dir = os.path.join(self.temp_dir, "queue")
+
+        self.store = IssueStore(self.store_dir)
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.transformer = PromptTransformer(self.queue, self.store)
+        self.invoker = PlannerInvoker(self.transformer)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(
+        self, number: int, title: str = "Test", body: str = "Body"
+    ) -> Issue:
+        """Create a test Issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"https://github.com/owner/repo/issues/{number}",
+            labels=["ready"]
+        )
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_full_pipeline_single_issue(self, mock_invoke):
+        """Test complete pipeline with single issue."""
+        mock_invoke.return_value = True
+
+        # 1. Save issue to store
+        issue = self._create_issue(1, "Add login feature", "Implement user login")
+        self.store.save(issue)
+
+        # 2. Enqueue for processing
+        self.queue.enqueue(1)
+
+        # 3. Verify initial state
+        self.assertEqual(self.invoker.count_pending(), 1)
+        self.assertTrue(self.invoker.has_pending())
+
+        # 4. Process
+        result = self.invoker.process_next()
+
+        # 5. Verify result
+        self.assertTrue(result.success)
+        self.assertEqual(result.issue_number, 1)
+
+        # 6. Verify final state
+        self.assertEqual(self.invoker.count_pending(), 0)
+        self.assertFalse(self.invoker.has_pending())
+        self.assertEqual(self.queue.get(1).status, "completed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_full_pipeline_batch_processing(self, mock_invoke):
+        """Test complete pipeline with batch processing."""
+        mock_invoke.return_value = True
+
+        # Create multiple issues
+        issues_data = [
+            (1, "Feature A", "Description A"),
+            (2, "Feature B", "Description B"),
+            (3, "Feature C", "Description C"),
+        ]
+
+        for num, title, body in issues_data:
+            issue = self._create_issue(num, title, body)
+            self.store.save(issue)
+            self.queue.enqueue(num)
+
+        # Verify initial state
+        self.assertEqual(self.invoker.count_pending(), 3)
+
+        # Process all
+        results, success, failure = self.invoker.process_all()
+
+        # Verify results
+        self.assertEqual(len(results), 3)
+        self.assertEqual(success, 3)
+        self.assertEqual(failure, 0)
+
+        # Verify all completed
+        for num, _, _ in issues_data:
+            self.assertEqual(self.queue.get(num).status, "completed")
+
+    @patch('fetch_ready_issues.invoke_planner')
+    def test_recovery_after_restart(self, mock_invoke):
+        """Test state recovery after simulated restart."""
+        mock_invoke.return_value = True
+
+        # Create and partially process
+        for i in [1, 2, 3]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        # Process one
+        self.invoker.process_next()
+
+        # Simulate restart - create new instances
+        new_store = IssueStore(self.store_dir)
+        new_queue = ProcessingQueue(self.queue_dir)
+        new_transformer = PromptTransformer(new_queue, new_store)
+        new_invoker = PlannerInvoker(new_transformer)
+
+        # Verify state restored
+        self.assertEqual(new_invoker.count_pending(), 2)
+
+        # Process remaining
+        results, success, failure = new_invoker.process_all()
+        self.assertEqual(success, 2)
+
+
+# ==============================================================================
+# Tests for IssueWatcher and CLI
+# ==============================================================================
+
+from pathlib import Path
+
+from fetch_ready_issues import (
+    WatcherConfig,
+    WatcherStatus,
+    IssueWatcher,
+    IssueWatcherError,
+    create_watcher_parser,
+    watcher_main,
+    _handle_start,
+    _handle_stop,
+    _handle_status,
+    _handle_poll,
+    _handle_process,
+)
+
+
+class TestWatcherConfig(unittest.TestCase):
+    """Tests for WatcherConfig dataclass."""
+
+    def test_default_config(self):
+        """Test WatcherConfig with default values."""
+        config = WatcherConfig()
+        self.assertEqual(config.label, "ready")
+        self.assertEqual(config.poll_interval, 60.0)
+        self.assertEqual(config.store_dir, ".ralph/issues")
+        self.assertEqual(config.queue_dir, ".ralph/queue")
+        self.assertEqual(config.pid_file, ".ralph/watcher.pid")
+        self.assertEqual(config.log_file, ".ralph/watcher.log")
+        self.assertEqual(config.agent_name, "claude")
+        self.assertTrue(config.enable_hooks)
+        self.assertFalse(config.mark_github_issues)
+        self.assertTrue(config.auto_process)
+
+    def test_custom_config(self):
+        """Test WatcherConfig with custom values."""
+        config = WatcherConfig(
+            label="custom",
+            poll_interval=30.0,
+            store_dir="/custom/store",
+            queue_dir="/custom/queue",
+            pid_file="/custom/watcher.pid",
+            log_file="/custom/watcher.log",
+            agent_name="copilot",
+            enable_hooks=False,
+            mark_github_issues=True,
+            auto_process=False
+        )
+        self.assertEqual(config.label, "custom")
+        self.assertEqual(config.poll_interval, 30.0)
+        self.assertEqual(config.store_dir, "/custom/store")
+        self.assertEqual(config.queue_dir, "/custom/queue")
+        self.assertEqual(config.pid_file, "/custom/watcher.pid")
+        self.assertEqual(config.log_file, "/custom/watcher.log")
+        self.assertEqual(config.agent_name, "copilot")
+        self.assertFalse(config.enable_hooks)
+        self.assertTrue(config.mark_github_issues)
+        self.assertFalse(config.auto_process)
+
+
+class TestWatcherStatus(unittest.TestCase):
+    """Tests for WatcherStatus dataclass."""
+
+    def test_status_default_values(self):
+        """Test WatcherStatus with default values."""
+        status = WatcherStatus(running=False)
+        self.assertFalse(status.running)
+        self.assertIsNone(status.pid)
+        self.assertEqual(status.issues_stored, 0)
+        self.assertEqual(status.issues_pending, 0)
+        self.assertEqual(status.issues_processing, 0)
+        self.assertEqual(status.issues_completed, 0)
+        self.assertEqual(status.issues_failed, 0)
+
+    def test_status_with_values(self):
+        """Test WatcherStatus with custom values."""
+        status = WatcherStatus(
+            running=True,
+            pid=12345,
+            issues_stored=10,
+            issues_pending=3,
+            issues_processing=1,
+            issues_completed=5,
+            issues_failed=1
+        )
+        self.assertTrue(status.running)
+        self.assertEqual(status.pid, 12345)
+        self.assertEqual(status.issues_stored, 10)
+        self.assertEqual(status.issues_pending, 3)
+        self.assertEqual(status.issues_processing, 1)
+        self.assertEqual(status.issues_completed, 5)
+        self.assertEqual(status.issues_failed, 1)
+
+    def test_status_to_dict(self):
+        """Test WatcherStatus.to_dict() method."""
+        status = WatcherStatus(
+            running=True,
+            pid=12345,
+            issues_stored=10,
+            issues_pending=3,
+            issues_processing=1,
+            issues_completed=5,
+            issues_failed=1
+        )
+        result = status.to_dict()
+        self.assertEqual(result, {
+            "running": True,
+            "pid": 12345,
+            "issues_stored": 10,
+            "issues_pending": 3,
+            "issues_processing": 1,
+            "issues_completed": 5,
+            "issues_failed": 1,
+        })
+
+
+class TestIssueWatcher(unittest.TestCase):
+    """Tests for IssueWatcher class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.config = WatcherConfig(
+            store_dir=f"{self.temp_dir}/issues",
+            queue_dir=f"{self.temp_dir}/queue",
+            pid_file=f"{self.temp_dir}/watcher.pid",
+            log_file=f"{self.temp_dir}/watcher.log",
+            auto_process=False  # Disable auto-process for tests
+        )
+        self.watcher = IssueWatcher(self.config)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        try:
+            shutil.rmtree(self.temp_dir)
+        except OSError:
+            pass
+
+    def test_init_with_default_config(self):
+        """Test IssueWatcher initialization with default config."""
+        watcher = IssueWatcher()
+        self.assertIsNotNone(watcher.config)
+        self.assertIsNotNone(watcher.store)
+        self.assertIsNotNone(watcher.queue)
+        self.assertFalse(watcher.is_running)
+
+    def test_init_with_custom_config(self):
+        """Test IssueWatcher initialization with custom config."""
+        self.assertEqual(self.watcher.config.store_dir, f"{self.temp_dir}/issues")
+        self.assertEqual(self.watcher.config.queue_dir, f"{self.temp_dir}/queue")
+
+    def test_get_status_not_running(self):
+        """Test get_status when watcher is not running."""
+        status = self.watcher.get_status()
+        self.assertFalse(status.running)
+        self.assertIsNone(status.pid)
+
+    def test_get_status_with_store_data(self):
+        """Test get_status with data in store and queue."""
+        # Add some test data
+        issue = Issue(
+            number=1,
+            title="Test Issue",
+            body="Test body",
+            url="https://github.com/test/repo/issues/1",
+            labels=["ready"]
+        )
+        self.watcher.store.save(issue)
+        self.watcher.queue.enqueue(1)
+
+        status = self.watcher.get_status()
+        self.assertEqual(status.issues_stored, 1)
+        self.assertEqual(status.issues_pending, 1)
+
+    def test_read_write_pid(self):
+        """Test PID file reading and writing."""
+        import os
+
+        # Initially no PID
+        self.assertIsNone(self.watcher._read_pid())
+
+        # Write PID
+        self.watcher._write_pid()
+        pid = self.watcher._read_pid()
+        self.assertEqual(pid, os.getpid())
+
+        # Remove PID
+        self.watcher._remove_pid()
+        self.assertIsNone(self.watcher._read_pid())
+
+    def test_is_process_running_current(self):
+        """Test _is_process_running for current process."""
+        import os
+        self.assertTrue(self.watcher._is_process_running(os.getpid()))
+
+    def test_is_process_running_nonexistent(self):
+        """Test _is_process_running for non-existent process."""
+        # Use a very high PID that's unlikely to exist
+        self.assertFalse(self.watcher._is_process_running(999999))
+
+    def test_log_message(self):
+        """Test logging functionality."""
+        self.watcher._log("Test message")
+
+        # Verify log file exists and contains message
+        log_path = Path(self.config.log_file)
+        self.assertTrue(log_path.exists())
+        content = log_path.read_text(encoding='utf-8')
+        self.assertIn("Test message", content)
+
+    def test_on_new_issues_callback(self):
+        """Test _on_new_issues callback stores and enqueues issues."""
+        issues = [
+            Issue(
+                number=1,
+                title="Test Issue 1",
+                body="Body 1",
+                url="https://github.com/test/repo/issues/1",
+                labels=["ready"]
+            ),
+            Issue(
+                number=2,
+                title="Test Issue 2",
+                body="Body 2",
+                url="https://github.com/test/repo/issues/2",
+                labels=["ready"]
+            )
+        ]
+
+        self.watcher._on_new_issues(issues)
+
+        # Verify issues were stored
+        self.assertEqual(self.watcher.store.count(), 2)
+        self.assertIsNotNone(self.watcher.store.get(1))
+        self.assertIsNotNone(self.watcher.store.get(2))
+
+        # Verify issues were enqueued
+        self.assertEqual(self.watcher.queue.count(status="pending"), 2)
+
+    def test_on_poll_error_callback(self):
+        """Test _on_poll_error callback logs error."""
+        error = Exception("Test error")
+        self.watcher._on_poll_error(error)
+
+        # Verify error was logged
+        log_path = Path(self.config.log_file)
+        self.assertTrue(log_path.exists())
+        content = log_path.read_text(encoding='utf-8')
+        self.assertIn("Polling error", content)
+        self.assertIn("Test error", content)
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_once_no_new_issues(self, mock_fetch):
+        """Test poll_once when no new issues exist."""
+        mock_fetch.return_value = []
+
+        new_issues = self.watcher.poll_once()
+
+        self.assertEqual(new_issues, [])
+        mock_fetch.assert_called_once_with(label="ready")
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_once_with_new_issues(self, mock_fetch):
+        """Test poll_once detects new issues."""
+        mock_fetch.return_value = [
+            Issue(
+                number=1,
+                title="New Issue",
+                body="Body",
+                url="https://github.com/test/repo/issues/1",
+                labels=["ready"]
+            )
+        ]
+
+        new_issues = self.watcher.poll_once()
+
+        self.assertEqual(len(new_issues), 1)
+        self.assertEqual(new_issues[0].number, 1)
+        # Verify it was stored
+        self.assertIsNotNone(self.watcher.store.get(1))
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_once_skips_existing_issues(self, mock_fetch):
+        """Test poll_once skips issues already in store."""
+        # Pre-store an issue
+        issue = Issue(
+            number=1,
+            title="Existing Issue",
+            body="Body",
+            url="https://github.com/test/repo/issues/1",
+            labels=["ready"]
+        )
+        self.watcher.store.save(issue)
+
+        # Mock returns same issue
+        mock_fetch.return_value = [issue]
+
+        new_issues = self.watcher.poll_once()
+
+        self.assertEqual(new_issues, [])
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_once_handles_error(self, mock_fetch):
+        """Test poll_once propagates GitHubCLIError."""
+        mock_fetch.side_effect = GitHubCLIError("Test error")
+
+        with self.assertRaises(GitHubCLIError):
+            self.watcher.poll_once()
+
+    def test_start_already_running(self):
+        """Test start returns False when already running."""
+        import os
+
+        # Simulate running watcher by writing current PID
+        self.watcher._write_pid()
+
+        # Try to start
+        result = self.watcher.start(foreground=False)
+
+        self.assertFalse(result)
+
+    def test_stop_not_running(self):
+        """Test stop returns False when not running."""
+        result = self.watcher.stop()
+        self.assertFalse(result)
+
+    def test_get_status_cleans_stale_pid(self):
+        """Test get_status removes stale PID file."""
+        # Write a fake PID that doesn't exist
+        pid_path = Path(self.config.pid_file)
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_path.write_text("999999", encoding='utf-8')
+
+        status = self.watcher.get_status()
+
+        # Should clean up stale PID
+        self.assertFalse(status.running)
+        self.assertIsNone(status.pid)
+        self.assertFalse(pid_path.exists())
+
+
+class TestWatcherParser(unittest.TestCase):
+    """Tests for watcher CLI argument parser."""
+
+    def test_parser_creation(self):
+        """Test parser creation."""
+        parser = create_watcher_parser()
+        self.assertIsNotNone(parser)
+
+    def test_parse_start_command(self):
+        """Test parsing 'start' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["start"])
+        self.assertEqual(args.command, "start")
+        self.assertEqual(args.label, "ready")
+        self.assertEqual(args.interval, 60.0)
+        self.assertEqual(args.agent, "claude")
+        self.assertFalse(args.no_hooks)
+        self.assertFalse(args.mark_issues)
+        self.assertFalse(args.no_auto_process)
+
+    def test_parse_start_with_options(self):
+        """Test parsing 'start' with options."""
+        parser = create_watcher_parser()
+        args = parser.parse_args([
+            "start",
+            "--label", "custom",
+            "--interval", "30.0",
+            "--agent", "copilot",
+            "--no-hooks",
+            "--mark-issues",
+            "--no-auto-process"
+        ])
+        self.assertEqual(args.label, "custom")
+        self.assertEqual(args.interval, 30.0)
+        self.assertEqual(args.agent, "copilot")
+        self.assertTrue(args.no_hooks)
+        self.assertTrue(args.mark_issues)
+        self.assertTrue(args.no_auto_process)
+
+    def test_parse_stop_command(self):
+        """Test parsing 'stop' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["stop"])
+        self.assertEqual(args.command, "stop")
+
+    def test_parse_status_command(self):
+        """Test parsing 'status' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["status"])
+        self.assertEqual(args.command, "status")
+        self.assertFalse(args.json_output)
+
+    def test_parse_status_with_json(self):
+        """Test parsing 'status --json'."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["status", "--json"])
+        self.assertTrue(args.json_output)
+
+    def test_parse_poll_command(self):
+        """Test parsing 'poll' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["poll"])
+        self.assertEqual(args.command, "poll")
+        self.assertEqual(args.label, "ready")
+
+    def test_parse_poll_with_label(self):
+        """Test parsing 'poll --label'."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["poll", "--label", "custom"])
+        self.assertEqual(args.label, "custom")
+
+    def test_parse_process_command(self):
+        """Test parsing 'process' command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args(["process"])
+        self.assertEqual(args.command, "process")
+        self.assertEqual(args.agent, "claude")
+        self.assertFalse(args.no_hooks)
+
+    def test_parse_no_command(self):
+        """Test parsing with no command."""
+        parser = create_watcher_parser()
+        args = parser.parse_args([])
+        self.assertIsNone(args.command)
+
+
+class TestWatcherCLI(unittest.TestCase):
+    """Tests for watcher CLI functions."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        try:
+            shutil.rmtree(self.temp_dir)
+        except OSError:
+            pass
+
+    def test_watcher_main_no_command(self):
+        """Test watcher_main with no command returns 1."""
+        with patch('sys.stdout', new_callable=StringIO):
+            result = watcher_main([])
+        self.assertEqual(result, 1)
+
+    def test_watcher_main_status(self):
+        """Test watcher_main status command."""
+        with patch('fetch_ready_issues.IssueWatcher') as MockWatcher:
+            mock_instance = MagicMock()
+            mock_instance.get_status.return_value = WatcherStatus(
+                running=False,
+                issues_stored=0,
+                issues_pending=0,
+                issues_processing=0,
+                issues_completed=0,
+                issues_failed=0
+            )
+            MockWatcher.return_value = mock_instance
+
+            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+                result = watcher_main(["status"])
+
+            self.assertEqual(result, 0)
+            output = mock_stdout.getvalue()
+            self.assertIn("stopped", output)
+
+    def test_watcher_main_status_json(self):
+        """Test watcher_main status --json command."""
+        with patch('fetch_ready_issues.IssueWatcher') as MockWatcher:
+            mock_instance = MagicMock()
+            mock_instance.get_status.return_value = WatcherStatus(
+                running=False,
+                issues_stored=5,
+                issues_pending=2,
+                issues_processing=0,
+                issues_completed=3,
+                issues_failed=0
+            )
+            MockWatcher.return_value = mock_instance
+
+            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+                result = watcher_main(["status", "--json"])
+
+            self.assertEqual(result, 0)
+            output = mock_stdout.getvalue()
+            # Should be valid JSON
+            data = json.loads(output)
+            self.assertEqual(data["issues_stored"], 5)
+            self.assertEqual(data["issues_pending"], 2)
+
+    def test_watcher_main_stop_not_running(self):
+        """Test watcher_main stop when not running."""
+        with patch('fetch_ready_issues.IssueWatcher') as MockWatcher:
+            mock_instance = MagicMock()
+            mock_instance.get_status.return_value = WatcherStatus(running=False)
+            MockWatcher.return_value = mock_instance
+
+            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+                result = watcher_main(["stop"])
+
+            self.assertEqual(result, 1)
+            output = mock_stdout.getvalue()
+            self.assertIn("not running", output)
+
+    def test_handle_status_text_output(self):
+        """Test _handle_status with text output."""
+        with patch('fetch_ready_issues.IssueWatcher') as MockWatcher:
+            mock_instance = MagicMock()
+            mock_instance.get_status.return_value = WatcherStatus(
+                running=True,
+                pid=12345,
+                issues_stored=10,
+                issues_pending=3,
+                issues_processing=1,
+                issues_completed=5,
+                issues_failed=1
+            )
+            MockWatcher.return_value = mock_instance
+
+            args = MagicMock()
+            args.json_output = False
+
+            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+                result = _handle_status(args)
+
+            self.assertEqual(result, 0)
+            output = mock_stdout.getvalue()
+            self.assertIn("running", output)
+            self.assertIn("12345", output)
+            self.assertIn("10", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_poll_no_new_issues(self, MockWatcher):
+        """Test _handle_poll when no new issues found."""
+        mock_instance = MagicMock()
+        mock_instance.poll_once.return_value = []
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.label = "ready"
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_poll(args)
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("No new issues found", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_poll_with_new_issues(self, MockWatcher):
+        """Test _handle_poll when new issues found."""
+        mock_instance = MagicMock()
+        mock_instance.poll_once.return_value = [
+            Issue(number=1, title="Test Issue", body="Body",
+                  url="https://github.com/test/repo/issues/1", labels=["ready"])
+        ]
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.label = "ready"
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_poll(args)
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("1 new issue", output)
+        self.assertIn("#1", output)
+        self.assertIn("Test Issue", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_poll_error(self, MockWatcher):
+        """Test _handle_poll with GitHub CLI error."""
+        mock_instance = MagicMock()
+        mock_instance.poll_once.side_effect = GitHubCLIError("Test error")
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.label = "ready"
+
+        with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
+            result = _handle_poll(args)
+
+        self.assertEqual(result, 1)
+        output = mock_stderr.getvalue()
+        self.assertIn("Test error", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_process_no_pending(self, MockWatcher):
+        """Test _handle_process when no pending issues."""
+        mock_queue = MagicMock()
+        mock_queue.count.return_value = 0
+        mock_instance = MagicMock()
+        mock_instance.queue = mock_queue
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.agent = "claude"
+        args.no_hooks = False
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_process(args)
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("No pending issues", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_process_success(self, MockWatcher):
+        """Test _handle_process with successful processing."""
+        from fetch_ready_issues import InvocationResult
+
+        mock_queue = MagicMock()
+        mock_queue.count.return_value = 2
+        mock_instance = MagicMock()
+        mock_instance.queue = mock_queue
+        mock_instance.process_all.return_value = (
+            [
+                InvocationResult(issue_number=1, success=True),
+                InvocationResult(issue_number=2, success=True)
+            ],
+            2,  # success_count
+            0   # failure_count
+        )
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.agent = "claude"
+        args.no_hooks = False
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_process(args)
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("2 succeeded", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_process_with_failures(self, MockWatcher):
+        """Test _handle_process with some failures."""
+        from fetch_ready_issues import InvocationResult
+
+        mock_queue = MagicMock()
+        mock_queue.count.return_value = 2
+        mock_instance = MagicMock()
+        mock_instance.queue = mock_queue
+        mock_instance.process_all.return_value = (
+            [
+                InvocationResult(issue_number=1, success=True),
+                InvocationResult(issue_number=2, success=False, error="Test failure")
+            ],
+            1,  # success_count
+            1   # failure_count
+        )
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.agent = "claude"
+        args.no_hooks = False
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_process(args)
+
+        self.assertEqual(result, 1)  # Non-zero due to failures
+        output = mock_stdout.getvalue()
+        self.assertIn("1 succeeded", output)
+        self.assertIn("1 failed", output)
+        self.assertIn("FAILED", output)
+
+    @patch('fetch_ready_issues.IssueWatcher')
+    def test_handle_start_already_running(self, MockWatcher):
+        """Test _handle_start when watcher is already running."""
+        mock_instance = MagicMock()
+        mock_instance.get_status.return_value = WatcherStatus(running=True, pid=12345)
+        MockWatcher.return_value = mock_instance
+
+        args = MagicMock()
+        args.label = "ready"
+        args.interval = 60.0
+        args.agent = "claude"
+        args.no_hooks = False
+        args.mark_issues = False
+        args.no_auto_process = False
+
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            result = _handle_start(args)
+
+        self.assertEqual(result, 1)
+        output = mock_stdout.getvalue()
+        self.assertIn("already running", output)
+
+
+class TestIssueWatcherIntegration(unittest.TestCase):
+    """Integration tests for IssueWatcher."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.config = WatcherConfig(
+            store_dir=f"{self.temp_dir}/issues",
+            queue_dir=f"{self.temp_dir}/queue",
+            pid_file=f"{self.temp_dir}/watcher.pid",
+            log_file=f"{self.temp_dir}/watcher.log",
+            auto_process=False
+        )
+        self.watcher = IssueWatcher(self.config)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        try:
+            shutil.rmtree(self.temp_dir)
+        except OSError:
+            pass
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_and_queue_integration(self, mock_fetch):
+        """Test full poll and queue flow."""
+        # Mock GitHub returning issues
+        mock_fetch.return_value = [
+            Issue(number=1, title="Issue 1", body="Body 1",
+                  url="https://github.com/test/repo/issues/1", labels=["ready"]),
+            Issue(number=2, title="Issue 2", body="Body 2",
+                  url="https://github.com/test/repo/issues/2", labels=["ready"]),
+        ]
+
+        # Poll for issues
+        new_issues = self.watcher.poll_once()
+
+        # Verify issues were detected
+        self.assertEqual(len(new_issues), 2)
+
+        # Verify issues are in store
+        self.assertEqual(self.watcher.store.count(), 2)
+        self.assertIsNotNone(self.watcher.store.get(1))
+        self.assertIsNotNone(self.watcher.store.get(2))
+
+        # Verify issues are queued
+        self.assertEqual(self.watcher.queue.count(status="pending"), 2)
+
+        # Verify status reflects state
+        status = self.watcher.get_status()
+        self.assertEqual(status.issues_stored, 2)
+        self.assertEqual(status.issues_pending, 2)
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_poll_idempotent(self, mock_fetch):
+        """Test that polling same issues doesn't duplicate."""
+        issues = [
+            Issue(number=1, title="Issue 1", body="Body 1",
+                  url="https://github.com/test/repo/issues/1", labels=["ready"]),
+        ]
+        mock_fetch.return_value = issues
+
+        # First poll
+        new_issues_1 = self.watcher.poll_once()
+        self.assertEqual(len(new_issues_1), 1)
+
+        # Second poll with same issues
+        new_issues_2 = self.watcher.poll_once()
+        self.assertEqual(len(new_issues_2), 0)
+
+        # Store should still have only 1
+        self.assertEqual(self.watcher.store.count(), 1)
+
+    @patch('fetch_ready_issues.invoke_planner')
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    def test_full_pipeline(self, mock_fetch, mock_invoke):
+        """Test full pipeline from poll to process."""
+        # Setup mocks
+        mock_fetch.return_value = [
+            Issue(number=1, title="Feature Request", body="Implement feature X",
+                  url="https://github.com/test/repo/issues/1", labels=["ready"]),
+        ]
+        mock_invoke.return_value = True
+
+        # 1. Poll for issues
+        self.watcher.poll_once()
+
+        # 2. Verify queued
+        self.assertEqual(self.watcher.queue.count(status="pending"), 1)
+
+        # 3. Process all
+        results, success, failure = self.watcher.process_all()
+
+        # 4. Verify results
+        self.assertEqual(len(results), 1)
+        self.assertEqual(success, 1)
+        self.assertEqual(failure, 0)
+
+        # 5. Verify completed
+        self.assertEqual(self.watcher.queue.count(status="completed"), 1)
+
+        # 6. Verify planner was called with correct prompt
+        mock_invoke.assert_called_once()
+        call_args = mock_invoke.call_args
+        self.assertIn("TASK-001", call_args[1]["user_intent"])
+        self.assertIn("Feature Request", call_args[1]["user_intent"])
 
 
 if __name__ == "__main__":

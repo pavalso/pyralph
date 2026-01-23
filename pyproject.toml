@@ -16,6 +16,7 @@ dependencies = ["pyyaml>=6.0"]
 [project.scripts]
 ralph = "ralph:main"
 fetch-issues = "fetch_ready_issues:main"
+ralph-watch = "fetch_ready_issues:watcher_main"
 
 [tool.setuptools]
 packages = ["agents"]
