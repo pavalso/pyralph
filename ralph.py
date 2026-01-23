@@ -401,7 +401,7 @@ OBJECTIVE: {task['description']}
 CONTEXT FILES (paths only, under .ralph/memory/):
 {memory_tree}
 
-USER PREFERENCES & WORKFLOW (soft constraints; overrides defaults):
+USER PREFERENCES & WORKFLOW (FOLLOW STRICTLY):
 {user_context}
 
 DEFAULT CAPABILITIES:
@@ -409,6 +409,7 @@ DEFAULT CAPABILITIES:
 - You may run local build/test commands as part of verification.
 - Do NOT perform any version control (e.g., git), networking, or package installation
   unless explicitly requested in USER PREFERENCES & WORKFLOW above.
+- You must manage all your state via the .ralph/memory/ wiki files.
 
 EXECUTION FLOW (follow exactly):
 1) PLAN:
@@ -425,12 +426,15 @@ EXECUTION FLOW (follow exactly):
    - Otherwise, print exactly one line:
      STATUS: FAILURE - <brief reason>
 
+OUTPUT RULES:
+- Do NOT print file contents to stdout.
+- Only print the STATUS line as specified above.
+
 NOTES:
 - Keep output minimal and task-focused.
-- If USER PREFERENCES & WORKFLOW requires special steps (e.g., git actions, environment setup),
-  follow them explicitly; otherwise do not perform them.
 - Do not include code fences around shell commands or file contents.
 - For any ambiguity make assumptions. Never ask for user feedback.
+- Save notes, thoughts, or plans to .ralph/memory/ as needed for future tasks.
 
 RETRY CONTEXT (from previous attempt, if any):
 {prev_errors}"""
