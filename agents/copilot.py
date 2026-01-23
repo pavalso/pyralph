@@ -2,7 +2,7 @@
 
 import subprocess
 import shutil
-from typing import Tuple
+from typing import Optional, Tuple
 from .base import BaseAgent, AgentError
 
 class GithubAgent(BaseAgent):
@@ -35,7 +35,7 @@ class GithubAgent(BaseAgent):
         """Check if Claude CLI is available."""
         return shutil.which("copilot") is not None
 
-    def run(self, prompt: str, tag: str) -> Tuple[bool, str]:
+    def run(self, prompt: str, tag: str) -> Tuple[bool, str, Optional[AgentError]]:
         """
         Execute a prompt with Copilot CLI.
 
@@ -44,7 +44,7 @@ class GithubAgent(BaseAgent):
             tag: A tag for logging/tracking purposes
 
         Returns:
-            Tuple of (success: bool, output: str)
+            Tuple of (success: bool, output: str, error: Optional[AgentError])
         """
         if self._logger:
             self._logger.file_log(prompt, "PROMPT", tag)
@@ -91,7 +91,15 @@ class GithubAgent(BaseAgent):
                             self._logger.debug(f"STDOUT:\n{result.stdout}", "RED")
                             self._logger.debug(f"STDERR:\n{result.stderr}", "RED")
                             self._logger.debug("=" * 40, "RED")
-                    return False, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+                    error = AgentError(
+                        exception_type="CLIError",
+                        message=f"Copilot CLI exited with code {result.returncode}",
+                        stack_trace=f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
+                        timestamp=__import__('datetime').datetime.now().isoformat(),
+                        agent_name=self.get_name(),
+                        task_id=tag,
+                    )
+                    return False, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}", error
 
                 if self._logger:
                     self._logger.file_log(log_content, "RESPONSE", tag)
@@ -102,7 +110,7 @@ class GithubAgent(BaseAgent):
                         self._logger.debug(result.stdout, "GREEN")
                         self._logger.debug("=" * 40, "GREEN")
 
-                return True, result.stdout
+                return True, result.stdout, None
 
             except Exception as e:
                 error = AgentError.from_exception(e, self.get_name(), tag)
@@ -112,4 +120,4 @@ class GithubAgent(BaseAgent):
                         self._logger.debug(f"=== COPILOT EXCEPTION [{tag}] ===", "RED")
                         self._logger.debug(error.format_log_entry(), "RED")
                         self._logger.debug("=" * 40, "RED")
-                return False, error.format_log_entry()
+                return False, error.format_log_entry(), error

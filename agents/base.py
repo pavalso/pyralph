@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Tuple
+from typing import Optional, Tuple
 import traceback
 
 
@@ -47,7 +47,7 @@ class BaseAgent(ABC):
     """Abstract base class for all Ralph agents."""
 
     @abstractmethod
-    def run(self, prompt: str, tag: str) -> Tuple[bool, str]:
+    def run(self, prompt: str, tag: str) -> Tuple[bool, str, Optional[AgentError]]:
         """
         Execute a prompt with the agent.
 
@@ -56,9 +56,10 @@ class BaseAgent(ABC):
             tag: A tag for logging/tracking purposes
 
         Returns:
-            Tuple of (success: bool, output: str)
+            Tuple of (success: bool, output: str, error: Optional[AgentError])
             - success: True if the agent executed successfully, False otherwise
             - output: The agent's response or error message
+            - error: Structured AgentError if execution failed, None on success
         """
         pass
 

@@ -12,6 +12,7 @@ from typing import Tuple
 
 # Import agents
 from agents import get_agent, list_agents
+from agents.base import AgentError
 
 # ==============================================================================
 # CONFIGURATION
@@ -286,7 +287,7 @@ OUTPUT RULES:
 - You may print a one-line confirmation like:
   STATUS: CREATED .ralph/memory/architecture.md"""
 
-        success, _ = self.agent.run(prompt, "ARCHITECT")
+        success, _, _ = self.agent.run(prompt, "ARCHITECT")
         if not success or not any(CONF.MEMORY_DIR.iterdir()):
             Logger.info("⚠️ Architect failed.", "RED")
             sys.exit(1)
@@ -336,7 +337,7 @@ SCHEMA (example shape, not a template):
 }}"""
         
         for attempt in range(3):
-            success, raw = self.agent.run(prompt, "PLANNER")
+            success, raw, _ = self.agent.run(prompt, "PLANNER")
             if not success: continue
 
             try:
@@ -435,10 +436,10 @@ NOTES:
 RETRY CONTEXT (from previous attempt, if any):
 {prev_errors}"""
 
-            success, output = self.agent.run(prompt, f"WORKER-{task['id']}")
+            success, output, agent_error = self.agent.run(prompt, f"WORKER-{task['id']}")
 
             if not success:
-                self._record_failure(retries, "CLI Crash", output)
+                self._record_failure(retries, "CLI Crash", output, agent_error=agent_error)
                 retries += 1
                 continue
 
@@ -456,17 +457,42 @@ RETRY CONTEXT (from previous attempt, if any):
                     return
                 else:
                     Logger.info("   🛑 Agent Hallucinated Success.", "RED")
-                    self._record_failure(retries, "Verification Failed", output[-1000:])
+                    error = AgentError(
+                        exception_type="VerificationError",
+                        message=f"Test command '{test_cmd}' failed with exit code {code}",
+                        stack_trace=f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}",
+                        timestamp=datetime.datetime.now().isoformat(),
+                        agent_name=self.agent.get_name(),
+                        task_id=task['id'],
+                    )
+                    self._record_failure(retries, "Verification Failed", output[-1000:], agent_error=error)
             else:
-                self._record_failure(retries, "Agent Reported Failure", output[-1000:])
+                error = AgentError(
+                    exception_type="AgentReportedFailure",
+                    message="Agent did not report STATUS: SUCCESS",
+                    stack_trace=f"Agent output (last 2000 chars):\n{output[-2000:]}",
+                    timestamp=datetime.datetime.now().isoformat(),
+                    agent_name=self.agent.get_name(),
+                    task_id=task['id'],
+                )
+                self._record_failure(retries, "Agent Reported Failure", output[-1000:], agent_error=error)
 
             retries += 1
 
         Logger.info(f"🛑 Max retries for {task['id']}.", "RED")
         sys.exit(1)
 
-    def _record_failure(self, retry, reason, detail):
-        msg = f"Attempt {retry+1} Failed: {reason}\n{detail}"
+    def _record_failure(self, retry, reason, detail, agent_error=None):
+        if agent_error:
+            msg = (
+                f"Attempt {retry+1} Failed: {reason}\n"
+                f"--- Structured Error Context ---\n"
+                f"{agent_error.format_log_entry()}\n"
+                f"--- Agent Output (last 1000 chars) ---\n"
+                f"{detail}"
+            )
+        else:
+            msg = f"Attempt {retry+1} Failed: {reason}\n{detail}"
         CONF.PROGRESS_FILE.write_text(msg, encoding='utf-8')
         Logger.file_log(msg, "FAILURE_RECORD", f"RETRY-{retry+1}")
         Logger.info(f"   ⚠️ Retry {retry+1}/{CONF.MAX_RETRIES}: {reason}", "RED")
