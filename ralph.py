@@ -56,6 +56,14 @@ class Logger:
     no_color = False
     quiet = False
     no_emoji = False
+    # Log level control: debug=10, info=20, warn=30, error=40
+    LOG_LEVELS = {"debug": 10, "info": 20, "warn": 30, "error": 40}
+    log_level = 20  # Default: info
+    # Output format control
+    json_output = False
+    ndjson_output = False
+    # Custom log file path (None = use default CONF.LOG_FILE)
+    custom_log_file: Optional[Path] = None
 
     @staticmethod
     def set_no_color(enabled: bool) -> None:
@@ -66,12 +74,23 @@ class Logger:
         """Set verbose mode (backwards compatible, sets verbosity to 1 or 0)."""
         Logger.verbose = enabled
         Logger.verbosity = 1 if enabled else 0
+        # Auto-set log_level to debug when verbose is enabled for backwards compat
+        if enabled:
+            Logger.log_level = Logger.LOG_LEVELS["debug"]
 
     @staticmethod
     def set_verbosity(level: int) -> None:
-        """Set verbosity level (0=normal, 1=verbose, 2=very verbose, 3=debug)."""
+        """Set verbosity level (0=normal, 1=verbose, 2=very verbose, 3=debug).
+
+        When verbosity >= 1, log_level is automatically set to debug to allow
+        debug/trace/ultra messages to appear. This maintains backwards compatibility
+        with existing -v/-vv/-vvv behavior.
+        """
         Logger.verbosity = max(0, min(3, level))
         Logger.verbose = Logger.verbosity >= 1
+        # Auto-set log_level to debug when verbosity is enabled for backwards compat
+        if Logger.verbosity >= 1:
+            Logger.log_level = Logger.LOG_LEVELS["debug"]
 
     @staticmethod
     def set_quiet(enabled: bool) -> None:
@@ -82,6 +101,48 @@ class Logger:
     def set_no_emoji(enabled: bool) -> None:
         """Set no-emoji mode (replaces emojis with text equivalents)."""
         Logger.no_emoji = enabled
+
+    @staticmethod
+    def set_log_level(level: str) -> None:
+        """Set log level (debug, info, warn, error)."""
+        if level in Logger.LOG_LEVELS:
+            Logger.log_level = Logger.LOG_LEVELS[level]
+
+    @staticmethod
+    def set_json_output(enabled: bool) -> None:
+        """Enable JSON output format."""
+        Logger.json_output = enabled
+
+    @staticmethod
+    def set_ndjson_output(enabled: bool) -> None:
+        """Enable newline-delimited JSON output format."""
+        Logger.ndjson_output = enabled
+
+    @staticmethod
+    def set_log_file(path: Optional[str]) -> None:
+        """Set custom log file path."""
+        Logger.custom_log_file = Path(path) if path else None
+
+    @staticmethod
+    def get_log_file() -> Path:
+        """Get the effective log file path (custom or default)."""
+        return Logger.custom_log_file if Logger.custom_log_file else CONF.LOG_FILE
+
+    @staticmethod
+    def _should_log(level: int) -> bool:
+        """Check if a message at the given level should be logged."""
+        return level >= Logger.log_level
+
+    @staticmethod
+    def _format_json_message(msg: str, level: str, **kwargs) -> str:
+        """Format a log message as JSON."""
+        data = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "level": level,
+            "message": msg,
+            **kwargs
+        }
+        return json.dumps(data)
 
     @staticmethod
     def _strip_emoji(msg: str) -> str:
@@ -113,45 +174,66 @@ class Logger:
 
     @staticmethod
     def info(msg: str, color: str = "RESET") -> None:
-        """Print info message (suppressed in quiet mode)."""
-        if not Logger.quiet:
-            Logger._print_colored(msg, color)
+        """Print info message (suppressed in quiet mode or if log level > info)."""
+        if not Logger.quiet and Logger._should_log(Logger.LOG_LEVELS["info"]):
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(msg, "info"))
+            else:
+                Logger._print_colored(msg, color)
 
     @staticmethod
     def debug(msg: str, color: str = "RESET") -> None:
-        """Print debug message (requires verbosity >= 1)."""
-        if Logger.verbosity >= 1 and not Logger.quiet:
-            Logger._print_colored(msg, color, prefix="[DEBUG] ")
+        """Print debug message (requires verbosity >= 1 and log level <= debug)."""
+        if Logger.verbosity >= 1 and not Logger.quiet and Logger._should_log(Logger.LOG_LEVELS["debug"]):
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(msg, "debug"))
+            else:
+                Logger._print_colored(msg, color, prefix="[DEBUG] ")
 
     @staticmethod
     def trace(msg: str, color: str = "RESET") -> None:
-        """Print trace message (requires verbosity >= 2)."""
-        if Logger.verbosity >= 2 and not Logger.quiet:
-            Logger._print_colored(msg, color, prefix="[TRACE] ")
+        """Print trace message (requires verbosity >= 2 and log level <= debug)."""
+        if Logger.verbosity >= 2 and not Logger.quiet and Logger._should_log(Logger.LOG_LEVELS["debug"]):
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(msg, "trace"))
+            else:
+                Logger._print_colored(msg, color, prefix="[TRACE] ")
 
     @staticmethod
     def ultra(msg: str, color: str = "RESET") -> None:
-        """Print ultra-verbose message (requires verbosity >= 3)."""
-        if Logger.verbosity >= 3 and not Logger.quiet:
-            Logger._print_colored(msg, color, prefix="[ULTRA] ")
+        """Print ultra-verbose message (requires verbosity >= 3 and log level <= debug)."""
+        if Logger.verbosity >= 3 and not Logger.quiet and Logger._should_log(Logger.LOG_LEVELS["debug"]):
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(msg, "ultra"))
+            else:
+                Logger._print_colored(msg, color, prefix="[ULTRA] ")
 
     @staticmethod
     def warning(msg: str) -> None:
-        """Print warning message (shown even in quiet mode)."""
-        Logger._print_colored(msg, "YELLOW", prefix="[WARNING] ")
+        """Print warning message (shown even in quiet mode, respects log level)."""
+        if Logger._should_log(Logger.LOG_LEVELS["warn"]):
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(msg, "warn"))
+            else:
+                Logger._print_colored(msg, "YELLOW", prefix="[WARNING] ")
 
     @staticmethod
     def error(msg: str) -> None:
-        """Print error message (always shown)."""
-        Logger._print_colored(msg, "RED", prefix="[ERROR] ")
+        """Print error message (always shown, respects log level)."""
+        if Logger._should_log(Logger.LOG_LEVELS["error"]):
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(msg, "error"))
+            else:
+                Logger._print_colored(msg, "RED", prefix="[ERROR] ")
 
     @staticmethod
     def file_log(content: str, type: str, tag: str = "UNKNOWN") -> None:
         icons = {"PROMPT": "➡️", "RESPONSE": "⬅️", "ERROR": "❌", "INFO": "ℹ️"}
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_file = Logger.get_log_file()
         entry = f"\n{'='*60}\n{icons.get(type, '❓')} [{ts}] TYPE: {type} | TAG: {tag}\n{'='*60}\n{content}\n"
         try:
-            with open(CONF.LOG_FILE, "a", encoding="utf-8") as f: f.write(entry)
+            with open(log_file, "a", encoding="utf-8") as f: f.write(entry)
         except Exception: print(f"⚠️ Log Error")
 
 class Shell:
@@ -413,7 +495,10 @@ class RalphOrchestrator:
                  git_branch: Optional[str] = None, write_allow: Optional[List[str]] = None,
                  write_deny: Optional[List[str]] = None, dry_run: bool = False,
                  model: Optional[str] = None, temperature: Optional[float] = None,
-                 max_tokens: Optional[int] = None, seed: Optional[int] = None) -> None:
+                 max_tokens: Optional[int] = None, seed: Optional[int] = None,
+                 log_file: Optional[str] = None, log_level: Optional[str] = None,
+                 json_output: bool = False, ndjson_output: bool = False,
+                 print_prd: bool = False, prd_out: Optional[str] = None, archive: bool = True) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -459,6 +544,14 @@ class RalphOrchestrator:
         self._write_allow = write_allow
         self._write_deny = write_deny
         self._dry_run = dry_run
+        # Store I/O, logging and output flags
+        self._log_file = log_file
+        self._log_level = log_level
+        self._json_output = json_output
+        self._ndjson_output = ndjson_output
+        self._print_prd_flag = print_prd
+        self._prd_out = prd_out
+        self._archive = archive
 
     def run_architect(self, user_intent: str) -> None:
         """
@@ -827,6 +920,10 @@ class RalphOrchestrator:
 
     def _archive_prd(self) -> None:
         if not CONF.PRD_FILE.exists(): return
+        # Respect --archive flag (default: True)
+        if not self._archive:
+            Logger.debug("Skipping PRD archival (--no-archive)")
+            return
         ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         dest = CONF.ARCHIVE_DIR / f"prd_{ts}.json"
         shutil.move(str(CONF.PRD_FILE), str(dest))
@@ -860,6 +957,40 @@ class RalphOrchestrator:
             Logger.info(f"📋 Memory exported to {out_path}", "MAGENTA")
         else:
             Logger.warning("No memory files to export.")
+
+    def _print_prd(self) -> None:
+        """
+        Print the PRD contents to stdout.
+
+        Outputs the PRD as formatted JSON for inspection without execution.
+        """
+        if not CONF.PRD_FILE.exists():
+            Logger.error("No PRD file found. Run planner first.")
+            sys.exit(1)
+        prd_content = CONF.PRD_FILE.read_text(encoding='utf-8')
+        if self._json_output or self._ndjson_output:
+            # For JSON/NDJSON mode, output as-is (already JSON)
+            print(prd_content)
+        else:
+            # Pretty print with indentation
+            prd_data = json.loads(prd_content)
+            print(json.dumps(prd_data, indent=2))
+
+    def _export_prd(self, output_path: str) -> None:
+        """
+        Export the PRD to a specified file.
+
+        Args:
+            output_path: Path to write the PRD content
+        """
+        if not CONF.PRD_FILE.exists():
+            Logger.error("No PRD file found. Run planner first.")
+            sys.exit(1)
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        prd_content = CONF.PRD_FILE.read_text(encoding='utf-8')
+        out_path.write_text(prd_content, encoding='utf-8')
+        Logger.info(f"📋 PRD exported to {out_path}", "MAGENTA")
 
     def _validate_memory_on_startup(self) -> None:
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()): return
@@ -957,7 +1088,20 @@ class RalphOrchestrator:
         Args:
             phase: Which phase to run ("architect", "planner", "execute", or "all")
             accept_all: If True, skip user confirmation prompts
+
+        Respects the following flags:
+        - --print-prd: Print PRD contents and exit without executing
+        - --prd-out: Export PRD to specified file and continue
         """
+        # Handle --print-prd flag: print PRD and exit
+        if self._print_prd_flag:
+            self._print_prd()
+            return
+
+        # Handle --prd-out flag: export PRD to file
+        if self._prd_out:
+            self._export_prd(self._prd_out)
+
         Logger.info(f"🤖 Ralph {self.agent.get_name()} Agent active in: {CONF.BASE_DIR}", "GREEN")
 
         if phase in ("architect", "planner", "execute"):
@@ -1028,6 +1172,20 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, metavar="TEMP", help="Sampling temperature (0.0-1.0) for response generation")
     parser.add_argument("--max-tokens", type=int, metavar="N", help="Maximum number of tokens in the LLM response")
     parser.add_argument("--seed", type=int, metavar="N", help="Random seed for reproducible outputs")
+    # I/O, logging and output flags
+    parser.add_argument("--log-file", type=str, metavar="FILE", help="Redirect log output to specified file")
+    parser.add_argument("--log-level", type=str, choices=["debug", "info", "warn", "error"], metavar="LEVEL", help="Set log level (debug, info, warn, error)")
+    # Output format flags (mutually exclusive)
+    output_format_group = parser.add_mutually_exclusive_group()
+    output_format_group.add_argument("--json", dest="json_output", action="store_true", help="Output in JSON format")
+    output_format_group.add_argument("--ndjson", dest="ndjson_output", action="store_true", help="Output in newline-delimited JSON format")
+    # PRD output flags
+    parser.add_argument("--print-prd", action="store_true", help="Print PRD contents and exit without executing")
+    parser.add_argument("--prd-out", type=str, metavar="FILE", help="Export PRD to specified file")
+    # Archive control flags (mutually exclusive)
+    archive_group = parser.add_mutually_exclusive_group()
+    archive_group.add_argument("--archive", action="store_true", dest="archive_enabled", default=True, help="Archive PRD after execution (default)")
+    archive_group.add_argument("--no-archive", action="store_false", dest="archive_enabled", help="Skip PRD archival after execution")
     args = parser.parse_args()
 
     # Configure logger settings
@@ -1040,6 +1198,15 @@ def main() -> None:
     elif args.color:
         Logger.set_no_color(False)
     # else: leave default (colors enabled)
+    # Configure I/O and output format settings
+    if args.log_file:
+        Logger.set_log_file(args.log_file)
+    if args.log_level:
+        Logger.set_log_level(args.log_level)
+    if args.json_output:
+        Logger.set_json_output(True)
+    if args.ndjson_output:
+        Logger.set_ndjson_output(True)
 
     # Determine hook configuration
     enable_hooks = not args.no_hooks
@@ -1079,7 +1246,14 @@ def main() -> None:
         model=args.model,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
-        seed=args.seed
+        seed=args.seed,
+        log_file=args.log_file,
+        log_level=args.log_level,
+        json_output=args.json_output,
+        ndjson_output=args.ndjson_output,
+        print_prd=args.print_prd,
+        prd_out=args.prd_out,
+        archive=args.archive_enabled
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

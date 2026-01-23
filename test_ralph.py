@@ -162,6 +162,9 @@ class TestLogger(unittest.TestCase):
         Logger.verbosity = 0
         Logger.quiet = False
         Logger.no_emoji = False
+        Logger.log_level = 20  # Reset to default (info)
+        Logger.json_output = False
+        Logger.ndjson_output = False
         self.temp_dir = tempfile.mkdtemp()
         self.log_file = Path(self.temp_dir) / "test_log.txt"
         self.original_log_file = CONF.LOG_FILE
@@ -176,6 +179,9 @@ class TestLogger(unittest.TestCase):
         Logger.verbosity = 0
         Logger.quiet = False
         Logger.no_emoji = False
+        Logger.log_level = 20  # Reset to default (info)
+        Logger.json_output = False
+        Logger.ndjson_output = False
         CONF.LOG_FILE = self.original_log_file
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -3168,6 +3174,515 @@ class TestModelPromptingFlagsCLI(unittest.TestCase):
                 main()
             call_kwargs = mock_orchestrator.call_args[1]
             self.assertAlmostEqual(call_kwargs['temperature'], 0.123)
+
+
+# ==============================================================================
+# I/O, LOGGING AND OUTPUT FLAGS TESTS (TASK-008)
+# ==============================================================================
+
+
+class TestLoggerLogLevel(unittest.TestCase):
+    """Tests for Logger log level functionality."""
+
+    def setUp(self):
+        self.original_log_level = Logger.log_level
+        self.original_verbosity = Logger.verbosity
+        self.original_quiet = Logger.quiet
+        self.original_json_output = Logger.json_output
+        self.original_ndjson_output = Logger.ndjson_output
+        self.held_output = StringIO()
+        self.original_stdout = sys.stdout
+
+    def tearDown(self):
+        Logger.log_level = self.original_log_level
+        Logger.verbosity = self.original_verbosity
+        Logger.quiet = self.original_quiet
+        Logger.json_output = self.original_json_output
+        Logger.ndjson_output = self.original_ndjson_output
+        sys.stdout = self.original_stdout
+
+    def test_set_log_level_debug(self):
+        """Test setting log level to debug."""
+        Logger.set_log_level("debug")
+        self.assertEqual(Logger.log_level, Logger.LOG_LEVELS["debug"])
+
+    def test_set_log_level_info(self):
+        """Test setting log level to info."""
+        Logger.set_log_level("info")
+        self.assertEqual(Logger.log_level, Logger.LOG_LEVELS["info"])
+
+    def test_set_log_level_warn(self):
+        """Test setting log level to warn."""
+        Logger.set_log_level("warn")
+        self.assertEqual(Logger.log_level, Logger.LOG_LEVELS["warn"])
+
+    def test_set_log_level_error(self):
+        """Test setting log level to error."""
+        Logger.set_log_level("error")
+        self.assertEqual(Logger.log_level, Logger.LOG_LEVELS["error"])
+
+    def test_set_log_level_invalid_ignored(self):
+        """Test that invalid log level is ignored."""
+        original = Logger.log_level
+        Logger.set_log_level("invalid")
+        self.assertEqual(Logger.log_level, original)
+
+    def test_info_respects_log_level_warn(self):
+        """Test that info messages are suppressed when log level is warn."""
+        sys.stdout = self.held_output
+        Logger.set_log_level("warn")
+        Logger.info("This should not appear")
+        self.assertEqual(self.held_output.getvalue(), "")
+
+    def test_warning_respects_log_level_error(self):
+        """Test that warning messages are suppressed when log level is error."""
+        sys.stdout = self.held_output
+        Logger.set_log_level("error")
+        Logger.warning("This should not appear")
+        self.assertEqual(self.held_output.getvalue(), "")
+
+    def test_error_shown_at_all_levels(self):
+        """Test that error messages are shown at all log levels."""
+        Logger.set_no_color(True)
+        for level in ["debug", "info", "warn", "error"]:
+            self.held_output = StringIO()
+            sys.stdout = self.held_output
+            Logger.set_log_level(level)
+            Logger.error("Error message")
+            self.assertIn("Error message", self.held_output.getvalue())
+
+
+class TestLoggerJsonOutput(unittest.TestCase):
+    """Tests for Logger JSON output functionality."""
+
+    def setUp(self):
+        self.original_json_output = Logger.json_output
+        self.original_ndjson_output = Logger.ndjson_output
+        self.original_log_level = Logger.log_level
+        self.original_quiet = Logger.quiet
+        self.original_verbosity = Logger.verbosity
+        self.held_output = StringIO()
+        self.original_stdout = sys.stdout
+
+    def tearDown(self):
+        Logger.json_output = self.original_json_output
+        Logger.ndjson_output = self.original_ndjson_output
+        Logger.log_level = self.original_log_level
+        Logger.quiet = self.original_quiet
+        Logger.verbosity = self.original_verbosity
+        sys.stdout = self.original_stdout
+
+    def test_set_json_output(self):
+        """Test enabling JSON output."""
+        Logger.set_json_output(True)
+        self.assertTrue(Logger.json_output)
+        Logger.set_json_output(False)
+        self.assertFalse(Logger.json_output)
+
+    def test_set_ndjson_output(self):
+        """Test enabling NDJSON output."""
+        Logger.set_ndjson_output(True)
+        self.assertTrue(Logger.ndjson_output)
+        Logger.set_ndjson_output(False)
+        self.assertFalse(Logger.ndjson_output)
+
+    def test_info_outputs_json_when_enabled(self):
+        """Test that info outputs JSON when json_output is enabled."""
+        sys.stdout = self.held_output
+        Logger.set_json_output(True)
+        Logger.info("Test message")
+        output = self.held_output.getvalue()
+        data = json.loads(output.strip())
+        self.assertEqual(data["level"], "info")
+        self.assertEqual(data["message"], "Test message")
+        self.assertIn("timestamp", data)
+
+    def test_warning_outputs_json_when_enabled(self):
+        """Test that warning outputs JSON when json_output is enabled."""
+        sys.stdout = self.held_output
+        Logger.set_json_output(True)
+        Logger.warning("Test warning")
+        output = self.held_output.getvalue()
+        data = json.loads(output.strip())
+        self.assertEqual(data["level"], "warn")
+        self.assertEqual(data["message"], "Test warning")
+
+    def test_error_outputs_json_when_enabled(self):
+        """Test that error outputs JSON when json_output is enabled."""
+        sys.stdout = self.held_output
+        Logger.set_json_output(True)
+        Logger.error("Test error")
+        output = self.held_output.getvalue()
+        data = json.loads(output.strip())
+        self.assertEqual(data["level"], "error")
+        self.assertEqual(data["message"], "Test error")
+
+    def test_debug_outputs_json_when_enabled(self):
+        """Test that debug outputs JSON when json_output is enabled."""
+        sys.stdout = self.held_output
+        Logger.set_json_output(True)
+        Logger.set_verbosity(1)  # Enable debug output
+        Logger.debug("Test debug")
+        output = self.held_output.getvalue()
+        data = json.loads(output.strip())
+        self.assertEqual(data["level"], "debug")
+        self.assertEqual(data["message"], "Test debug")
+
+    def test_ndjson_output_works_like_json(self):
+        """Test that ndjson_output produces JSON output."""
+        sys.stdout = self.held_output
+        Logger.set_ndjson_output(True)
+        Logger.info("Test message")
+        output = self.held_output.getvalue()
+        data = json.loads(output.strip())
+        self.assertEqual(data["level"], "info")
+
+
+class TestLoggerCustomLogFile(unittest.TestCase):
+    """Tests for Logger custom log file functionality."""
+
+    def setUp(self):
+        self.original_custom_log_file = Logger.custom_log_file
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        Logger.custom_log_file = self.original_custom_log_file
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_set_log_file(self):
+        """Test setting custom log file path."""
+        Logger.set_log_file("/tmp/test.log")
+        self.assertEqual(Logger.custom_log_file, Path("/tmp/test.log"))
+
+    def test_set_log_file_none(self):
+        """Test clearing custom log file path."""
+        Logger.set_log_file("/tmp/test.log")
+        Logger.set_log_file(None)
+        self.assertIsNone(Logger.custom_log_file)
+
+    def test_get_log_file_returns_custom(self):
+        """Test that get_log_file returns custom path when set."""
+        Logger.set_log_file("/tmp/custom.log")
+        self.assertEqual(Logger.get_log_file(), Path("/tmp/custom.log"))
+
+    def test_get_log_file_returns_default(self):
+        """Test that get_log_file returns default when no custom set."""
+        Logger.set_log_file(None)
+        self.assertEqual(Logger.get_log_file(), CONF.LOG_FILE)
+
+    def test_file_log_uses_custom_path(self):
+        """Test that file_log writes to custom log file."""
+        custom_log = Path(self.temp_dir) / "custom_log.txt"
+        Logger.set_log_file(str(custom_log))
+        Logger.file_log("Test content", "INFO", "TEST")
+        self.assertTrue(custom_log.exists())
+        content = custom_log.read_text(encoding='utf-8')
+        self.assertIn("Test content", content)
+
+
+class TestOrchestratorIOLoggingFlags(TempConfigTestCase):
+    """Tests for RalphOrchestrator I/O, logging and output flags."""
+
+    def test_init_stores_log_file(self):
+        """Test that __init__ stores log_file parameter."""
+        orch = self.create_mock_orchestrator()
+        self.assertIsNone(orch._log_file)
+
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(log_file="/tmp/test.log")
+        self.assertEqual(orch._log_file, "/tmp/test.log")
+
+    def test_init_stores_log_level(self):
+        """Test that __init__ stores log_level parameter."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(log_level="debug")
+        self.assertEqual(orch._log_level, "debug")
+
+    def test_init_stores_json_output(self):
+        """Test that __init__ stores json_output parameter."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(json_output=True)
+        self.assertTrue(orch._json_output)
+
+    def test_init_stores_ndjson_output(self):
+        """Test that __init__ stores ndjson_output parameter."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(ndjson_output=True)
+        self.assertTrue(orch._ndjson_output)
+
+    def test_init_stores_print_prd_flag(self):
+        """Test that __init__ stores print_prd parameter."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(print_prd=True)
+        self.assertTrue(orch._print_prd_flag)
+
+    def test_init_stores_prd_out(self):
+        """Test that __init__ stores prd_out parameter."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(prd_out="/tmp/prd.json")
+        self.assertEqual(orch._prd_out, "/tmp/prd.json")
+
+    def test_init_stores_archive_flag(self):
+        """Test that __init__ stores archive parameter."""
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(archive=False)
+        self.assertFalse(orch._archive)
+
+
+class TestOrchestratorPrintPrd(TempConfigTestCase):
+    """Tests for RalphOrchestrator --print-prd functionality."""
+
+    def test_print_prd_outputs_json(self):
+        """Test that _print_prd outputs formatted JSON."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd_data = {"id": "PRD-001", "userStories": [{"id": "TASK-001"}]}
+        CONF.PRD_FILE.write_text(json.dumps(prd_data), encoding='utf-8')
+
+        orch = self.create_mock_orchestrator()
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            orch._print_prd()
+            output = mock_stdout.getvalue()
+
+        parsed = json.loads(output)
+        self.assertEqual(parsed["id"], "PRD-001")
+
+    def test_print_prd_exits_when_no_prd(self):
+        """Test that _print_prd exits with error when no PRD exists."""
+        orch = self.create_mock_orchestrator()
+        with self.assertRaises(SystemExit) as cm:
+            orch._print_prd()
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_start_with_print_prd_flag_returns_early(self):
+        """Test that start() returns early when print_prd flag is set."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd_data = {"id": "PRD-001", "userStories": []}
+        CONF.PRD_FILE.write_text(json.dumps(prd_data), encoding='utf-8')
+
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(print_prd=True)
+
+        with patch.object(orch, '_run_single_phase') as mock_run:
+            with patch('sys.stdout', new_callable=StringIO):
+                orch.start(phase="execute")
+            # _run_single_phase should NOT be called when print_prd is set
+            mock_run.assert_not_called()
+
+
+class TestOrchestratorPrdOut(TempConfigTestCase):
+    """Tests for RalphOrchestrator --prd-out functionality."""
+
+    def test_export_prd_creates_file(self):
+        """Test that _export_prd creates the output file."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd_data = {"id": "PRD-001", "userStories": []}
+        CONF.PRD_FILE.write_text(json.dumps(prd_data), encoding='utf-8')
+
+        output_path = self.temp_path / "exported_prd.json"
+        orch = self.create_mock_orchestrator()
+        orch._export_prd(str(output_path))
+
+        self.assertTrue(output_path.exists())
+        content = json.loads(output_path.read_text(encoding='utf-8'))
+        self.assertEqual(content["id"], "PRD-001")
+
+    def test_export_prd_creates_parent_dirs(self):
+        """Test that _export_prd creates parent directories."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd_data = {"id": "PRD-001"}
+        CONF.PRD_FILE.write_text(json.dumps(prd_data), encoding='utf-8')
+
+        output_path = self.temp_path / "nested" / "dir" / "prd.json"
+        orch = self.create_mock_orchestrator()
+        orch._export_prd(str(output_path))
+
+        self.assertTrue(output_path.exists())
+
+    def test_export_prd_exits_when_no_prd(self):
+        """Test that _export_prd exits with error when no PRD exists."""
+        orch = self.create_mock_orchestrator()
+        with self.assertRaises(SystemExit) as cm:
+            orch._export_prd("/tmp/prd.json")
+        self.assertEqual(cm.exception.code, 1)
+
+
+class TestOrchestratorArchiveFlag(TempConfigTestCase):
+    """Tests for RalphOrchestrator --archive/--no-archive functionality."""
+
+    def test_archive_prd_skipped_when_archive_false(self):
+        """Test that _archive_prd skips archival when archive is False."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.PRD_FILE.write_text('{"id": "PRD-001"}', encoding='utf-8')
+
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(archive=False)
+
+        original_prd_exists = CONF.PRD_FILE.exists()
+        orch._archive_prd()
+
+        # PRD should still exist (not moved)
+        self.assertEqual(CONF.PRD_FILE.exists(), original_prd_exists)
+        # Archive dir should be empty
+        archived_files = list(CONF.ARCHIVE_DIR.glob("*.json"))
+        self.assertEqual(len(archived_files), 0)
+
+    def test_archive_prd_works_when_archive_true(self):
+        """Test that _archive_prd archives when archive is True."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.PRD_FILE.write_text('{"id": "PRD-001"}', encoding='utf-8')
+
+        with patch('ralph.get_agent', return_value=self.create_mock_agent()):
+            orch = RalphOrchestrator(archive=True)
+
+        orch._archive_prd()
+
+        # PRD should be moved
+        self.assertFalse(CONF.PRD_FILE.exists())
+        # Archive dir should have the file
+        archived_files = list(CONF.ARCHIVE_DIR.glob("*.json"))
+        self.assertEqual(len(archived_files), 1)
+
+
+class TestIOLoggingOutputFlagsCLI(unittest.TestCase):
+    """Tests for CLI argument parsing of I/O, logging and output flags."""
+
+    def test_cli_parses_log_file_flag(self):
+        """Test that CLI correctly parses --log-file flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--log-file', '/tmp/test.log', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['log_file'], '/tmp/test.log')
+
+    def test_cli_parses_log_level_flag(self):
+        """Test that CLI correctly parses --log-level flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--log-level', 'debug', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['log_level'], 'debug')
+
+    def test_cli_parses_json_flag(self):
+        """Test that CLI correctly parses --json flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--json', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['json_output'])
+
+    def test_cli_parses_ndjson_flag(self):
+        """Test that CLI correctly parses --ndjson flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--ndjson', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['ndjson_output'])
+
+    def test_cli_parses_print_prd_flag(self):
+        """Test that CLI correctly parses --print-prd flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--print-prd']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['print_prd'])
+
+    def test_cli_parses_prd_out_flag(self):
+        """Test that CLI correctly parses --prd-out flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--prd-out', '/tmp/prd.json', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['prd_out'], '/tmp/prd.json')
+
+    def test_cli_parses_archive_flag(self):
+        """Test that CLI correctly parses --archive flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--archive', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['archive'])
+
+    def test_cli_parses_no_archive_flag(self):
+        """Test that CLI correctly parses --no-archive flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--no-archive', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertFalse(call_kwargs['archive'])
+
+    def test_cli_json_and_ndjson_are_mutually_exclusive(self):
+        """Test that --json and --ndjson flags are mutually exclusive."""
+        with self.assertRaises(SystemExit):
+            with patch('sys.argv', ['ralph', '--json', '--ndjson', 'execute']):
+                main()
+
+    def test_cli_archive_and_no_archive_are_mutually_exclusive(self):
+        """Test that --archive and --no-archive flags are mutually exclusive."""
+        with self.assertRaises(SystemExit):
+            with patch('sys.argv', ['ralph', '--archive', '--no-archive', 'execute']):
+                main()
+
+    def test_cli_all_io_flags_together(self):
+        """Test that CLI correctly parses all I/O flags together."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', [
+                'ralph',
+                '--log-file', '/tmp/log.txt',
+                '--log-level', 'warn',
+                '--json',
+                '--prd-out', '/tmp/prd.json',
+                '--no-archive',
+                'execute'
+            ]):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['log_file'], '/tmp/log.txt')
+            self.assertEqual(call_kwargs['log_level'], 'warn')
+            self.assertTrue(call_kwargs['json_output'])
+            self.assertEqual(call_kwargs['prd_out'], '/tmp/prd.json')
+            self.assertFalse(call_kwargs['archive'])
+
+    def test_cli_io_flags_default_to_none_or_false(self):
+        """Test that CLI I/O flags default correctly when not specified."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertIsNone(call_kwargs['log_file'])
+            self.assertIsNone(call_kwargs['log_level'])
+            self.assertFalse(call_kwargs['json_output'])
+            self.assertFalse(call_kwargs['ndjson_output'])
+            self.assertFalse(call_kwargs['print_prd'])
+            self.assertIsNone(call_kwargs['prd_out'])
+            self.assertTrue(call_kwargs['archive'])  # Default is True
 
 
 if __name__ == "__main__":
