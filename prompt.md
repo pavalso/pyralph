@@ -16,6 +16,15 @@ When making changes during task execution, follow this commit workflow:
 5. Before committing, review staged changes with `git diff --staged` to ensure only intended changes are included.
 6. Do not commit generated files, build artifacts, or files listed in `.gitignore`.
 
+# Test Verification
+
+Before merging any changes, ensure all tests pass:
+1. Run the test suite using `pytest` from the project root.
+2. All tests must pass (exit code 0) before changes can be merged.
+3. If tests fail, fix the issues and re-run until all tests pass.
+4. Do not skip or disable tests to make the suite pass.
+5. If new functionality is added, ensure appropriate tests are included.
+
 # Memory Management
 
 When managing your memory, consider the following strategies:
