@@ -159,6 +159,9 @@ class TestLogger(unittest.TestCase):
     def setUp(self):
         Logger.no_color = False
         Logger.verbose = False
+        Logger.verbosity = 0
+        Logger.quiet = False
+        Logger.no_emoji = False
         self.temp_dir = tempfile.mkdtemp()
         self.log_file = Path(self.temp_dir) / "test_log.txt"
         self.original_log_file = CONF.LOG_FILE
@@ -170,6 +173,9 @@ class TestLogger(unittest.TestCase):
         sys.stdout = self.original_stdout
         Logger.no_color = False
         Logger.verbose = False
+        Logger.verbosity = 0
+        Logger.quiet = False
+        Logger.no_emoji = False
         CONF.LOG_FILE = self.original_log_file
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -221,6 +227,141 @@ class TestLogger(unittest.TestCase):
                 content = self.log_file.read_text(encoding="utf-8")
                 for expected in [icon, expected_type, expected_tag, "Content"]:
                     self.assertIn(expected, content)
+
+    def test_verbosity_levels(self):
+        """Test -v/-vv/-vvv verbosity levels."""
+        test_cases = [
+            # (verbosity_level, method, should_output)
+            (0, 'debug', False),
+            (1, 'debug', True),
+            (0, 'trace', False),
+            (1, 'trace', False),
+            (2, 'trace', True),
+            (0, 'ultra', False),
+            (2, 'ultra', False),
+            (3, 'ultra', True),
+        ]
+        for verbosity, method, should_output in test_cases:
+            with self.subTest(verbosity=verbosity, method=method):
+                self.held_output = StringIO()
+                sys.stdout = self.held_output
+                Logger.set_verbosity(verbosity)
+                Logger.set_no_color(True)
+                getattr(Logger, method)("test message")
+                output = self.held_output.getvalue()
+                if should_output:
+                    self.assertIn("test message", output)
+                else:
+                    self.assertEqual(output, "")
+                sys.stdout = self.original_stdout
+
+    def test_set_verbosity_syncs_verbose_attribute(self):
+        """Test that set_verbosity syncs the verbose attribute for backwards compat."""
+        Logger.set_verbosity(0)
+        self.assertFalse(Logger.verbose)
+        self.assertEqual(Logger.verbosity, 0)
+
+        Logger.set_verbosity(1)
+        self.assertTrue(Logger.verbose)
+        self.assertEqual(Logger.verbosity, 1)
+
+        Logger.set_verbosity(3)
+        self.assertTrue(Logger.verbose)
+        self.assertEqual(Logger.verbosity, 3)
+
+    def test_set_verbosity_clamps_values(self):
+        """Test that set_verbosity clamps values to 0-3 range."""
+        Logger.set_verbosity(-5)
+        self.assertEqual(Logger.verbosity, 0)
+
+        Logger.set_verbosity(10)
+        self.assertEqual(Logger.verbosity, 3)
+
+    def test_quiet_mode_suppresses_info(self):
+        """Test that quiet mode suppresses info output."""
+        self.held_output = StringIO()
+        sys.stdout = self.held_output
+        Logger.set_no_color(True)
+        Logger.set_quiet(True)
+
+        Logger.info("This should be suppressed")
+        self.assertEqual(self.held_output.getvalue(), "")
+
+        sys.stdout = self.original_stdout
+
+    def test_quiet_mode_allows_warning_and_error(self):
+        """Test that quiet mode still allows warning and error output."""
+        self.held_output = StringIO()
+        sys.stdout = self.held_output
+        Logger.set_no_color(True)
+        Logger.set_quiet(True)
+
+        Logger.warning("This warning should show")
+        Logger.error("This error should show")
+
+        output = self.held_output.getvalue()
+        self.assertIn("This warning should show", output)
+        self.assertIn("This error should show", output)
+
+        sys.stdout = self.original_stdout
+
+    def test_quiet_mode_suppresses_debug_trace_ultra(self):
+        """Test that quiet mode suppresses all verbosity levels."""
+        self.held_output = StringIO()
+        sys.stdout = self.held_output
+        Logger.set_no_color(True)
+        Logger.set_verbosity(3)  # Max verbosity
+        Logger.set_quiet(True)
+
+        Logger.debug("debug")
+        Logger.trace("trace")
+        Logger.ultra("ultra")
+
+        self.assertEqual(self.held_output.getvalue(), "")
+
+        sys.stdout = self.original_stdout
+
+    def test_no_emoji_replaces_emojis(self):
+        """Test that no_emoji mode replaces emojis with text."""
+        self.held_output = StringIO()
+        sys.stdout = self.held_output
+        Logger.set_no_color(True)
+        Logger.set_no_emoji(True)
+
+        Logger.info("🤖 Robot says ✅ done")
+
+        output = self.held_output.getvalue()
+        self.assertIn("[BOT]", output)
+        self.assertIn("[OK]", output)
+        self.assertNotIn("🤖", output)
+        self.assertNotIn("✅", output)
+
+        sys.stdout = self.original_stdout
+
+    def test_no_emoji_preserves_regular_text(self):
+        """Test that no_emoji mode doesn't affect regular text."""
+        self.held_output = StringIO()
+        sys.stdout = self.held_output
+        Logger.set_no_color(True)
+        Logger.set_no_emoji(True)
+
+        Logger.info("Regular text without emojis")
+
+        output = self.held_output.getvalue()
+        self.assertIn("Regular text without emojis", output)
+
+        sys.stdout = self.original_stdout
+
+    def test_strip_emoji_covers_all_used_emojis(self):
+        """Test that _strip_emoji handles all emojis used in the codebase."""
+        emojis_used = ["🤖", "🕵️", "🧠", "🚀", "✅", "❌", "⚠️", "▶️",
+                       "🔒", "🛑", "⏭️", "📋", "📦", "🎉", "➡️", "⬅️", "ℹ️", "❓"]
+        for emoji in emojis_used:
+            with self.subTest(emoji=emoji):
+                result = Logger._strip_emoji(f"Test {emoji} message")
+                self.assertNotIn(emoji, result)
+                self.assertIn("Test", result)
+                self.assertIn("message", result)
 
 
 # ==============================================================================
@@ -472,8 +613,12 @@ class TestCliArguments(unittest.TestCase):
         self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
         self.parser.add_argument("--version", action="version", version="Ralph test")
         self.parser.add_argument("--accept-all", "-y", action="store_true")
-        self.parser.add_argument("--verbose", action="store_true")
-        self.parser.add_argument("--no-color", action="store_true")
+        self.parser.add_argument("-v", "--verbose", action="count", default=0)
+        self.parser.add_argument("--quiet", "-q", action="store_true")
+        color_group = self.parser.add_mutually_exclusive_group()
+        color_group.add_argument("--no-color", action="store_true")
+        color_group.add_argument("--color", action="store_true")
+        self.parser.add_argument("--no-emoji", action="store_true")
         self.parser.add_argument("--agent", choices=list_agents(), default=self.agent)
         self.parser.add_argument("--no-hooks", action="store_true")
         self.parser.add_argument("--hooks", nargs="+", metavar="NAME")
@@ -487,9 +632,9 @@ class TestCliArguments(unittest.TestCase):
             self.parser.parse_args(["invalid"])
 
     def test_flag_arguments(self):
-        args = self.parser.parse_args(["--accept-all", "--verbose", "--no-color", "--agent", "copilot", "execute"])
+        args = self.parser.parse_args(["--accept-all", "-v", "--no-color", "--agent", "copilot", "execute"])
         self.assertTrue(args.accept_all)
-        self.assertTrue(args.verbose)
+        self.assertEqual(args.verbose, 1)
         self.assertTrue(args.no_color)
         self.assertEqual(args.agent, "copilot")
         self.assertEqual(args.phase, "execute")
@@ -505,6 +650,63 @@ class TestCliArguments(unittest.TestCase):
         agents = list_agents()
         self.assertIn("claude", agents)
         self.assertIn("copilot", agents)
+
+    def test_verbosity_levels_v(self):
+        """Test -v increases verbosity to 1."""
+        args = self.parser.parse_args(["-v"])
+        self.assertEqual(args.verbose, 1)
+
+    def test_verbosity_levels_vv(self):
+        """Test -vv increases verbosity to 2."""
+        args = self.parser.parse_args(["-vv"])
+        self.assertEqual(args.verbose, 2)
+
+    def test_verbosity_levels_vvv(self):
+        """Test -vvv increases verbosity to 3."""
+        args = self.parser.parse_args(["-vvv"])
+        self.assertEqual(args.verbose, 3)
+
+    def test_verbosity_long_form(self):
+        """Test --verbose --verbose --verbose increases verbosity to 3."""
+        args = self.parser.parse_args(["--verbose", "--verbose", "--verbose"])
+        self.assertEqual(args.verbose, 3)
+
+    def test_quiet_flag(self):
+        """Test --quiet/-q flag."""
+        args = self.parser.parse_args(["--quiet"])
+        self.assertTrue(args.quiet)
+
+        args = self.parser.parse_args(["-q"])
+        self.assertTrue(args.quiet)
+
+    def test_no_emoji_flag(self):
+        """Test --no-emoji flag."""
+        args = self.parser.parse_args(["--no-emoji"])
+        self.assertTrue(args.no_emoji)
+
+    def test_color_no_color_mutually_exclusive(self):
+        """Test --color and --no-color are mutually exclusive."""
+        args = self.parser.parse_args(["--color"])
+        self.assertTrue(args.color)
+        self.assertFalse(args.no_color)
+
+        args = self.parser.parse_args(["--no-color"])
+        self.assertTrue(args.no_color)
+        self.assertFalse(args.color)
+
+        # Both together should fail
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(["--color", "--no-color"])
+
+    def test_all_ux_flags_combined(self):
+        """Test all UX flags can be used together."""
+        args = self.parser.parse_args(["-vvv", "-q", "--no-color", "--no-emoji", "-y", "execute"])
+        self.assertEqual(args.verbose, 3)
+        self.assertTrue(args.quiet)
+        self.assertTrue(args.no_color)
+        self.assertTrue(args.no_emoji)
+        self.assertTrue(args.accept_all)
+        self.assertEqual(args.phase, "execute")
 
 
 # ==============================================================================

@@ -50,16 +50,57 @@ CONF = Config()
 class Logger:
     COLORS = {"RESET": "\033[0m", "GREEN": "\033[92m", "RED": "\033[91m",
               "CYAN": "\033[96m", "YELLOW": "\033[93m", "MAGENTA": "\033[95m"}
-    verbose = False
+    # Verbosity levels: 0=normal, 1=verbose (-v), 2=very verbose (-vv), 3=debug (-vvv)
+    verbosity = 0
+    verbose = False  # Backwards compatibility (synced with verbosity >= 1)
     no_color = False
+    quiet = False
+    no_emoji = False
 
     @staticmethod
-    def set_no_color(enabled: bool): Logger.no_color = enabled
+    def set_no_color(enabled: bool) -> None:
+        Logger.no_color = enabled
+
     @staticmethod
-    def set_verbose(enabled: bool): Logger.verbose = enabled
+    def set_verbose(enabled: bool) -> None:
+        """Set verbose mode (backwards compatible, sets verbosity to 1 or 0)."""
+        Logger.verbose = enabled
+        Logger.verbosity = 1 if enabled else 0
+
+    @staticmethod
+    def set_verbosity(level: int) -> None:
+        """Set verbosity level (0=normal, 1=verbose, 2=very verbose, 3=debug)."""
+        Logger.verbosity = max(0, min(3, level))
+        Logger.verbose = Logger.verbosity >= 1
+
+    @staticmethod
+    def set_quiet(enabled: bool) -> None:
+        """Set quiet mode (suppresses all non-error output)."""
+        Logger.quiet = enabled
+
+    @staticmethod
+    def set_no_emoji(enabled: bool) -> None:
+        """Set no-emoji mode (replaces emojis with text equivalents)."""
+        Logger.no_emoji = enabled
+
+    @staticmethod
+    def _strip_emoji(msg: str) -> str:
+        """Replace emojis with text equivalents."""
+        emoji_map = {
+            "🤖": "[BOT]", "🕵️": "[ARCH]", "🧠": "[PLAN]", "🚀": "[EXEC]",
+            "✅": "[OK]", "❌": "[FAIL]", "⚠️": "[WARN]", "▶️": "[>]",
+            "🔒": "[VERIFY]", "🛑": "[STOP]", "⏭️": "[SKIP]", "📋": "[LIST]",
+            "📦": "[PKG]", "🎉": "[DONE]", "➡️": "[->]", "⬅️": "[<-]",
+            "ℹ️": "[INFO]", "❓": "[?]",
+        }
+        for emoji, text in emoji_map.items():
+            msg = msg.replace(emoji, text)
+        return msg
 
     @staticmethod
     def _print_colored(msg: str, color: str = "RESET", prefix: str = ""):
+        if Logger.no_emoji:
+            msg = Logger._strip_emoji(msg)
         text = f"{prefix}{msg}" if prefix else msg
         if Logger.no_color:
             output = text
@@ -71,14 +112,38 @@ class Logger:
             print(output.encode('ascii', errors='replace').decode('ascii'))
 
     @staticmethod
-    def info(msg: str, color: str = "RESET"): Logger._print_colored(msg, color)
+    def info(msg: str, color: str = "RESET") -> None:
+        """Print info message (suppressed in quiet mode)."""
+        if not Logger.quiet:
+            Logger._print_colored(msg, color)
+
     @staticmethod
-    def debug(msg: str, color: str = "RESET"):
-        if Logger.verbose: Logger._print_colored(msg, color, prefix="[DEBUG] ")
+    def debug(msg: str, color: str = "RESET") -> None:
+        """Print debug message (requires verbosity >= 1)."""
+        if Logger.verbosity >= 1 and not Logger.quiet:
+            Logger._print_colored(msg, color, prefix="[DEBUG] ")
+
     @staticmethod
-    def warning(msg: str): Logger._print_colored(msg, "YELLOW", prefix="[WARNING] ")
+    def trace(msg: str, color: str = "RESET") -> None:
+        """Print trace message (requires verbosity >= 2)."""
+        if Logger.verbosity >= 2 and not Logger.quiet:
+            Logger._print_colored(msg, color, prefix="[TRACE] ")
+
     @staticmethod
-    def error(msg: str): Logger._print_colored(msg, "RED", prefix="[ERROR] ")
+    def ultra(msg: str, color: str = "RESET") -> None:
+        """Print ultra-verbose message (requires verbosity >= 3)."""
+        if Logger.verbosity >= 3 and not Logger.quiet:
+            Logger._print_colored(msg, color, prefix="[ULTRA] ")
+
+    @staticmethod
+    def warning(msg: str) -> None:
+        """Print warning message (shown even in quiet mode)."""
+        Logger._print_colored(msg, "YELLOW", prefix="[WARNING] ")
+
+    @staticmethod
+    def error(msg: str) -> None:
+        """Print error message (always shown)."""
+        Logger._print_colored(msg, "RED", prefix="[ERROR] ")
 
     @staticmethod
     def file_log(content: str, type: str, tag: str = "UNKNOWN") -> None:
@@ -643,17 +708,33 @@ def main() -> None:
     """Entry point for the ralph CLI."""
     agent = list_agents()[0]
     parser = argparse.ArgumentParser(description="Ralph - Autonomous Software Development Agent",
-        epilog="Examples: ralph | ralph architect | ralph -y execute", formatter_class=argparse.RawDescriptionHelpFormatter)
+        epilog="Examples: ralph | ralph architect | ralph -y execute | ralph -vvv --no-emoji execute",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?", help="Phase to run")
     parser.add_argument("--version", action="version", version=f"Ralph {get_version()}")
     parser.add_argument("--accept-all", "-y", action="store_true", help="Skip prompts")
-    parser.add_argument("--verbose", action="store_true", help="Debug logging")
-    parser.add_argument("--no-color", action="store_true", help="Disable colors")
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v, -vv, -vvv)")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non-essential output")
+    # Color options (mutually exclusive)
+    color_group = parser.add_mutually_exclusive_group()
+    color_group.add_argument("--no-color", action="store_true", help="Disable colored output")
+    color_group.add_argument("--color", action="store_true", help="Force colored output")
+    parser.add_argument("--no-emoji", action="store_true", help="Replace emojis with text equivalents")
     parser.add_argument("--no-hooks", action="store_true", help="Disable hook execution")
     parser.add_argument("--hooks", nargs="+", metavar="NAME", help="Enable only specified hooks by name")
     parser.add_argument("--agent", choices=list_agents(), default=agent, help=f"Agent (default: {agent})")
     args = parser.parse_args()
-    Logger.set_verbose(args.verbose); Logger.set_no_color(args.no_color)
+
+    # Configure logger settings
+    Logger.set_verbosity(args.verbose)
+    Logger.set_quiet(args.quiet)
+    Logger.set_no_emoji(args.no_emoji)
+    # Handle color: --no-color disables, --color forces enable (default: auto/enabled)
+    if args.no_color:
+        Logger.set_no_color(True)
+    elif args.color:
+        Logger.set_no_color(False)
+    # else: leave default (colors enabled)
 
     # Determine hook configuration
     enable_hooks = not args.no_hooks
