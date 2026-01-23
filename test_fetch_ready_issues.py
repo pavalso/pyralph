@@ -1,6 +1,8 @@
 """Tests for fetch_ready_issues.py module."""
 import json
 import subprocess
+import threading
+import time
 import unittest
 from io import StringIO
 from unittest.mock import MagicMock, patch
@@ -15,6 +17,8 @@ from fetch_ready_issues import (
     CreateIssueResult,
     HookConfig,
     HookRegistrationError,
+    PollerConfig,
+    GitHubPoller,
     check_gh_cli,
     fetch_ready_issues,
     main,
@@ -1776,6 +1780,340 @@ class TestCreateArgumentParserRegisterHook(unittest.TestCase):
         args = parser.parse_args(["--register-hook", "--hooks-dir", "/my/hooks"])
         self.assertTrue(args.register_hook)
         self.assertEqual(args.hooks_dir, "/my/hooks")
+
+
+class TestPollerConfig(unittest.TestCase):
+    """Tests for PollerConfig dataclass."""
+
+    def test_poller_config_default_values(self):
+        """Test PollerConfig has correct default values."""
+        config = PollerConfig()
+        self.assertEqual(config.label, "ready")
+        self.assertEqual(config.interval, 60.0)
+        self.assertIsNone(config.on_new_issues)
+        self.assertIsNone(config.on_error)
+
+    def test_poller_config_custom_values(self):
+        """Test PollerConfig with custom values."""
+        callback = lambda issues: None
+        error_callback = lambda e: None
+        config = PollerConfig(
+            label="bug",
+            interval=30.0,
+            on_new_issues=callback,
+            on_error=error_callback
+        )
+        self.assertEqual(config.label, "bug")
+        self.assertEqual(config.interval, 30.0)
+        self.assertIs(config.on_new_issues, callback)
+        self.assertIs(config.on_error, error_callback)
+
+    def test_poller_config_partial_values(self):
+        """Test PollerConfig with only some custom values."""
+        config = PollerConfig(interval=120.0)
+        self.assertEqual(config.label, "ready")
+        self.assertEqual(config.interval, 120.0)
+        self.assertIsNone(config.on_new_issues)
+
+
+class TestGitHubPoller(unittest.TestCase):
+    """Tests for GitHubPoller class."""
+
+    def test_poller_default_config(self):
+        """Test GitHubPoller with default configuration."""
+        poller = GitHubPoller()
+        self.assertEqual(poller.interval, 60.0)
+        self.assertEqual(poller.config.label, "ready")
+        self.assertFalse(poller.is_running)
+
+    def test_poller_custom_config(self):
+        """Test GitHubPoller with custom configuration."""
+        config = PollerConfig(label="feature", interval=45.0)
+        poller = GitHubPoller(config)
+        self.assertEqual(poller.interval, 45.0)
+        self.assertEqual(poller.config.label, "feature")
+
+    def test_poller_interval_setter(self):
+        """Test setting polling interval."""
+        poller = GitHubPoller()
+        poller.interval = 30.0
+        self.assertEqual(poller.interval, 30.0)
+
+    def test_poller_interval_setter_invalid(self):
+        """Test setting invalid polling interval raises ValueError."""
+        poller = GitHubPoller()
+        with self.assertRaises(ValueError):
+            poller.interval = 0
+        with self.assertRaises(ValueError):
+            poller.interval = -10
+
+    def test_poller_seen_issues_initially_empty(self):
+        """Test seen_issues is initially empty."""
+        poller = GitHubPoller()
+        self.assertEqual(poller.seen_issues, set())
+
+    def test_poller_seen_issues_returns_copy(self):
+        """Test seen_issues returns a copy of the set."""
+        poller = GitHubPoller()
+        seen = poller.seen_issues
+        seen.add(999)  # Modify the copy
+        self.assertNotIn(999, poller.seen_issues)  # Original should be unmodified
+
+    def test_poller_start_stop(self):
+        """Test starting and stopping the poller."""
+        config = PollerConfig(interval=0.1)
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=[]):
+            result = poller.start()
+            self.assertTrue(result)
+            self.assertTrue(poller.is_running)
+
+            # Try starting again - should return False
+            result = poller.start()
+            self.assertFalse(result)
+
+            # Stop the poller
+            result = poller.stop(timeout=1.0)
+            self.assertTrue(result)
+            self.assertFalse(poller.is_running)
+
+            # Try stopping again - should return False
+            result = poller.stop()
+            self.assertFalse(result)
+
+    def test_poller_poll_once_returns_new_issues(self):
+        """Test poll_once returns new issues."""
+        mock_issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        poller = GitHubPoller()
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues):
+            new_issues = poller.poll_once()
+
+        self.assertEqual(len(new_issues), 2)
+        self.assertEqual(new_issues[0].number, 1)
+        self.assertEqual(new_issues[1].number, 2)
+        self.assertEqual(poller.seen_issues, {1, 2})
+
+    def test_poller_poll_once_filters_seen_issues(self):
+        """Test poll_once does not return already seen issues."""
+        mock_issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        poller = GitHubPoller()
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues):
+            # First poll - all issues are new
+            new_issues_1 = poller.poll_once()
+            self.assertEqual(len(new_issues_1), 2)
+
+            # Second poll - no new issues
+            new_issues_2 = poller.poll_once()
+            self.assertEqual(len(new_issues_2), 0)
+
+    def test_poller_poll_once_detects_new_issues_incrementally(self):
+        """Test poll_once detects new issues appearing between polls."""
+        poller = GitHubPoller()
+
+        # First poll - one issue
+        mock_issues_1 = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+        ]
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues_1):
+            new_issues = poller.poll_once()
+            self.assertEqual(len(new_issues), 1)
+
+        # Second poll - same issue plus a new one
+        mock_issues_2 = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues_2):
+            new_issues = poller.poll_once()
+            self.assertEqual(len(new_issues), 1)
+            self.assertEqual(new_issues[0].number, 2)
+
+    def test_poller_poll_once_raises_on_error(self):
+        """Test poll_once raises GitHubCLIError on failure."""
+        poller = GitHubPoller()
+
+        with patch('fetch_ready_issues.fetch_ready_issues') as mock_fetch:
+            mock_fetch.side_effect = GitHubCLIError("CLI error")
+            with self.assertRaises(GitHubCLIError):
+                poller.poll_once()
+
+    def test_poller_reset_seen_issues(self):
+        """Test reset_seen_issues clears the seen set."""
+        mock_issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+        ]
+
+        poller = GitHubPoller()
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues):
+            poller.poll_once()
+            self.assertEqual(poller.seen_issues, {1})
+
+            poller.reset_seen_issues()
+            self.assertEqual(poller.seen_issues, set())
+
+            # After reset, issues should be "new" again
+            new_issues = poller.poll_once()
+            self.assertEqual(len(new_issues), 1)
+
+    def test_poller_callback_invoked_on_new_issues(self):
+        """Test on_new_issues callback is invoked when new issues are found."""
+        received_issues = []
+
+        def callback(issues):
+            received_issues.extend(issues)
+
+        config = PollerConfig(
+            interval=0.05,
+            on_new_issues=callback
+        )
+        poller = GitHubPoller(config)
+
+        mock_issues = [
+            Issue(number=1, title="Test", body="Body", url="http://url/1", labels=["ready"]),
+        ]
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=mock_issues):
+            poller.start()
+            time.sleep(0.15)  # Let the polling loop run a couple of times
+            poller.stop(timeout=1.0)
+
+        self.assertEqual(len(received_issues), 1)
+        self.assertEqual(received_issues[0].number, 1)
+
+    def test_poller_callback_not_invoked_when_no_new_issues(self):
+        """Test on_new_issues callback is not invoked when no new issues."""
+        call_count = [0]
+
+        def callback(issues):
+            call_count[0] += 1
+
+        config = PollerConfig(
+            interval=0.05,
+            on_new_issues=callback
+        )
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=[]):
+            poller.start()
+            time.sleep(0.15)
+            poller.stop(timeout=1.0)
+
+        self.assertEqual(call_count[0], 0)
+
+    def test_poller_error_callback_invoked_on_error(self):
+        """Test on_error callback is invoked when an error occurs."""
+        received_errors = []
+
+        def error_callback(e):
+            received_errors.append(e)
+
+        config = PollerConfig(
+            interval=0.05,
+            on_error=error_callback
+        )
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues') as mock_fetch:
+            mock_fetch.side_effect = GitHubCLIError("Test error")
+            poller.start()
+            time.sleep(0.15)
+            poller.stop(timeout=1.0)
+
+        self.assertGreater(len(received_errors), 0)
+        self.assertIsInstance(received_errors[0], GitHubCLIError)
+
+    def test_poller_continues_after_error(self):
+        """Test poller continues polling after an error."""
+        poll_count = [0]
+        received_issues = []
+
+        def callback(issues):
+            received_issues.extend(issues)
+
+        config = PollerConfig(
+            interval=0.05,
+            on_new_issues=callback
+        )
+        poller = GitHubPoller(config)
+
+        def mock_fetch(label="ready"):
+            poll_count[0] += 1
+            if poll_count[0] == 1:
+                raise GitHubCLIError("Temporary error")
+            return [Issue(number=1, title="Test", body="Body", url="http://url/1", labels=["ready"])]
+
+        with patch('fetch_ready_issues.fetch_ready_issues', side_effect=mock_fetch):
+            poller.start()
+            time.sleep(0.2)
+            poller.stop(timeout=1.0)
+
+        # Should have polled multiple times
+        self.assertGreater(poll_count[0], 1)
+        # Should have eventually received issues after the error
+        self.assertGreater(len(received_issues), 0)
+
+    def test_poller_uses_configured_label(self):
+        """Test poller uses the configured label for fetching."""
+        config = PollerConfig(label="custom-label")
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=[]) as mock_fetch:
+            poller.poll_once()
+
+        mock_fetch.assert_called_once_with(label="custom-label")
+
+    def test_poller_thread_safety(self):
+        """Test poller is thread-safe for concurrent access."""
+        poller = GitHubPoller()
+        errors = []
+
+        def poll_worker():
+            try:
+                for _ in range(10):
+                    with patch('fetch_ready_issues.fetch_ready_issues', return_value=[
+                        Issue(number=1, title="Test", body="Body", url="http://url/1", labels=["ready"])
+                    ]):
+                        poller.poll_once()
+                        _ = poller.seen_issues
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=poll_worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(errors), 0)
+
+    def test_poller_stop_with_timeout(self):
+        """Test stopping poller with timeout."""
+        config = PollerConfig(interval=10.0)  # Long interval
+        poller = GitHubPoller(config)
+
+        with patch('fetch_ready_issues.fetch_ready_issues', return_value=[]):
+            poller.start()
+            # Stop should complete quickly due to stop_event, not wait for interval
+            start_time = time.time()
+            poller.stop(timeout=1.0)
+            elapsed = time.time() - start_time
+
+        self.assertLess(elapsed, 2.0)  # Should complete well within timeout
+        self.assertFalse(poller.is_running)
 
 
 if __name__ == "__main__":

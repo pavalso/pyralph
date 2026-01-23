@@ -24,8 +24,10 @@ import argparse
 import json
 import subprocess
 import sys
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -621,6 +623,180 @@ def mark_issue_processed(issue_number: int) -> bool:
         add_labels=["processed"],
         remove_labels=["ready"]
     )
+
+
+@dataclass
+class PollerConfig:
+    """Configuration for GitHubPoller.
+
+    Attributes:
+        label: The label to filter issues by. Defaults to "ready".
+        interval: Polling interval in seconds. Defaults to 60.
+        on_new_issues: Optional callback invoked when new issues are detected.
+            The callback receives a list of new Issue objects.
+        on_error: Optional callback invoked when an error occurs during polling.
+            The callback receives the exception that occurred.
+    """
+    label: str = "ready"
+    interval: float = 60.0
+    on_new_issues: Optional[Callable[[List["Issue"]], None]] = None
+    on_error: Optional[Callable[[Exception], None]] = None
+
+
+class GitHubPoller:
+    """Polls GitHub for new issues with a specified label at configurable intervals.
+
+    The poller runs in a background thread and detects new issues by tracking
+    previously seen issue numbers. When new issues are detected, the configured
+    callback is invoked.
+
+    Example:
+        >>> def handle_new_issues(issues):
+        ...     for issue in issues:
+        ...         print(f"New issue: #{issue.number} - {issue.title}")
+        ...
+        >>> config = PollerConfig(
+        ...     label="ready",
+        ...     interval=30.0,
+        ...     on_new_issues=handle_new_issues
+        ... )
+        >>> poller = GitHubPoller(config)
+        >>> poller.start()
+        >>> # ... later ...
+        >>> poller.stop()
+    """
+
+    def __init__(self, config: Optional[PollerConfig] = None):
+        """Initialize the GitHubPoller.
+
+        Args:
+            config: Optional PollerConfig with polling settings. If None,
+                uses default configuration with 60 second interval.
+        """
+        self._config = config or PollerConfig()
+        self._seen_issue_numbers: Set[int] = set()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+
+    @property
+    def config(self) -> PollerConfig:
+        """Get the current poller configuration."""
+        return self._config
+
+    @property
+    def interval(self) -> float:
+        """Get the polling interval in seconds."""
+        return self._config.interval
+
+    @interval.setter
+    def interval(self, value: float) -> None:
+        """Set the polling interval in seconds.
+
+        Args:
+            value: New polling interval. Must be positive.
+
+        Raises:
+            ValueError: If value is not positive.
+        """
+        if value <= 0:
+            raise ValueError("Polling interval must be positive")
+        self._config.interval = value
+
+    @property
+    def is_running(self) -> bool:
+        """Check if the poller is currently running."""
+        return self._running
+
+    @property
+    def seen_issues(self) -> Set[int]:
+        """Get a copy of the set of seen issue numbers."""
+        with self._lock:
+            return self._seen_issue_numbers.copy()
+
+    def start(self) -> bool:
+        """Start the polling loop in a background thread.
+
+        Returns:
+            True if the poller was started, False if already running.
+        """
+        if self._running:
+            return False
+
+        self._stop_event.clear()
+        self._running = True
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self, timeout: Optional[float] = None) -> bool:
+        """Stop the polling loop.
+
+        Args:
+            timeout: Maximum time to wait for the polling thread to stop.
+                If None, waits indefinitely.
+
+        Returns:
+            True if the poller was stopped, False if not running.
+        """
+        if not self._running:
+            return False
+
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        self._running = False
+        return True
+
+    def poll_once(self) -> List[Issue]:
+        """Perform a single poll and return any new issues.
+
+        This method can be called manually to perform a one-time poll
+        without using the background thread.
+
+        Returns:
+            List of new issues that haven't been seen before.
+
+        Raises:
+            GitHubCLIError: If the GitHub CLI command fails.
+        """
+        try:
+            current_issues = fetch_ready_issues(label=self._config.label)
+        except GitHubCLIError:
+            raise
+
+        new_issues: List[Issue] = []
+
+        with self._lock:
+            for issue in current_issues:
+                if issue.number not in self._seen_issue_numbers:
+                    new_issues.append(issue)
+                    self._seen_issue_numbers.add(issue.number)
+
+        return new_issues
+
+    def reset_seen_issues(self) -> None:
+        """Clear the set of seen issue numbers.
+
+        This causes all issues to be treated as new on the next poll.
+        """
+        with self._lock:
+            self._seen_issue_numbers.clear()
+
+    def _poll_loop(self) -> None:
+        """Internal polling loop that runs in a background thread."""
+        while not self._stop_event.is_set():
+            try:
+                new_issues = self.poll_once()
+                if new_issues and self._config.on_new_issues is not None:
+                    self._config.on_new_issues(new_issues)
+            except Exception as e:
+                if self._config.on_error is not None:
+                    self._config.on_error(e)
+
+            # Wait for the interval or until stop is called
+            self._stop_event.wait(timeout=self._config.interval)
 
 
 @dataclass
