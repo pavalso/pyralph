@@ -262,14 +262,96 @@ class MemoryManager:
         return result
 
     @staticmethod
-    def get_structure() -> str:
-        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()): return "(Memory Empty)"
+    def _matches_pattern(path: Path, pattern: str) -> bool:
+        """Check if a path matches a glob pattern."""
+        from fnmatch import fnmatch
+        # Try matching against full path and just the filename
+        path_str = str(path)
+        name = path.name
+        return fnmatch(path_str, pattern) or fnmatch(name, pattern) or fnmatch(path_str, f"*/{pattern}") or fnmatch(path_str, f"*\\{pattern}")
+
+    @staticmethod
+    def get_filtered_files(include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
+                           limit: Optional[int] = None) -> List[Path]:
+        """
+        Get filtered list of memory files based on include/exclude patterns and limit.
+
+        Args:
+            include: Glob patterns to include (if specified, only matching files are included)
+            exclude: Glob patterns to exclude (matching files are removed)
+            limit: Maximum number of files to return
+
+        Returns:
+            List of filtered file paths
+        """
+        if not CONF.MEMORY_DIR.exists():
+            return []
+
         files = []
         for p in CONF.MEMORY_DIR.rglob('*'):
             if p.is_file() and not p.name.startswith('.'):
-                try: files.append(f"- {p.relative_to(CONF.BASE_DIR)}")
-                except ValueError: continue
-        return "\n".join(files)
+                files.append(p)
+
+        # Apply include filter (if specified, only keep matching files)
+        if include:
+            filtered = []
+            for f in files:
+                for pattern in include:
+                    if MemoryManager._matches_pattern(f, pattern):
+                        filtered.append(f)
+                        break
+            files = filtered
+
+        # Apply exclude filter (remove matching files)
+        if exclude:
+            filtered = []
+            for f in files:
+                excluded = False
+                for pattern in exclude:
+                    if MemoryManager._matches_pattern(f, pattern):
+                        excluded = True
+                        break
+                if not excluded:
+                    filtered.append(f)
+            files = filtered
+
+        # Sort by path for deterministic ordering
+        files.sort(key=lambda p: str(p))
+
+        # Apply limit
+        if limit is not None and limit > 0:
+            files = files[:limit]
+
+        return files
+
+    @staticmethod
+    def get_structure(include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
+                      limit: Optional[int] = None) -> str:
+        """
+        Get a formatted list of memory files with optional filtering.
+
+        Args:
+            include: Glob patterns to include (if specified, only matching files are included)
+            exclude: Glob patterns to exclude (matching files are removed)
+            limit: Maximum number of files to include
+
+        Returns:
+            Formatted string listing memory files, or "(Memory Empty)" if none found
+        """
+        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
+            return "(Memory Empty)"
+
+        filtered_files = MemoryManager.get_filtered_files(include, exclude, limit)
+        if not filtered_files:
+            return "(No matching memory files)"
+
+        output = []
+        for p in filtered_files:
+            try:
+                output.append(f"- {p.relative_to(CONF.BASE_DIR)}")
+            except ValueError:
+                continue
+        return "\n".join(output) if output else "(No matching memory files)"
 
     @staticmethod
     def extract_test_command() -> str:
@@ -326,7 +408,8 @@ class RalphOrchestrator:
                  tree_depth: int = 2, tree_ignore: Optional[List[str]] = None, memory_out: Optional[str] = None,
                  test_cmd: Optional[str] = None, skip_verify: bool = False, retries: Optional[int] = None,
                  timeout: Optional[int] = None, only: Optional[List[str]] = None, except_tasks: Optional[List[str]] = None,
-                 resume: Optional[str] = None) -> None:
+                 resume: Optional[str] = None, include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
+                 context_limit: Optional[int] = None) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout)
@@ -359,6 +442,10 @@ class RalphOrchestrator:
         self._only_tasks = only
         self._except_tasks = except_tasks
         self._resume_from = resume
+        # Store context and memory control flags
+        self._include_patterns = include
+        self._exclude_patterns = exclude
+        self._context_limit = context_limit
 
     def run_architect(self, user_intent: str) -> None:
         """
@@ -419,7 +506,11 @@ class RalphOrchestrator:
         Logger.info("\n🧠 Planner: Creating PRD...", "CYAN")
         self.hooks.emit(Event(EventType.PHASE_START, phase="planner"))
         self.hooks.emit(Event(EventType.PLANNER_START, phase="planner"))
-        memory_map = self.memory.get_structure()
+        memory_map = self.memory.get_structure(
+            include=self._include_patterns,
+            exclude=self._exclude_patterns,
+            limit=self._context_limit
+        )
 
         prompt = TemplateManager.render(
             "planner.txt",
@@ -627,7 +718,11 @@ class RalphOrchestrator:
             prompt = TemplateManager.render(
                 "developer.txt",
                 task_id=task['id'], task_description=task['description'],
-                memory_tree=self.memory.get_structure(),
+                memory_tree=self.memory.get_structure(
+                    include=self._include_patterns,
+                    exclude=self._exclude_patterns,
+                    limit=self._context_limit
+                ),
                 user_context=self._load_user_context(prd, task, test_cmd),
                 test_cmd=test_cmd, prev_errors=prev_errors
             )
@@ -902,6 +997,10 @@ def main() -> None:
     parser.add_argument("--only", nargs="+", metavar="TASK_ID", help="Execute only specified task IDs")
     parser.add_argument("--except", dest="except_tasks", nargs="+", metavar="TASK_ID", help="Skip specified task IDs")
     parser.add_argument("--resume", type=str, metavar="TASK_ID", help="Resume execution from a specific task ID")
+    # Context and memory control flags for file filtering
+    parser.add_argument("--include", nargs="+", metavar="PATTERN", help="Include only files matching these glob patterns in context")
+    parser.add_argument("--exclude", nargs="+", metavar="PATTERN", help="Exclude files matching these glob patterns from context")
+    parser.add_argument("--context-limit", type=int, metavar="N", help="Limit maximum number of context files considered")
     args = parser.parse_args()
 
     # Configure logger settings
@@ -940,7 +1039,10 @@ def main() -> None:
         timeout=args.timeout,
         only=args.only,
         except_tasks=args.except_tasks,
-        resume=args.resume
+        resume=args.resume,
+        include=args.include,
+        exclude=args.exclude,
+        context_limit=args.context_limit
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

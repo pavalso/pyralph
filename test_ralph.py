@@ -1649,6 +1649,268 @@ class TestOrchestratorFlagsCombined(TempConfigTestCase):
 
 
 # ==============================================================================
+# CONTEXT AND MEMORY CONTROL FLAGS TESTS
+# ==============================================================================
+
+
+class TestContextMemoryFlagsArgumentParsing(unittest.TestCase):
+    """Tests for --include, --exclude, --context-limit CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
+        self.parser.add_argument("--include", nargs="+", metavar="PATTERN")
+        self.parser.add_argument("--exclude", nargs="+", metavar="PATTERN")
+        self.parser.add_argument("--context-limit", type=int, metavar="N")
+
+    def test_include_flag_parses_single_pattern(self):
+        """Test --include flag accepts single pattern."""
+        args = self.parser.parse_args(["--include", "*.md"])
+        self.assertEqual(args.include, ["*.md"])
+
+    def test_include_flag_parses_multiple_patterns(self):
+        """Test --include flag accepts multiple patterns."""
+        args = self.parser.parse_args(["--include", "*.md", "*.txt", "arch*"])
+        self.assertEqual(args.include, ["*.md", "*.txt", "arch*"])
+
+    def test_exclude_flag_parses_single_pattern(self):
+        """Test --exclude flag accepts single pattern."""
+        args = self.parser.parse_args(["--exclude", "*.log"])
+        self.assertEqual(args.exclude, ["*.log"])
+
+    def test_exclude_flag_parses_multiple_patterns(self):
+        """Test --exclude flag accepts multiple patterns."""
+        args = self.parser.parse_args(["--exclude", "*.log", "*.tmp", "debug*"])
+        self.assertEqual(args.exclude, ["*.log", "*.tmp", "debug*"])
+
+    def test_context_limit_flag_parses(self):
+        """Test --context-limit flag accepts integer."""
+        args = self.parser.parse_args(["--context-limit", "5"])
+        self.assertEqual(args.context_limit, 5)
+
+    def test_all_context_flags_combined(self):
+        """Test all context flags can be used together."""
+        args = self.parser.parse_args([
+            "--include", "*.md", "arch*",
+            "--exclude", "*.log",
+            "--context-limit", "10",
+            "execute"
+        ])
+        self.assertEqual(args.include, ["*.md", "arch*"])
+        self.assertEqual(args.exclude, ["*.log"])
+        self.assertEqual(args.context_limit, 10)
+        self.assertEqual(args.phase, "execute")
+
+    def test_default_values_are_none(self):
+        """Test context flags default to None."""
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.include)
+        self.assertIsNone(args.exclude)
+        self.assertIsNone(args.context_limit)
+
+
+class TestOrchestratorContextFlags(TempConfigTestCase):
+    """Tests for RalphOrchestrator context flag storage."""
+
+    def test_orchestrator_stores_include_patterns(self):
+        """Test orchestrator stores --include flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", include=["*.md", "arch*"])
+            self.assertEqual(orch._include_patterns, ["*.md", "arch*"])
+
+    def test_orchestrator_stores_exclude_patterns(self):
+        """Test orchestrator stores --exclude flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", exclude=["*.log", "debug*"])
+            self.assertEqual(orch._exclude_patterns, ["*.log", "debug*"])
+
+    def test_orchestrator_stores_context_limit(self):
+        """Test orchestrator stores --context-limit flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", context_limit=5)
+            self.assertEqual(orch._context_limit, 5)
+
+    def test_orchestrator_defaults_context_flags(self):
+        """Test orchestrator defaults all context flags to None."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            self.assertIsNone(orch._include_patterns)
+            self.assertIsNone(orch._exclude_patterns)
+            self.assertIsNone(orch._context_limit)
+
+
+class TestMemoryManagerFiltering(TempConfigTestCase):
+    """Tests for MemoryManager filtering methods."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        # Create test files
+        (CONF.MEMORY_DIR / "architecture.md").write_text("content", encoding="utf-8")
+        (CONF.MEMORY_DIR / "database.md").write_text("content", encoding="utf-8")
+        (CONF.MEMORY_DIR / "debug.log").write_text("content", encoding="utf-8")
+        (CONF.MEMORY_DIR / "notes.txt").write_text("content", encoding="utf-8")
+
+    def test_matches_pattern_filename(self):
+        """Test _matches_pattern matches by filename."""
+        path = CONF.MEMORY_DIR / "architecture.md"
+        self.assertTrue(MemoryManager._matches_pattern(path, "*.md"))
+        self.assertTrue(MemoryManager._matches_pattern(path, "arch*"))
+        self.assertTrue(MemoryManager._matches_pattern(path, "architecture.md"))
+        self.assertFalse(MemoryManager._matches_pattern(path, "*.txt"))
+
+    def test_get_filtered_files_returns_all_when_no_filters(self):
+        """Test get_filtered_files returns all files with no filters."""
+        files = MemoryManager.get_filtered_files()
+        self.assertEqual(len(files), 4)
+
+    def test_get_filtered_files_include_filter(self):
+        """Test get_filtered_files applies include filter."""
+        files = MemoryManager.get_filtered_files(include=["*.md"])
+        self.assertEqual(len(files), 2)
+        names = [f.name for f in files]
+        self.assertIn("architecture.md", names)
+        self.assertIn("database.md", names)
+
+    def test_get_filtered_files_exclude_filter(self):
+        """Test get_filtered_files applies exclude filter."""
+        files = MemoryManager.get_filtered_files(exclude=["*.log"])
+        self.assertEqual(len(files), 3)
+        names = [f.name for f in files]
+        self.assertNotIn("debug.log", names)
+
+    def test_get_filtered_files_include_and_exclude(self):
+        """Test get_filtered_files applies both include and exclude."""
+        files = MemoryManager.get_filtered_files(include=["*.md", "*.log"], exclude=["debug*"])
+        self.assertEqual(len(files), 2)
+        names = [f.name for f in files]
+        self.assertIn("architecture.md", names)
+        self.assertIn("database.md", names)
+
+    def test_get_filtered_files_limit(self):
+        """Test get_filtered_files applies limit."""
+        files = MemoryManager.get_filtered_files(limit=2)
+        self.assertEqual(len(files), 2)
+
+    def test_get_filtered_files_limit_with_filters(self):
+        """Test get_filtered_files applies limit after filtering."""
+        files = MemoryManager.get_filtered_files(include=["*.md"], limit=1)
+        self.assertEqual(len(files), 1)
+        self.assertTrue(files[0].name.endswith(".md"))
+
+    def test_get_filtered_files_empty_result(self):
+        """Test get_filtered_files returns empty list when no matches."""
+        files = MemoryManager.get_filtered_files(include=["*.nonexistent"])
+        self.assertEqual(len(files), 0)
+
+    def test_get_filtered_files_sorted_deterministically(self):
+        """Test get_filtered_files returns sorted results."""
+        files = MemoryManager.get_filtered_files()
+        paths_str = [str(f) for f in files]
+        self.assertEqual(paths_str, sorted(paths_str))
+
+
+class TestMemoryManagerGetStructureFiltered(TempConfigTestCase):
+    """Tests for MemoryManager.get_structure() with filtering."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "architecture.md").write_text("content", encoding="utf-8")
+        (CONF.MEMORY_DIR / "database.md").write_text("content", encoding="utf-8")
+        (CONF.MEMORY_DIR / "debug.log").write_text("content", encoding="utf-8")
+
+    def test_get_structure_with_include(self):
+        """Test get_structure filters by include patterns."""
+        result = MemoryManager.get_structure(include=["*.md"])
+        self.assertIn("architecture.md", result)
+        self.assertIn("database.md", result)
+        self.assertNotIn("debug.log", result)
+
+    def test_get_structure_with_exclude(self):
+        """Test get_structure filters by exclude patterns."""
+        result = MemoryManager.get_structure(exclude=["*.log"])
+        self.assertIn("architecture.md", result)
+        self.assertNotIn("debug.log", result)
+
+    def test_get_structure_with_limit(self):
+        """Test get_structure respects context limit."""
+        result = MemoryManager.get_structure(limit=1)
+        # Should only have one file listed
+        lines = [l for l in result.split("\n") if l.startswith("- ")]
+        self.assertEqual(len(lines), 1)
+
+    def test_get_structure_no_matches_returns_message(self):
+        """Test get_structure returns message when no files match."""
+        result = MemoryManager.get_structure(include=["*.nonexistent"])
+        self.assertEqual(result, "(No matching memory files)")
+
+
+class TestOrchestratorContextFlagsBehavior(TempConfigTestCase):
+    """Tests for context flags behavior in orchestrator methods."""
+
+    def test_execute_loop_passes_filters_to_get_structure(self):
+        """Test execute_loop passes include/exclude/limit to get_structure."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+        (CONF.MEMORY_DIR / "debug.log").write_text("debug info", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Test task", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "STATUS: SUCCESS", None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.run', return_value=("", "", 0)):
+                with patch('ralph.Logger.info'):
+                    with patch.object(MemoryManager, 'get_structure', wraps=MemoryManager.get_structure) as mock_get_structure:
+                        orch = RalphOrchestrator(
+                            agent_name="mock",
+                            include=["*.md"],
+                            exclude=["debug*"],
+                            context_limit=5
+                        )
+                        orch.execute_loop()
+                        # Verify get_structure was called with the filters
+                        mock_get_structure.assert_called()
+                        call_kwargs = mock_get_structure.call_args[1]
+                        self.assertEqual(call_kwargs['include'], ["*.md"])
+                        self.assertEqual(call_kwargs['exclude'], ["debug*"])
+                        self.assertEqual(call_kwargs['limit'], 5)
+
+    def test_planner_passes_filters_to_get_structure(self):
+        """Test run_planner passes include/exclude/limit to get_structure."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("content", encoding="utf-8")
+
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '{"userStories": []}', None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Logger.info'):
+                with patch.object(MemoryManager, 'get_structure', wraps=MemoryManager.get_structure) as mock_get_structure:
+                    orch = RalphOrchestrator(
+                        agent_name="mock",
+                        include=["*.md"],
+                        exclude=["*.log"],
+                        context_limit=3
+                    )
+                    orch.run_planner("test intent")
+                    mock_get_structure.assert_called()
+                    call_kwargs = mock_get_structure.call_args[1]
+                    self.assertEqual(call_kwargs['include'], ["*.md"])
+                    self.assertEqual(call_kwargs['exclude'], ["*.log"])
+                    self.assertEqual(call_kwargs['limit'], 3)
+
+
+# ==============================================================================
 # AGENT ERROR TESTS
 # ==============================================================================
 
