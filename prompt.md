@@ -25,6 +25,19 @@ Before merging any changes, ensure all tests pass:
 4. Do not skip or disable tests to make the suite pass.
 5. If new functionality is added, ensure appropriate tests are included.
 
+# Merge-Back Workflow
+
+After task completion and verification, merge the feature branch back to main:
+1. Ensure all tests pass before merging (see Test Verification above).
+2. Switch to the main branch: `git checkout main` (or `master`).
+3. Pull the latest changes: `git pull origin main`.
+4. Merge the feature branch: `git merge feature/TASK-<id>-<short-description>`.
+5. Resolve any merge conflicts if they arise, then re-run tests to verify.
+6. Push the updated main branch: `git push origin main`.
+7. Optionally, delete the feature branch after successful merge:
+   - Local: `git branch -d feature/TASK-<id>-<short-description>`
+   - Remote: `git push origin --delete feature/TASK-<id>-<short-description>`
+
 # Memory Management
 
 When managing your memory, consider the following strategies:
