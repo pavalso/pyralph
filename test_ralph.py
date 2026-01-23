@@ -1911,6 +1911,196 @@ class TestOrchestratorContextFlagsBehavior(TempConfigTestCase):
 
 
 # ==============================================================================
+# SAFETY, ISOLATION AND GIT CONTROL FLAG TESTS (TASK-006)
+# ==============================================================================
+
+
+class TestSafetyGitFlagsArgparse(unittest.TestCase):
+    """Tests for safety, isolation and git control CLI flag parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
+        git_group = self.parser.add_mutually_exclusive_group()
+        git_group.add_argument("--git", action="store_true", dest="git_enabled", default=True)
+        git_group.add_argument("--no-git", action="store_false", dest="git_enabled")
+        self.parser.add_argument("--git-message", type=str, metavar="MSG")
+        self.parser.add_argument("--git-branch", type=str, metavar="BRANCH")
+        self.parser.add_argument("--write-allow", nargs="+", metavar="PATTERN")
+        self.parser.add_argument("--write-deny", nargs="+", metavar="PATTERN")
+        self.parser.add_argument("--dry-run", action="store_true")
+
+    def test_git_flag_default_is_enabled(self):
+        """Test --git is enabled by default."""
+        args = self.parser.parse_args([])
+        self.assertTrue(args.git_enabled)
+
+    def test_git_flag_can_be_explicitly_enabled(self):
+        """Test --git flag explicitly enables git operations."""
+        args = self.parser.parse_args(["--git"])
+        self.assertTrue(args.git_enabled)
+
+    def test_no_git_flag_disables_git(self):
+        """Test --no-git flag disables git operations."""
+        args = self.parser.parse_args(["--no-git"])
+        self.assertFalse(args.git_enabled)
+
+    def test_git_message_flag_parses(self):
+        """Test --git-message flag accepts message string."""
+        args = self.parser.parse_args(["--git-message", "feat: add new feature"])
+        self.assertEqual(args.git_message, "feat: add new feature")
+
+    def test_git_branch_flag_parses(self):
+        """Test --git-branch flag accepts branch name."""
+        args = self.parser.parse_args(["--git-branch", "feature/new-feature"])
+        self.assertEqual(args.git_branch, "feature/new-feature")
+
+    def test_write_allow_single_pattern(self):
+        """Test --write-allow flag accepts single pattern."""
+        args = self.parser.parse_args(["--write-allow", "src/*"])
+        self.assertEqual(args.write_allow, ["src/*"])
+
+    def test_write_allow_multiple_patterns(self):
+        """Test --write-allow flag accepts multiple patterns."""
+        args = self.parser.parse_args(["--write-allow", "src/*", "tests/*", "*.md"])
+        self.assertEqual(args.write_allow, ["src/*", "tests/*", "*.md"])
+
+    def test_write_deny_single_pattern(self):
+        """Test --write-deny flag accepts single pattern."""
+        args = self.parser.parse_args(["--write-deny", "node_modules/*"])
+        self.assertEqual(args.write_deny, ["node_modules/*"])
+
+    def test_write_deny_multiple_patterns(self):
+        """Test --write-deny flag accepts multiple patterns."""
+        args = self.parser.parse_args(["--write-deny", "node_modules/*", ".git/*", "*.lock"])
+        self.assertEqual(args.write_deny, ["node_modules/*", ".git/*", "*.lock"])
+
+    def test_dry_run_flag_default_false(self):
+        """Test --dry-run flag defaults to False."""
+        args = self.parser.parse_args([])
+        self.assertFalse(args.dry_run)
+
+    def test_dry_run_flag_when_set(self):
+        """Test --dry-run flag is True when specified."""
+        args = self.parser.parse_args(["--dry-run"])
+        self.assertTrue(args.dry_run)
+
+    def test_all_safety_flags_combined(self):
+        """Test all safety and git flags can be used together."""
+        args = self.parser.parse_args([
+            "--no-git",
+            "--git-message", "test: add tests",
+            "--git-branch", "feature/tests",
+            "--write-allow", "src/*", "tests/*",
+            "--write-deny", "node_modules/*",
+            "--dry-run",
+            "execute"
+        ])
+        self.assertFalse(args.git_enabled)
+        self.assertEqual(args.git_message, "test: add tests")
+        self.assertEqual(args.git_branch, "feature/tests")
+        self.assertEqual(args.write_allow, ["src/*", "tests/*"])
+        self.assertEqual(args.write_deny, ["node_modules/*"])
+        self.assertTrue(args.dry_run)
+        self.assertEqual(args.phase, "execute")
+
+    def test_default_values_are_correct(self):
+        """Test safety flags default values."""
+        args = self.parser.parse_args([])
+        self.assertTrue(args.git_enabled)
+        self.assertIsNone(args.git_message)
+        self.assertIsNone(args.git_branch)
+        self.assertIsNone(args.write_allow)
+        self.assertIsNone(args.write_deny)
+        self.assertFalse(args.dry_run)
+
+
+class TestOrchestratorSafetyGitFlags(TempConfigTestCase):
+    """Tests for RalphOrchestrator safety and git flag storage."""
+
+    def test_orchestrator_stores_git_enabled_true(self):
+        """Test orchestrator stores --git flag as True."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", git=True)
+            self.assertTrue(orch._git_enabled)
+
+    def test_orchestrator_stores_git_enabled_false(self):
+        """Test orchestrator stores --no-git flag as False."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", git=False)
+            self.assertFalse(orch._git_enabled)
+
+    def test_orchestrator_stores_git_message(self):
+        """Test orchestrator stores --git-message flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", git_message="feat: new feature")
+            self.assertEqual(orch._git_message, "feat: new feature")
+
+    def test_orchestrator_stores_git_branch(self):
+        """Test orchestrator stores --git-branch flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", git_branch="feature/test")
+            self.assertEqual(orch._git_branch, "feature/test")
+
+    def test_orchestrator_stores_write_allow(self):
+        """Test orchestrator stores --write-allow flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", write_allow=["src/*", "tests/*"])
+            self.assertEqual(orch._write_allow, ["src/*", "tests/*"])
+
+    def test_orchestrator_stores_write_deny(self):
+        """Test orchestrator stores --write-deny flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", write_deny=["node_modules/*", ".git/*"])
+            self.assertEqual(orch._write_deny, ["node_modules/*", ".git/*"])
+
+    def test_orchestrator_stores_dry_run(self):
+        """Test orchestrator stores --dry-run flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", dry_run=True)
+            self.assertTrue(orch._dry_run)
+
+    def test_orchestrator_defaults_safety_git_flags(self):
+        """Test orchestrator defaults all safety/git flags correctly."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            self.assertTrue(orch._git_enabled)
+            self.assertIsNone(orch._git_message)
+            self.assertIsNone(orch._git_branch)
+            self.assertIsNone(orch._write_allow)
+            self.assertIsNone(orch._write_deny)
+            self.assertFalse(orch._dry_run)
+
+    def test_orchestrator_stores_all_safety_flags_together(self):
+        """Test orchestrator stores all safety/git flags when used together."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(
+                agent_name="mock",
+                git=False,
+                git_message="test: message",
+                git_branch="feature/branch",
+                write_allow=["*.py"],
+                write_deny=["*.pyc"],
+                dry_run=True
+            )
+            self.assertFalse(orch._git_enabled)
+            self.assertEqual(orch._git_message, "test: message")
+            self.assertEqual(orch._git_branch, "feature/branch")
+            self.assertEqual(orch._write_allow, ["*.py"])
+            self.assertEqual(orch._write_deny, ["*.pyc"])
+            self.assertTrue(orch._dry_run)
+
+
+# ==============================================================================
 # AGENT ERROR TESTS
 # ==============================================================================
 

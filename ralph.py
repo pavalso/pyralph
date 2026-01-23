@@ -409,7 +409,9 @@ class RalphOrchestrator:
                  test_cmd: Optional[str] = None, skip_verify: bool = False, retries: Optional[int] = None,
                  timeout: Optional[int] = None, only: Optional[List[str]] = None, except_tasks: Optional[List[str]] = None,
                  resume: Optional[str] = None, include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
-                 context_limit: Optional[int] = None) -> None:
+                 context_limit: Optional[int] = None, git: bool = True, git_message: Optional[str] = None,
+                 git_branch: Optional[str] = None, write_allow: Optional[List[str]] = None,
+                 write_deny: Optional[List[str]] = None, dry_run: bool = False) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout)
@@ -446,6 +448,13 @@ class RalphOrchestrator:
         self._include_patterns = include
         self._exclude_patterns = exclude
         self._context_limit = context_limit
+        # Store safety, isolation and git control flags
+        self._git_enabled = git
+        self._git_message = git_message
+        self._git_branch = git_branch
+        self._write_allow = write_allow
+        self._write_deny = write_deny
+        self._dry_run = dry_run
 
     def run_architect(self, user_intent: str) -> None:
         """
@@ -1001,6 +1010,15 @@ def main() -> None:
     parser.add_argument("--include", nargs="+", metavar="PATTERN", help="Include only files matching these glob patterns in context")
     parser.add_argument("--exclude", nargs="+", metavar="PATTERN", help="Exclude files matching these glob patterns from context")
     parser.add_argument("--context-limit", type=int, metavar="N", help="Limit maximum number of context files considered")
+    # Safety, isolation and git control flags
+    git_group = parser.add_mutually_exclusive_group()
+    git_group.add_argument("--git", action="store_true", dest="git_enabled", default=True, help="Enable git operations (default)")
+    git_group.add_argument("--no-git", action="store_false", dest="git_enabled", help="Disable git operations")
+    parser.add_argument("--git-message", type=str, metavar="MSG", help="Custom git commit message template")
+    parser.add_argument("--git-branch", type=str, metavar="BRANCH", help="Target git branch for operations")
+    parser.add_argument("--write-allow", nargs="+", metavar="PATTERN", help="Allow writes only to paths matching these glob patterns")
+    parser.add_argument("--write-deny", nargs="+", metavar="PATTERN", help="Deny writes to paths matching these glob patterns")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate file writes without actually writing")
     args = parser.parse_args()
 
     # Configure logger settings
@@ -1042,7 +1060,13 @@ def main() -> None:
         resume=args.resume,
         include=args.include,
         exclude=args.exclude,
-        context_limit=args.context_limit
+        context_limit=args.context_limit,
+        git=args.git_enabled,
+        git_message=args.git_message,
+        git_branch=args.git_branch,
+        write_allow=args.write_allow,
+        write_deny=args.write_deny,
+        dry_run=args.dry_run
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
