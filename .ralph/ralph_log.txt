@@ -1,0 +1,52 @@
+
+============================================================
+➡️ [2026-01-23 15:54:10] TYPE: PROMPT | TAG: ARCHITECT
+============================================================
+ROLE: Senior Architect
+OBJECTIVE: Initialize the project wiki in .ralph/memory/ for the intent below and ensure a deterministic test command is discoverable.
+
+INTENT:
+Study the current codebase
+
+PROJECT FILE TREE (depth 2):
+├── .claude
+├── .gitignore
+├── .vscode
+├── agents
+├── MANIFEST.in
+├── prompt.md
+├── pyproject.toml
+├── pytest.ini
+├── ralph.py
+├── README.md
+├── test_ralph.py
+├── __init__.py
+
+CAPABILITIES & EXECUTION ENV:
+- You can read/write files and run shell commands in the current working directory.
+- All file paths are relative to the project root (CWD).
+- Create files directly on disk; do not rely on stdout for file content.
+
+DELIVERABLE:
+- Create the file: .ralph/memory/architecture.md
+
+CONTENT REQUIREMENTS for architecture.md:
+- Use YAML frontmatter:
+  ---
+  type: wiki
+  title: Architecture
+  ---
+- Include sections:
+  1) Tech Stack
+  2) Overview
+  3) Key Components
+  4) Risks & Assumptions
+  5) **Test Command** — MUST include a literal line of the form:
+     Test Command: `YOUR_TEST_COMMAND_HERE`
+     (Exactly this label and backtick format so an automated regex can extract it.)
+- Keep content concise and actionable.
+
+OUTPUT RULES:
+- Do NOT print the file content to stdout.
+- You may print a one-line confirmation like:
+  STATUS: CREATED .ralph/memory/architecture.md

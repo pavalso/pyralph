@@ -520,6 +520,8 @@ RETRY CONTEXT (from previous attempt, if any):
     def start(self, phase: str = "all", accept_all: bool = False):
         Logger.info(f"🤖 Ralph {self.agent.get_name()} Agent active in: {CONF.BASE_DIR}", "GREEN")
 
+        user_intent = None
+
         # Handle phase-specific execution
         if phase == "architect":
             Logger.info("📋 Phase specified: architect only", "YELLOW")

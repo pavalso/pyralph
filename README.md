@@ -39,6 +39,8 @@ pip install -e .
 ralph
 ralph --accept-all
 ralph -y
+ralph planner
+ralph execute --accept-all
 ```
 
 Starts or resumes the agent loop. If no project plan exists, prompts for a project description first.

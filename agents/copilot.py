@@ -54,59 +54,61 @@ class GithubAgent(BaseAgent):
                 self._logger.debug(f"=== COPILOT PROMPT [{tag}] ===", "CYAN")
                 self._logger.debug(prompt, "CYAN")
                 self._logger.debug("=" * 40, "CYAN")
-        
-        prompt = prompt.replace("\n", " ")
-        prompt = prompt.replace('"', '\\"')
-        prompt = prompt.strip()
-        prompt += "\n"
 
-        cmd = [
-            shutil.which("copilot"),
-            "--allow-all-tools",
-            "--add-dir", ".",
-            "--no-ask-user",
-            "-s",
-            "-p", prompt
-        ]
+        import tempfile
 
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                encoding='utf-8', timeout=self.timeout_seconds
-            )
+        with tempfile.NamedTemporaryFile(mode='w+', delete=True, encoding='utf-8') as temp_file:
+            temp_file.write(prompt)
+            temp_file.flush()
+            temp_file_path = temp_file.name
 
-            log_content = result.stdout
-            if result.stderr.strip():
-                log_content += f"\n\n--- [CLI STDERR] ---\n{result.stderr}"
+            cmd = [
+                shutil.which("copilot"),
+                "--allow-all-paths",
+                "--allow-all-tools",
+                "--add-dir", ".",
+                "--no-ask-user",
+                "-s",
+                "-p", "@{} You MUST threat this file as the prompt.".format(temp_file_path)
+            ]
 
-            if result.returncode != 0:
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    encoding='utf-8', timeout=self.timeout_seconds
+                )
+
+                log_content = result.stdout
+                if result.stderr.strip():
+                    log_content += f"\n\n--- [CLI STDERR] ---\n{result.stderr}"
+
+                if result.returncode != 0:
+                    if self._logger:
+                        self._logger.file_log(log_content, "ERROR", tag)
+                        # Display error in verbose mode
+                        if self._logger.verbose:
+                            self._logger.debug(f"=== COPILOT ERROR [{tag}] ===", "RED")
+                            self._logger.debug(f"STDOUT:\n{result.stdout}", "RED")
+                            self._logger.debug(f"STDERR:\n{result.stderr}", "RED")
+                            self._logger.debug("=" * 40, "RED")
+                    return False, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+
                 if self._logger:
-                    self._logger.file_log(log_content, "ERROR", tag)
-                    # Display error in verbose mode
+                    self._logger.file_log(log_content, "RESPONSE", tag)
+
+                    # Display response in verbose mode
                     if self._logger.verbose:
-                        self._logger.debug(f"=== COPILOT ERROR [{tag}] ===", "RED")
-                        self._logger.debug(f"STDOUT:\n{result.stdout}", "RED")
-                        self._logger.debug(f"STDERR:\n{result.stderr}", "RED")
+                        self._logger.debug(f"=== COPILOT RESPONSE [{tag}] ===", "GREEN")
+                        self._logger.debug(result.stdout, "GREEN")
+                        self._logger.debug("=" * 40, "GREEN")
+
+                return True, result.stdout
+
+            except Exception as e:
+                if self._logger:
+                    self._logger.file_log(str(e), "SYSTEM_EXCEPTION", tag)
+                    if self._logger.verbose:
+                        self._logger.debug(f"=== COPILOT EXCEPTION [{tag}] ===", "RED")
+                        self._logger.debug(str(e), "RED")
                         self._logger.debug("=" * 40, "RED")
-                return False, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-
-            if self._logger:
-                self._logger.file_log(log_content, "RESPONSE", tag)
-
-                # Display response in verbose mode
-                if self._logger.verbose:
-                    self._logger.debug(f"=== COPILOT RESPONSE [{tag}] ===", "GREEN")
-                    self._logger.debug(result.stdout, "GREEN")
-                    self._logger.debug("=" * 40, "GREEN")
-
-            return True, result.stdout
-
-        except Exception as e:
-            if self._logger:
-                self._logger.file_log(str(e), "SYSTEM_EXCEPTION", tag)
-                if self._logger.verbose:
-                    self._logger.debug(f"=== COPILOT EXCEPTION [{tag}] ===", "RED")
-                    self._logger.debug(str(e), "RED")
-                    self._logger.debug("=" * 40, "RED")
-            return False, str(e)
-
+                return False, str(e)
