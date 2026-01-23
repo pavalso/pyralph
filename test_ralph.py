@@ -1188,6 +1188,467 @@ class TestOrchestratorExportMemory(TempConfigTestCase):
 
 
 # ==============================================================================
+# EXECUTION AND VERIFICATION FLAGS TESTS
+# ==============================================================================
+
+
+class TestExecutionVerificationFlags(TempConfigTestCase):
+    """Tests for --test-cmd, --skip-verify, --retries, --timeout, --only, --except, --resume CLI flags."""
+
+    def setUp(self):
+        super().setUp()
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
+        self.parser.add_argument("--test-cmd", type=str, metavar="CMD")
+        self.parser.add_argument("--skip-verify", action="store_true")
+        self.parser.add_argument("--retries", type=int, metavar="N")
+        self.parser.add_argument("--timeout", type=int, metavar="SECS")
+        self.parser.add_argument("--only", nargs="+", metavar="TASK_ID")
+        self.parser.add_argument("--except", dest="except_tasks", nargs="+", metavar="TASK_ID")
+        self.parser.add_argument("--resume", type=str, metavar="TASK_ID")
+
+    def test_test_cmd_flag_parses(self):
+        """Test --test-cmd flag accepts command string."""
+        args = self.parser.parse_args(["--test-cmd", "npm test", "execute"])
+        self.assertEqual(args.test_cmd, "npm test")
+        self.assertEqual(args.phase, "execute")
+
+    def test_skip_verify_flag_parses(self):
+        """Test --skip-verify flag is boolean."""
+        args = self.parser.parse_args(["--skip-verify"])
+        self.assertTrue(args.skip_verify)
+
+        args = self.parser.parse_args([])
+        self.assertFalse(args.skip_verify)
+
+    def test_retries_flag_parses(self):
+        """Test --retries flag accepts integer."""
+        args = self.parser.parse_args(["--retries", "5"])
+        self.assertEqual(args.retries, 5)
+
+    def test_timeout_flag_parses(self):
+        """Test --timeout flag accepts integer seconds."""
+        args = self.parser.parse_args(["--timeout", "300"])
+        self.assertEqual(args.timeout, 300)
+
+    def test_only_flag_parses_single(self):
+        """Test --only flag accepts single task ID."""
+        args = self.parser.parse_args(["--only", "TASK-001"])
+        self.assertEqual(args.only, ["TASK-001"])
+
+    def test_only_flag_parses_multiple(self):
+        """Test --only flag accepts multiple task IDs."""
+        args = self.parser.parse_args(["--only", "TASK-001", "TASK-003", "TASK-005"])
+        self.assertEqual(args.only, ["TASK-001", "TASK-003", "TASK-005"])
+
+    def test_except_flag_parses_single(self):
+        """Test --except flag accepts single task ID."""
+        args = self.parser.parse_args(["--except", "TASK-002"])
+        self.assertEqual(args.except_tasks, ["TASK-002"])
+
+    def test_except_flag_parses_multiple(self):
+        """Test --except flag accepts multiple task IDs."""
+        args = self.parser.parse_args(["--except", "TASK-002", "TASK-004"])
+        self.assertEqual(args.except_tasks, ["TASK-002", "TASK-004"])
+
+    def test_resume_flag_parses(self):
+        """Test --resume flag accepts task ID."""
+        args = self.parser.parse_args(["--resume", "TASK-003"])
+        self.assertEqual(args.resume, "TASK-003")
+
+    def test_all_execution_flags_combined(self):
+        """Test all execution flags can be used together."""
+        args = self.parser.parse_args([
+            "--test-cmd", "pytest -v",
+            "--skip-verify",
+            "--retries", "5",
+            "--timeout", "300",
+            "--only", "TASK-001", "TASK-002",
+            "--resume", "TASK-001",
+            "execute"
+        ])
+        self.assertEqual(args.test_cmd, "pytest -v")
+        self.assertTrue(args.skip_verify)
+        self.assertEqual(args.retries, 5)
+        self.assertEqual(args.timeout, 300)
+        self.assertEqual(args.only, ["TASK-001", "TASK-002"])
+        self.assertEqual(args.resume, "TASK-001")
+        self.assertEqual(args.phase, "execute")
+
+
+class TestOrchestratorExecutionFlags(TempConfigTestCase):
+    """Tests for RalphOrchestrator execution flag handling."""
+
+    def test_orchestrator_stores_test_cmd(self):
+        """Test orchestrator stores --test-cmd flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", test_cmd="npm test")
+            self.assertEqual(orch._test_cmd_override, "npm test")
+
+    def test_orchestrator_stores_skip_verify(self):
+        """Test orchestrator stores --skip-verify flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", skip_verify=True)
+            self.assertTrue(orch._skip_verify)
+
+    def test_orchestrator_stores_retries(self):
+        """Test orchestrator stores --retries flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", retries=5)
+            self.assertEqual(orch._retries_override, 5)
+
+    def test_orchestrator_stores_timeout(self):
+        """Test orchestrator stores --timeout flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", timeout=300)
+            self.assertEqual(orch._timeout_override, 300)
+
+    def test_orchestrator_stores_only(self):
+        """Test orchestrator stores --only flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", only=["TASK-001", "TASK-002"])
+            self.assertEqual(orch._only_tasks, ["TASK-001", "TASK-002"])
+
+    def test_orchestrator_stores_except_tasks(self):
+        """Test orchestrator stores --except flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", except_tasks=["TASK-003"])
+            self.assertEqual(orch._except_tasks, ["TASK-003"])
+
+    def test_orchestrator_stores_resume(self):
+        """Test orchestrator stores --resume flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", resume="TASK-005")
+            self.assertEqual(orch._resume_from, "TASK-005")
+
+    def test_orchestrator_defaults_execution_flags(self):
+        """Test orchestrator defaults all execution flags correctly."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            self.assertIsNone(orch._test_cmd_override)
+            self.assertFalse(orch._skip_verify)
+            self.assertIsNone(orch._retries_override)
+            self.assertIsNone(orch._timeout_override)
+            self.assertIsNone(orch._only_tasks)
+            self.assertIsNone(orch._except_tasks)
+            self.assertIsNone(orch._resume_from)
+
+
+class TestOrchestratorTestCmdBehavior(TempConfigTestCase):
+    """Tests for --test-cmd flag behavior in execute_loop."""
+
+    def test_test_cmd_override_used_in_execute_loop(self):
+        """Test --test-cmd override is used instead of extracted command."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Test task", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "STATUS: SUCCESS", None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.run') as mock_shell:
+                mock_shell.return_value = ("", "", 0)
+                with patch('ralph.Logger.info'):
+                    orch = RalphOrchestrator(agent_name="mock", test_cmd="npm test")
+                    orch.execute_loop()
+                    # Verify npm test was called instead of pytest
+                    mock_shell.assert_called()
+                    call_args = mock_shell.call_args[0][0]
+                    self.assertEqual(call_args, "npm test")
+
+
+class TestOrchestratorSkipVerifyBehavior(TempConfigTestCase):
+    """Tests for --skip-verify flag behavior in _execute_task."""
+
+    def test_skip_verify_skips_verification(self):
+        """Test --skip-verify skips verification step."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Test task", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "STATUS: SUCCESS", None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.run') as mock_shell:
+                with patch('ralph.Logger.info'):
+                    orch = RalphOrchestrator(agent_name="mock", skip_verify=True)
+                    orch.execute_loop()
+                    # Shell.run should NOT be called for verification
+                    mock_shell.assert_not_called()
+
+
+class TestOrchestratorRetriesBehavior(TempConfigTestCase):
+    """Tests for --retries flag behavior in _execute_task."""
+
+    def test_retries_override_used(self):
+        """Test --retries override is used instead of config default."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Test task", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        # Agent always fails
+        mock_agent.run.return_value = (True, "STATUS: FAILURE", None)
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Logger.info'):
+                with patch('ralph.Logger.warning'):
+                    orch = RalphOrchestrator(agent_name="mock", retries=2)
+                    orch.execute_loop()
+                    # Should have been called 2 times (not default 3)
+                    self.assertEqual(mock_agent.run.call_count, 2)
+
+
+class TestOrchestratorTimeoutBehavior(TempConfigTestCase):
+    """Tests for --timeout flag behavior in __init__."""
+
+    def test_timeout_override_passed_to_agent(self):
+        """Test --timeout override is passed to agent."""
+        with patch('ralph.get_agent') as mock_get_agent:
+            mock_agent = self.create_mock_agent()
+            mock_get_agent.return_value = mock_agent
+            RalphOrchestrator(agent_name="mock", timeout=300)
+            mock_get_agent.assert_called_once_with("mock", timeout_seconds=300)
+
+    def test_timeout_default_passed_to_agent(self):
+        """Test default timeout is passed when not overridden."""
+        with patch('ralph.get_agent') as mock_get_agent:
+            mock_agent = self.create_mock_agent()
+            mock_get_agent.return_value = mock_agent
+            RalphOrchestrator(agent_name="mock")
+            mock_get_agent.assert_called_once_with("mock", timeout_seconds=CONF.TIMEOUT_SECONDS)
+
+
+class TestOrchestratorOnlyBehavior(TempConfigTestCase):
+    """Tests for --only flag behavior in execute_loop."""
+
+    def test_only_executes_specified_tasks(self):
+        """Test --only executes only specified tasks."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Task 1", "status": "pending"},
+            {"id": "TASK-002", "description": "Task 2", "status": "pending"},
+            {"id": "TASK-003", "description": "Task 3", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "STATUS: SUCCESS", None)
+
+        executed_tasks = []
+
+        def capture_run(prompt, tag):
+            # Extract task ID from tag (format: WORKER-TASK-XXX)
+            task_id = tag.replace("WORKER-", "")
+            executed_tasks.append(task_id)
+            return (True, "STATUS: SUCCESS", None)
+
+        mock_agent.run.side_effect = capture_run
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.run', return_value=("", "", 0)):
+                with patch('ralph.Logger.info'):
+                    with patch('ralph.Logger.debug'):
+                        orch = RalphOrchestrator(agent_name="mock", only=["TASK-001", "TASK-003"])
+                        orch.execute_loop()
+                        # Only TASK-001 and TASK-003 should be executed
+                        self.assertEqual(executed_tasks, ["TASK-001", "TASK-003"])
+
+
+class TestOrchestratorExceptBehavior(TempConfigTestCase):
+    """Tests for --except flag behavior in execute_loop."""
+
+    def test_except_skips_specified_tasks(self):
+        """Test --except skips specified tasks."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Task 1", "status": "pending"},
+            {"id": "TASK-002", "description": "Task 2", "status": "pending"},
+            {"id": "TASK-003", "description": "Task 3", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        executed_tasks = []
+
+        def capture_run(prompt, tag):
+            task_id = tag.replace("WORKER-", "")
+            executed_tasks.append(task_id)
+            return (True, "STATUS: SUCCESS", None)
+
+        mock_agent.run.side_effect = capture_run
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.run', return_value=("", "", 0)):
+                with patch('ralph.Logger.info'):
+                    orch = RalphOrchestrator(agent_name="mock", except_tasks=["TASK-002"])
+                    orch.execute_loop()
+                    # TASK-002 should NOT be executed
+                    self.assertEqual(executed_tasks, ["TASK-001", "TASK-003"])
+
+
+class TestOrchestratorResumeBehavior(TempConfigTestCase):
+    """Tests for --resume flag behavior in execute_loop."""
+
+    def test_resume_starts_from_specified_task(self):
+        """Test --resume starts execution from specified task."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Task 1", "status": "pending"},
+            {"id": "TASK-002", "description": "Task 2", "status": "pending"},
+            {"id": "TASK-003", "description": "Task 3", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        executed_tasks = []
+
+        def capture_run(prompt, tag):
+            task_id = tag.replace("WORKER-", "")
+            executed_tasks.append(task_id)
+            return (True, "STATUS: SUCCESS", None)
+
+        mock_agent.run.side_effect = capture_run
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.run', return_value=("", "", 0)):
+                with patch('ralph.Logger.info'):
+                    with patch('ralph.Logger.debug'):
+                        orch = RalphOrchestrator(agent_name="mock", resume="TASK-002")
+                        orch.execute_loop()
+                        # Should start from TASK-002, skipping TASK-001
+                        self.assertEqual(executed_tasks, ["TASK-002", "TASK-003"])
+
+    def test_resume_warns_when_task_not_found(self):
+        """Test --resume warns when task ID not found in PRD."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Task 1", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Logger.info'):
+                with patch('ralph.Logger.debug'):
+                    with patch('ralph.Logger.warning') as mock_warning:
+                        orch = RalphOrchestrator(agent_name="mock", resume="TASK-999")
+                        orch.execute_loop()
+                        mock_warning.assert_called_with(
+                            "Resume task 'TASK-999' not found in PRD. No tasks executed."
+                        )
+
+
+class TestOrchestratorFlagsCombined(TempConfigTestCase):
+    """Tests for combined execution flags."""
+
+    def test_only_and_resume_combined(self):
+        """Test --only and --resume work together correctly."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Task 1", "status": "pending"},
+            {"id": "TASK-002", "description": "Task 2", "status": "pending"},
+            {"id": "TASK-003", "description": "Task 3", "status": "pending"},
+            {"id": "TASK-004", "description": "Task 4", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        executed_tasks = []
+
+        def capture_run(prompt, tag):
+            task_id = tag.replace("WORKER-", "")
+            executed_tasks.append(task_id)
+            return (True, "STATUS: SUCCESS", None)
+
+        mock_agent.run.side_effect = capture_run
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.run', return_value=("", "", 0)):
+                with patch('ralph.Logger.info'):
+                    with patch('ralph.Logger.debug'):
+                        # Resume from TASK-002, but only execute TASK-002 and TASK-004
+                        orch = RalphOrchestrator(
+                            agent_name="mock",
+                            resume="TASK-002",
+                            only=["TASK-002", "TASK-004"]
+                        )
+                        orch.execute_loop()
+                        # TASK-001 skipped (before resume), TASK-003 skipped (not in only)
+                        self.assertEqual(executed_tasks, ["TASK-002", "TASK-004"])
+
+    def test_except_and_resume_combined(self):
+        """Test --except and --resume work together correctly."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding="utf-8")
+
+        prd = {"id": "PRD-001", "userStories": [
+            {"id": "TASK-001", "description": "Task 1", "status": "pending"},
+            {"id": "TASK-002", "description": "Task 2", "status": "pending"},
+            {"id": "TASK-003", "description": "Task 3", "status": "pending"},
+            {"id": "TASK-004", "description": "Task 4", "status": "pending"}
+        ]}
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        executed_tasks = []
+
+        def capture_run(prompt, tag):
+            task_id = tag.replace("WORKER-", "")
+            executed_tasks.append(task_id)
+            return (True, "STATUS: SUCCESS", None)
+
+        mock_agent.run.side_effect = capture_run
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.run', return_value=("", "", 0)):
+                with patch('ralph.Logger.info'):
+                    with patch('ralph.Logger.debug'):
+                        # Resume from TASK-002, but skip TASK-003
+                        orch = RalphOrchestrator(
+                            agent_name="mock",
+                            resume="TASK-002",
+                            except_tasks=["TASK-003"]
+                        )
+                        orch.execute_loop()
+                        # TASK-001 skipped (before resume), TASK-003 skipped (in except)
+                        self.assertEqual(executed_tasks, ["TASK-002", "TASK-004"])
+
+
+# ==============================================================================
 # AGENT ERROR TESTS
 # ==============================================================================
 

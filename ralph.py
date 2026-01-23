@@ -323,8 +323,13 @@ class TemplateManager:
 class RalphOrchestrator:
     def __init__(self, agent_name: str = "claude", enable_hooks: bool = True, enabled_hook_names: Optional[List[str]] = None,
                  intent: Optional[str] = None, intent_file: Optional[str] = None, prompt_file: Optional[str] = None,
-                 tree_depth: int = 2, tree_ignore: Optional[List[str]] = None, memory_out: Optional[str] = None) -> None:
-        self.agent = get_agent(agent_name, timeout_seconds=CONF.TIMEOUT_SECONDS)
+                 tree_depth: int = 2, tree_ignore: Optional[List[str]] = None, memory_out: Optional[str] = None,
+                 test_cmd: Optional[str] = None, skip_verify: bool = False, retries: Optional[int] = None,
+                 timeout: Optional[int] = None, only: Optional[List[str]] = None, except_tasks: Optional[List[str]] = None,
+                 resume: Optional[str] = None) -> None:
+        # Use --timeout override if provided, otherwise use config default
+        agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
+        self.agent = get_agent(agent_name, timeout_seconds=agent_timeout)
         if hasattr(self.agent, 'set_logger'): self.agent.set_logger(Logger)
         if hasattr(self.agent, 'set_config'): self.agent.set_config(CONF)
         if not self.agent.check_dependencies():
@@ -346,6 +351,14 @@ class RalphOrchestrator:
         self._tree_depth = tree_depth
         self._tree_ignore = tree_ignore
         self._memory_out = memory_out
+        # Store execution and verification flags
+        self._test_cmd_override = test_cmd
+        self._skip_verify = skip_verify
+        self._retries_override = retries
+        self._timeout_override = timeout
+        self._only_tasks = only
+        self._except_tasks = except_tasks
+        self._resume_from = resume
 
     def run_architect(self, user_intent: str) -> None:
         """
@@ -442,17 +455,50 @@ class RalphOrchestrator:
         Iterates through user stories, executing each pending task
         with verification. Continues to next task on failure instead
         of terminating. Archives the PRD upon completion.
+
+        Respects the following flags:
+        - --test-cmd: Override the test command from memory
+        - --skip-verify: Skip verification step after task execution
+        - --retries: Override max retry count
+        - --only: Execute only specified task IDs
+        - --except: Skip specified task IDs
+        - --resume: Resume execution from a specific task ID
         """
         prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
-        test_cmd = self.memory.extract_test_command()
+        # Use --test-cmd override if provided, otherwise extract from memory
+        test_cmd = self._test_cmd_override if self._test_cmd_override else self.memory.extract_test_command()
 
         Logger.info(f"\n🚀 Starting Loop. Verify Command: '{test_cmd}'", "YELLOW")
+        if self._skip_verify:
+            Logger.info("   ⏭️  Verification will be skipped (--skip-verify)", "YELLOW")
         self.hooks.emit(Event(EventType.PHASE_START, phase="execute"))
         self.hooks.emit(Event(EventType.EXECUTE_START, phase="execute", verification_command=test_cmd))
 
         failed_tasks: List[str] = []
+        resume_found = self._resume_from is None  # If no --resume, start immediately
 
         for task in prd.get('userStories', []):
+            task_id = task['id']
+
+            # Handle --resume: skip tasks until we find the resume target
+            if not resume_found:
+                if task_id == self._resume_from:
+                    resume_found = True
+                    Logger.info(f"   ➡️  Resuming from task {task_id}", "CYAN")
+                else:
+                    Logger.debug(f"   ⏭️  Skipping {task_id} (before resume point)")
+                    continue
+
+            # Handle --only: execute only specified tasks
+            if self._only_tasks and task_id not in self._only_tasks:
+                Logger.debug(f"   ⏭️  Skipping {task_id} (not in --only list)")
+                continue
+
+            # Handle --except: skip specified tasks
+            if self._except_tasks and task_id in self._except_tasks:
+                Logger.info(f"   ⏭️  Skipping {task_id} (in --except list)", "YELLOW")
+                continue
+
             if task.get('status') == 'completed':
                 continue
             # Reset failed tasks to pending so they can be retried
@@ -467,6 +513,10 @@ class RalphOrchestrator:
 
             if not success:
                 failed_tasks.append(task['id'])
+
+        # Check if --resume target was not found
+        if not resume_found:
+            Logger.warning(f"Resume task '{self._resume_from}' not found in PRD. No tasks executed.")
 
         # Report summary
         if failed_tasks:
@@ -556,15 +606,23 @@ class RalphOrchestrator:
         """
         Execute a single task with retries.
 
+        Respects the following flags:
+        - --skip-verify: Skip verification step after task execution
+        - --retries: Override max retry count
+        - --timeout: Override agent timeout
+
         Returns:
             True if task completed successfully, False if max retries exhausted.
         """
+        # Use --retries override if provided, otherwise use config default
+        max_retries = self._retries_override if self._retries_override is not None else CONF.MAX_RETRIES
+
         self.hooks.emit(Event(
             EventType.TASK_START, phase="execute",
-            task_id=task['id'], task_description=task['description'], max_retries=CONF.MAX_RETRIES
+            task_id=task['id'], task_description=task['description'], max_retries=max_retries
         ))
 
-        for retry in range(CONF.MAX_RETRIES):
+        for retry in range(max_retries):
             prev_errors = CONF.PROGRESS_FILE.read_text(encoding='utf-8') if CONF.PROGRESS_FILE.exists() else ""
             prompt = TemplateManager.render(
                 "developer.txt",
@@ -582,6 +640,18 @@ class RalphOrchestrator:
                 continue
 
             if "STATUS: SUCCESS" in output:
+                # Handle --skip-verify: skip verification step if flag is set
+                if self._skip_verify:
+                    Logger.info("   ⏭️  Skipping verification (--skip-verify)", "YELLOW")
+                    task['status'] = 'completed'
+                    if CONF.PROGRESS_FILE.exists():
+                        CONF.PROGRESS_FILE.unlink()
+                    self.hooks.emit(Event(
+                        EventType.TASK_SUCCESS, phase="execute",
+                        task_id=task['id'], task_description=task['description']
+                    ))
+                    return True
+
                 verified, verify_error = self._verify_task(task, test_cmd)
                 if verified:
                     task['status'] = 'completed'
@@ -604,23 +674,25 @@ class RalphOrchestrator:
                 )
                 self._record_failure(retry, "Agent Reported Failure", output[-1000:], agent_error=error, task_id=task['id'])
 
-            self._emit_retry_event(task, retry)
+            self._emit_retry_event(task, retry, max_retries)
 
         Logger.info(f"🛑 Max retries for {task['id']}. Marking as failed and continuing.", "RED")
         task['status'] = 'failed'
         self.hooks.emit(Event(
             EventType.TASK_FAILURE, phase="execute",
             task_id=task['id'], task_description=task['description'],
-            retry_count=CONF.MAX_RETRIES, max_retries=CONF.MAX_RETRIES
+            retry_count=max_retries, max_retries=max_retries
         ))
         return False
 
-    def _emit_retry_event(self, task: Dict[str, Any], retry: int) -> None:
+    def _emit_retry_event(self, task: Dict[str, Any], retry: int, max_retries: Optional[int] = None) -> None:
         """Emit a task retry event."""
+        if max_retries is None:
+            max_retries = self._retries_override if self._retries_override is not None else CONF.MAX_RETRIES
         self.hooks.emit(Event(
             EventType.TASK_RETRY, phase="execute",
             task_id=task['id'], task_description=task['description'],
-            retry_count=retry + 1, max_retries=CONF.MAX_RETRIES
+            retry_count=retry + 1, max_retries=max_retries
         ))
 
     def _record_failure(self, retry: int, reason: str, detail: str, agent_error: Optional[AgentError] = None, task_id: Optional[str] = None) -> None:
@@ -822,6 +894,14 @@ def main() -> None:
     parser.add_argument("--tree-depth", type=int, default=2, metavar="N", help="File tree depth for architect (default: 2)")
     parser.add_argument("--tree-ignore", nargs="+", metavar="PATTERN", help="Patterns to ignore in file tree (default: node_modules, venv, .git, .ralph, __pycache__)")
     parser.add_argument("--memory-out", type=str, metavar="FILE", help="Export memory contents to file after architect phase")
+    # Execution and verification flags for task control
+    parser.add_argument("--test-cmd", type=str, metavar="CMD", help="Override test command for verification")
+    parser.add_argument("--skip-verify", action="store_true", help="Skip verification step after task execution")
+    parser.add_argument("--retries", type=int, metavar="N", help="Override max retries per task (default: 3)")
+    parser.add_argument("--timeout", type=int, metavar="SECS", help="Override agent timeout in seconds (default: 600)")
+    parser.add_argument("--only", nargs="+", metavar="TASK_ID", help="Execute only specified task IDs")
+    parser.add_argument("--except", dest="except_tasks", nargs="+", metavar="TASK_ID", help="Skip specified task IDs")
+    parser.add_argument("--resume", type=str, metavar="TASK_ID", help="Resume execution from a specific task ID")
     args = parser.parse_args()
 
     # Configure logger settings
@@ -853,7 +933,14 @@ def main() -> None:
         prompt_file=args.prompt_file,
         tree_depth=args.tree_depth,
         tree_ignore=args.tree_ignore,
-        memory_out=args.memory_out
+        memory_out=args.memory_out,
+        test_cmd=args.test_cmd,
+        skip_verify=args.skip_verify,
+        retries=args.retries,
+        timeout=args.timeout,
+        only=args.only,
+        except_tasks=args.except_tasks,
+        resume=args.resume
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
