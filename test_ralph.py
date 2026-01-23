@@ -3685,5 +3685,518 @@ class TestIOLoggingOutputFlagsCLI(unittest.TestCase):
             self.assertTrue(call_kwargs['archive'])  # Default is True
 
 
+# ==============================================================================
+# HEADLESS OPERATION FLAGS TESTS (TASK-009)
+# ==============================================================================
+
+
+class TestHeadlessFlagsArgumentParsing(unittest.TestCase):
+    """Tests for --non-interactive, --ci, and --status-check CLI flag parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
+        self.parser.add_argument("--non-interactive", action="store_true")
+        self.parser.add_argument("--ci", action="store_true")
+        self.parser.add_argument("--status-check", action="store_true")
+
+    def test_non_interactive_flag_parses(self):
+        """Test --non-interactive flag is parsed correctly."""
+        args = self.parser.parse_args(["--non-interactive"])
+        self.assertTrue(args.non_interactive)
+
+    def test_ci_flag_parses(self):
+        """Test --ci flag is parsed correctly."""
+        args = self.parser.parse_args(["--ci"])
+        self.assertTrue(args.ci)
+
+    def test_status_check_flag_parses(self):
+        """Test --status-check flag is parsed correctly."""
+        args = self.parser.parse_args(["--status-check"])
+        self.assertTrue(args.status_check)
+
+    def test_all_headless_flags_combined(self):
+        """Test all headless flags can be used together."""
+        args = self.parser.parse_args(["--non-interactive", "--ci", "--status-check", "execute"])
+        self.assertTrue(args.non_interactive)
+        self.assertTrue(args.ci)
+        self.assertTrue(args.status_check)
+        self.assertEqual(args.phase, "execute")
+
+    def test_headless_flags_default_to_false(self):
+        """Test headless flags default to False when not specified."""
+        args = self.parser.parse_args([])
+        self.assertFalse(args.non_interactive)
+        self.assertFalse(args.ci)
+        self.assertFalse(args.status_check)
+
+
+class TestLoggerNonInteractive(unittest.TestCase):
+    """Tests for Logger.non_interactive class attribute."""
+
+    def setUp(self):
+        self._original_non_interactive = Logger.non_interactive
+
+    def tearDown(self):
+        Logger.non_interactive = self._original_non_interactive
+
+    def test_set_non_interactive_true(self):
+        """Test set_non_interactive(True) enables non-interactive mode."""
+        Logger.set_non_interactive(True)
+        self.assertTrue(Logger.non_interactive)
+
+    def test_set_non_interactive_false(self):
+        """Test set_non_interactive(False) disables non-interactive mode."""
+        Logger.non_interactive = True
+        Logger.set_non_interactive(False)
+        self.assertFalse(Logger.non_interactive)
+
+    def test_non_interactive_default_is_false(self):
+        """Test that non_interactive defaults to False."""
+        Logger.non_interactive = False  # Reset to default
+        self.assertFalse(Logger.non_interactive)
+
+
+class TestOrchestratorHeadlessFlags(TempConfigTestCase):
+    """Tests for RalphOrchestrator headless operation flag handling."""
+
+    def test_init_stores_non_interactive_flag(self):
+        """Test __init__ stores non_interactive flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", non_interactive=True)
+        self.assertTrue(orch._non_interactive)
+
+    def test_init_stores_ci_flag(self):
+        """Test __init__ stores ci flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", ci=True)
+        self.assertTrue(orch._ci)
+
+    def test_init_stores_status_check_flag(self):
+        """Test __init__ stores status_check flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+        self.assertTrue(orch._status_check)
+
+    def test_init_defaults_headless_flags_to_false(self):
+        """Test headless flags default to False when not specified."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+        self.assertFalse(orch._non_interactive)
+        self.assertFalse(orch._ci)
+        self.assertFalse(orch._status_check)
+
+
+class TestNonInteractiveBehavior(TempConfigTestCase):
+    """Tests for non-interactive mode behavior in prompts."""
+
+    def test_prompt_user_for_phase_exits_in_non_interactive(self):
+        """Test _prompt_user_for_phase exits with error in non-interactive mode."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", non_interactive=True)
+        with self.assertRaises(SystemExit) as ctx:
+            orch._prompt_user_for_phase("test")
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_prompt_user_for_phase_works_in_interactive(self):
+        """Test _prompt_user_for_phase prompts user in interactive mode."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", non_interactive=False)
+        with patch('builtins.input', return_value='y'):
+            result = orch._prompt_user_for_phase("test")
+        self.assertTrue(result)
+
+    def test_get_intent_exits_without_intent_in_non_interactive(self):
+        """Test _get_intent exits if no intent provided in non-interactive mode."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", non_interactive=True)
+        with self.assertRaises(SystemExit) as ctx:
+            orch._get_intent()
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_get_intent_returns_intent_flag_in_non_interactive(self):
+        """Test _get_intent returns intent from flag in non-interactive mode."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", non_interactive=True, intent="Build an API")
+        result = orch._get_intent()
+        self.assertEqual(result, "Build an API")
+
+    def test_get_intent_returns_intent_file_in_non_interactive(self):
+        """Test _get_intent returns intent from file in non-interactive mode."""
+        intent_file = self.temp_path / "intent.txt"
+        intent_file.write_text("Build a web app", encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", non_interactive=True, intent_file=str(intent_file))
+        result = orch._get_intent()
+        self.assertEqual(result, "Build a web app")
+
+
+class TestStatusCheckBehavior(TempConfigTestCase):
+    """Tests for --status-check flag behavior."""
+
+    def test_check_prd_status_returns_2_when_no_prd(self):
+        """Test _check_prd_status returns 2 when no PRD file exists."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+        exit_code = orch._check_prd_status()
+        self.assertEqual(exit_code, 2)
+
+    def test_check_prd_status_returns_1_when_empty_prd(self):
+        """Test _check_prd_status returns 1 when PRD has no tasks."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.PRD_FILE.write_text('{"id": "PRD-001", "userStories": []}', encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+        exit_code = orch._check_prd_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_check_prd_status_returns_0_when_all_completed(self):
+        """Test _check_prd_status returns 0 when all tasks completed."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "status": "completed"},
+                {"id": "TASK-002", "status": "completed"}
+            ]
+        }
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+        exit_code = orch._check_prd_status()
+        self.assertEqual(exit_code, 0)
+
+    def test_check_prd_status_returns_1_when_tasks_pending(self):
+        """Test _check_prd_status returns 1 when tasks are pending."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "status": "completed"},
+                {"id": "TASK-002", "status": "pending"}
+            ]
+        }
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+        exit_code = orch._check_prd_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_check_prd_status_returns_1_when_tasks_failed(self):
+        """Test _check_prd_status returns 1 when tasks are failed."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "status": "completed"},
+                {"id": "TASK-002", "status": "failed"}
+            ]
+        }
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+        exit_code = orch._check_prd_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_check_prd_status_handles_none_status(self):
+        """Test _check_prd_status treats None status as pending."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001"},  # No status field
+                {"id": "TASK-002", "status": "completed"}
+            ]
+        }
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+        exit_code = orch._check_prd_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_start_with_status_check_exits_with_code(self):
+        """Test start() exits with status code when --status-check is set."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd = {
+            "id": "PRD-001",
+            "userStories": [{"id": "TASK-001", "status": "completed"}]
+        }
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+        with self.assertRaises(SystemExit) as ctx:
+            orch.start()
+        self.assertEqual(ctx.exception.code, 0)
+
+
+class TestCIModeBehavior(TempConfigTestCase):
+    """Tests for --ci flag behavior and defaults."""
+
+    def setUp(self):
+        super().setUp()
+        # Save original Logger state
+        self._original_no_color = Logger.no_color
+        self._original_no_emoji = Logger.no_emoji
+        self._original_json_output = Logger.json_output
+        self._original_ndjson_output = Logger.ndjson_output
+        self._original_non_interactive = Logger.non_interactive
+        # Reset to defaults for clean test state
+        Logger.no_color = False
+        Logger.no_emoji = False
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.non_interactive = False
+
+    def tearDown(self):
+        super().tearDown()
+        # Restore Logger state
+        Logger.no_color = self._original_no_color
+        Logger.no_emoji = self._original_no_emoji
+        Logger.json_output = self._original_json_output
+        Logger.ndjson_output = self._original_ndjson_output
+        Logger.non_interactive = self._original_non_interactive
+
+    def test_ci_mode_enables_non_interactive(self):
+        """Test --ci mode enables non-interactive behavior."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--ci', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['non_interactive'])
+
+    def test_ci_mode_enables_no_color(self):
+        """Test --ci mode disables colors via Logger."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--ci', 'execute']):
+                main()
+            self.assertTrue(Logger.no_color)
+
+    def test_ci_mode_enables_no_emoji(self):
+        """Test --ci mode disables emojis via Logger."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--ci', 'execute']):
+                main()
+            self.assertTrue(Logger.no_emoji)
+
+    def test_ci_mode_enables_json_output(self):
+        """Test --ci mode enables JSON output via Logger."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--ci', 'execute']):
+                main()
+            self.assertTrue(Logger.json_output)
+
+    def test_ci_mode_allows_ndjson_override(self):
+        """Test --ci mode with --ndjson uses NDJSON instead of JSON."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--ci', '--ndjson', 'execute']):
+                main()
+            self.assertFalse(Logger.json_output)
+            self.assertTrue(Logger.ndjson_output)
+
+    def test_ci_flag_stored_in_orchestrator(self):
+        """Test --ci flag is stored in orchestrator."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--ci', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['ci'])
+
+
+class TestHeadlessFlagsCLI(unittest.TestCase):
+    """Tests for headless operation flags CLI integration."""
+
+    def setUp(self):
+        # Save original Logger state
+        self._original_no_color = Logger.no_color
+        self._original_no_emoji = Logger.no_emoji
+        self._original_json_output = Logger.json_output
+        self._original_ndjson_output = Logger.ndjson_output
+        self._original_non_interactive = Logger.non_interactive
+
+    def tearDown(self):
+        # Restore Logger state
+        Logger.no_color = self._original_no_color
+        Logger.no_emoji = self._original_no_emoji
+        Logger.json_output = self._original_json_output
+        Logger.ndjson_output = self._original_ndjson_output
+        Logger.non_interactive = self._original_non_interactive
+
+    def test_cli_parses_non_interactive_flag(self):
+        """Test CLI parses --non-interactive flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--non-interactive', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['non_interactive'])
+
+    def test_cli_parses_ci_flag(self):
+        """Test CLI parses --ci flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--ci', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['ci'])
+
+    def test_cli_parses_status_check_flag(self):
+        """Test CLI parses --status-check flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--status-check', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['status_check'])
+
+    def test_cli_headless_flags_default_to_false(self):
+        """Test headless flags default to False via CLI."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertFalse(call_kwargs['non_interactive'])
+            self.assertFalse(call_kwargs['ci'])
+            self.assertFalse(call_kwargs['status_check'])
+
+    def test_cli_all_headless_flags_together(self):
+        """Test all headless flags can be used together via CLI."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--non-interactive', '--ci', '--status-check', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertTrue(call_kwargs['non_interactive'])
+            self.assertTrue(call_kwargs['ci'])
+            self.assertTrue(call_kwargs['status_check'])
+
+
+class TestStatusCheckJSONOutput(TempConfigTestCase):
+    """Tests for --status-check JSON output format."""
+
+    def setUp(self):
+        super().setUp()
+        self._original_json_output = Logger.json_output
+        self._original_ndjson_output = Logger.ndjson_output
+
+    def tearDown(self):
+        super().tearDown()
+        Logger.json_output = self._original_json_output
+        Logger.ndjson_output = self._original_ndjson_output
+
+    def test_status_check_json_output_success(self):
+        """Test _check_prd_status outputs JSON on success."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd = {
+            "id": "PRD-001",
+            "userStories": [{"id": "TASK-001", "status": "completed"}]
+        }
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+        Logger.json_output = True
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            exit_code = orch._check_prd_status()
+
+        output = captured_output.getvalue()
+        self.assertEqual(exit_code, 0)
+        data = json.loads(output)
+        self.assertEqual(data['status'], 'success')
+        self.assertEqual(data['exit_code'], 0)
+        self.assertEqual(data['total'], 1)
+        self.assertEqual(data['completed'], 1)
+
+    def test_status_check_json_output_incomplete(self):
+        """Test _check_prd_status outputs JSON on incomplete."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "status": "completed"},
+                {"id": "TASK-002", "status": "pending"}
+            ]
+        }
+        CONF.PRD_FILE.write_text(json.dumps(prd), encoding='utf-8')
+        Logger.json_output = True
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            exit_code = orch._check_prd_status()
+
+        output = captured_output.getvalue()
+        self.assertEqual(exit_code, 1)
+        data = json.loads(output)
+        self.assertEqual(data['status'], 'incomplete')
+        self.assertEqual(data['exit_code'], 1)
+        self.assertEqual(data['completed'], 1)
+        self.assertEqual(data['pending'], 1)
+
+    def test_status_check_json_output_no_prd(self):
+        """Test _check_prd_status outputs JSON when no PRD."""
+        Logger.json_output = True
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", status_check=True)
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            exit_code = orch._check_prd_status()
+
+        output = captured_output.getvalue()
+        self.assertEqual(exit_code, 2)
+        data = json.loads(output)
+        self.assertEqual(data['status'], 'no_prd')
+        self.assertEqual(data['exit_code'], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

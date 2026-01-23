@@ -64,6 +64,8 @@ class Logger:
     ndjson_output = False
     # Custom log file path (None = use default CONF.LOG_FILE)
     custom_log_file: Optional[Path] = None
+    # Non-interactive mode (disables all interactive prompts)
+    non_interactive = False
 
     @staticmethod
     def set_no_color(enabled: bool) -> None:
@@ -122,6 +124,11 @@ class Logger:
     def set_log_file(path: Optional[str]) -> None:
         """Set custom log file path."""
         Logger.custom_log_file = Path(path) if path else None
+
+    @staticmethod
+    def set_non_interactive(enabled: bool) -> None:
+        """Set non-interactive mode (disables all interactive prompts)."""
+        Logger.non_interactive = enabled
 
     @staticmethod
     def get_log_file() -> Path:
@@ -498,7 +505,8 @@ class RalphOrchestrator:
                  max_tokens: Optional[int] = None, seed: Optional[int] = None,
                  log_file: Optional[str] = None, log_level: Optional[str] = None,
                  json_output: bool = False, ndjson_output: bool = False,
-                 print_prd: bool = False, prd_out: Optional[str] = None, archive: bool = True) -> None:
+                 print_prd: bool = False, prd_out: Optional[str] = None, archive: bool = True,
+                 non_interactive: bool = False, ci: bool = False, status_check: bool = False) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -552,6 +560,10 @@ class RalphOrchestrator:
         self._print_prd_flag = print_prd
         self._prd_out = prd_out
         self._archive = archive
+        # Store headless operation flags
+        self._non_interactive = non_interactive
+        self._ci = ci
+        self._status_check = status_check
 
     def run_architect(self, user_intent: str) -> None:
         """
@@ -992,6 +1004,55 @@ class RalphOrchestrator:
         out_path.write_text(prd_content, encoding='utf-8')
         Logger.info(f"📋 PRD exported to {out_path}", "MAGENTA")
 
+    def _check_prd_status(self) -> int:
+        """
+        Check PRD status and return appropriate exit code.
+
+        Returns:
+            0 if all tasks completed, 1 if tasks pending/failed, 2 if no PRD exists.
+        """
+        if not CONF.PRD_FILE.exists():
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message("No PRD file found", "error", status="no_prd", exit_code=2))
+            else:
+                Logger.error("No PRD file found. Run planner first.")
+            return 2
+
+        prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        tasks = prd.get('userStories', [])
+
+        if not tasks:
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message("PRD has no tasks", "warn", status="empty", exit_code=1))
+            else:
+                Logger.warning("PRD has no tasks.")
+            return 1
+
+        completed = sum(1 for t in tasks if t.get('status') == 'completed')
+        failed = sum(1 for t in tasks if t.get('status') == 'failed')
+        pending = sum(1 for t in tasks if t.get('status') in ('pending', None))
+        total = len(tasks)
+
+        status_data = {
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "pending": pending,
+        }
+
+        if completed == total:
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message("All tasks completed", "info", status="success", exit_code=0, **status_data))
+            else:
+                Logger.info(f"✅ All {total} task(s) completed.", "GREEN")
+            return 0
+        else:
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message("Tasks incomplete", "warn", status="incomplete", exit_code=1, **status_data))
+            else:
+                Logger.warning(f"Tasks incomplete: {completed}/{total} completed, {failed} failed, {pending} pending.")
+            return 1
+
     def _validate_memory_on_startup(self) -> None:
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()): return
         result = self.memory.validate_memory()
@@ -1002,6 +1063,10 @@ class RalphOrchestrator:
         if result['valid']: Logger.debug(f"✅ Memory OK ({result['total']} files)", "GREEN")
 
     def _prompt_user_for_phase(self, phase_name: str) -> bool:
+        """Prompt user to run a phase, or fail in non-interactive mode."""
+        if self._non_interactive:
+            Logger.error(f"Cannot prompt for {phase_name} phase in non-interactive mode. Use --accept-all (-y) to auto-accept.")
+            sys.exit(1)
         return input(f"{Logger.COLORS['YELLOW']}Run {phase_name} phase? (y/n): {Logger.COLORS['RESET']}").strip().lower() == 'y'
 
     def _get_intent(self, user_intent=None):
@@ -1022,6 +1087,10 @@ class RalphOrchestrator:
                 Logger.error(f"Intent file is empty: {self._intent_file}")
                 sys.exit(1)
             return content
+        # Non-interactive mode requires --intent or --intent-file
+        if self._non_interactive:
+            Logger.error("Intent required in non-interactive mode. Use --intent or --intent-file.")
+            sys.exit(1)
         # Interactive prompt
         intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
         if not intent:
@@ -1092,7 +1161,13 @@ class RalphOrchestrator:
         Respects the following flags:
         - --print-prd: Print PRD contents and exit without executing
         - --prd-out: Export PRD to specified file and continue
+        - --status-check: Check PRD status and exit with appropriate code
         """
+        # Handle --status-check flag: check PRD status and exit
+        if self._status_check:
+            exit_code = self._check_prd_status()
+            sys.exit(exit_code)
+
         # Handle --print-prd flag: print PRD and exit
         if self._print_prd_flag:
             self._print_prd()
@@ -1186,14 +1261,24 @@ def main() -> None:
     archive_group = parser.add_mutually_exclusive_group()
     archive_group.add_argument("--archive", action="store_true", dest="archive_enabled", default=True, help="Archive PRD after execution (default)")
     archive_group.add_argument("--no-archive", action="store_false", dest="archive_enabled", help="Skip PRD archival after execution")
+    # Headless operation flags for CI/CD pipelines
+    parser.add_argument("--non-interactive", action="store_true", help="Disable all interactive prompts (fails if input required)")
+    parser.add_argument("--ci", action="store_true", help="CI mode: enables --non-interactive --no-color --no-emoji --json")
+    parser.add_argument("--status-check", action="store_true", help="Check PRD status and exit with code (0=complete, 1=incomplete, 2=no PRD)")
     args = parser.parse_args()
+
+    # Handle --ci flag: apply CI defaults before other options
+    # --ci implies: --non-interactive --no-color --no-emoji --json
+    ci_mode = args.ci
+    non_interactive = args.non_interactive or ci_mode
 
     # Configure logger settings
     Logger.set_verbosity(args.verbose)
     Logger.set_quiet(args.quiet)
-    Logger.set_no_emoji(args.no_emoji)
-    # Handle color: --no-color disables, --color forces enable (default: auto/enabled)
-    if args.no_color:
+    Logger.set_no_emoji(args.no_emoji or ci_mode)
+    Logger.set_non_interactive(non_interactive)
+    # Handle color: --no-color disables, --color forces enable, --ci disables (default: auto/enabled)
+    if args.no_color or ci_mode:
         Logger.set_no_color(True)
     elif args.color:
         Logger.set_no_color(False)
@@ -1203,10 +1288,12 @@ def main() -> None:
         Logger.set_log_file(args.log_file)
     if args.log_level:
         Logger.set_log_level(args.log_level)
-    if args.json_output:
-        Logger.set_json_output(True)
+    # --ci enables JSON output unless --ndjson is explicitly specified
+    # NDJSON takes precedence over CI's default JSON output
     if args.ndjson_output:
         Logger.set_ndjson_output(True)
+    elif args.json_output or ci_mode:
+        Logger.set_json_output(True)
 
     # Determine hook configuration
     enable_hooks = not args.no_hooks
@@ -1253,7 +1340,10 @@ def main() -> None:
         ndjson_output=args.ndjson_output,
         print_prd=args.print_prd,
         prd_out=args.prd_out,
-        archive=args.archive_enabled
+        archive=args.archive_enabled,
+        non_interactive=non_interactive,
+        ci=ci_mode,
+        status_check=args.status_check
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
