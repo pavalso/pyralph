@@ -208,7 +208,7 @@ class TemplateManager:
     DEFAULT_TEMPLATES = {
         "architect.txt": "ROLE: Senior Architect\nOBJECTIVE: Initialize .ralph/memory/ for: {{user_intent}}\nFILE TREE: {{file_tree}}\nDELIVERABLE: Create .ralph/memory/architecture.md with YAML frontmatter (type:wiki, title:Architecture) and sections: Tech Stack, Overview, Key Components, Risks, Test Command (format: Test Command: `CMD`).\nOUTPUT: Print STATUS: CREATED .ralph/memory/architecture.md",
         "planner.txt": "ROLE: Product Manager\nTASK: Create PRD JSON for: {{user_intent}}\nMEMORY: {{memory_map}}\nOUTPUT: Raw JSON only. Schema: {\"id\":\"PRD-001\",\"description\":\"...\",\"userStories\":[{\"id\":\"TASK-001\",\"description\":\"As a...\",\"acceptanceCriteria\":[\"...\",\"...\",\"...\"],\"status\":\"pending\"}]}",
-        "developer.txt": "ROLE: Developer\nTASK: {{task_id}} - {{task_description}}\nCONTEXT: {{memory_tree}}\nPREFS: {{user_context}}\nFLOW: Plan, Implement, Verify ({{test_cmd}}), Print STATUS: SUCCESS or FAILURE - <reason>\nRETRY: {{prev_errors}}"
+        "developer.txt": "ROLE: Developer\nTASK: {{task_id}} - {{task_description}}\n\n## MANDATORY INSTRUCTIONS (MUST FOLLOW)\nThe following user preferences are REQUIRED. You MUST strictly adhere to these instructions:\n{{user_context}}\n## END MANDATORY INSTRUCTIONS\n\nCONTEXT: {{memory_tree}}\nFLOW: Plan, Implement, Verify ({{test_cmd}}), Print STATUS: SUCCESS or FAILURE - <reason>\nRETRY: {{prev_errors}}"
     }
 
     @staticmethod
@@ -390,6 +390,11 @@ class RalphOrchestrator:
             return "No specific user preferences provided."
 
         raw_text = prompt_md_path.read_text(encoding='utf-8')
+        # Only use prompt.md if it has non-empty content
+        if not raw_text.strip():
+            Logger.warning("prompt.md exists but is empty, using default user context.")
+            return "No specific user preferences provided."
+
         replacements = {
             "{{PRD_ID}}": self._sanitize_id(prd['id']),
             "{{PRD_DESCRIPTION}}": prd['description'],
