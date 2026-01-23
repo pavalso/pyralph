@@ -4403,5 +4403,457 @@ class TestPerformanceFlagsCLI(unittest.TestCase):
             self.assertIsNone(call_kwargs['backoff'])
 
 
+# ==============================================================================
+# EXTENSIBILITY AND HOOK FLAGS TESTS
+# ==============================================================================
+
+
+class TestExtensibilityFlagsArgumentParsing(unittest.TestCase):
+    """Tests for --pre, --post, and --plugin CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
+        self.parser.add_argument("--pre", nargs="+", metavar="CMD")
+        self.parser.add_argument("--post", nargs="+", metavar="CMD")
+        self.parser.add_argument("--plugin", nargs="+", metavar="PATH")
+
+    def test_pre_flag_accepts_single_command(self):
+        """Test --pre accepts a single command."""
+        args = self.parser.parse_args(["--pre", "echo hello"])
+        self.assertEqual(args.pre, ["echo hello"])
+
+    def test_pre_flag_accepts_multiple_commands(self):
+        """Test --pre accepts multiple commands."""
+        args = self.parser.parse_args(["--pre", "echo hello", "echo world"])
+        self.assertEqual(args.pre, ["echo hello", "echo world"])
+
+    def test_post_flag_accepts_single_command(self):
+        """Test --post accepts a single command."""
+        args = self.parser.parse_args(["--post", "echo done"])
+        self.assertEqual(args.post, ["echo done"])
+
+    def test_post_flag_accepts_multiple_commands(self):
+        """Test --post accepts multiple commands."""
+        args = self.parser.parse_args(["--post", "echo done", "echo finished"])
+        self.assertEqual(args.post, ["echo done", "echo finished"])
+
+    def test_plugin_flag_accepts_single_path(self):
+        """Test --plugin accepts a single path."""
+        args = self.parser.parse_args(["--plugin", "/path/to/plugin.py"])
+        self.assertEqual(args.plugin, ["/path/to/plugin.py"])
+
+    def test_plugin_flag_accepts_multiple_paths(self):
+        """Test --plugin accepts multiple paths."""
+        args = self.parser.parse_args(["--plugin", "/path/to/plugin1.py", "/path/to/plugin2.py"])
+        self.assertEqual(args.plugin, ["/path/to/plugin1.py", "/path/to/plugin2.py"])
+
+    def test_flags_default_to_none(self):
+        """Test all extensibility flags default to None."""
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.pre)
+        self.assertIsNone(args.post)
+        self.assertIsNone(args.plugin)
+
+    def test_all_extensibility_flags_combined(self):
+        """Test all extensibility flags can be used together."""
+        # Note: nargs="+" consumes all following arguments until a flag, so phase must come first
+        args = self.parser.parse_args([
+            "execute",
+            "--pre", "cmd1", "cmd2",
+            "--post", "cmd3", "cmd4",
+            "--plugin", "/path/plugin.py"
+        ])
+        self.assertEqual(args.pre, ["cmd1", "cmd2"])
+        self.assertEqual(args.post, ["cmd3", "cmd4"])
+        self.assertEqual(args.plugin, ["/path/plugin.py"])
+        self.assertEqual(args.phase, "execute")
+
+
+class TestOrchestratorExtensibilityFlags(TempConfigTestCase):
+    """Tests for RalphOrchestrator extensibility flag initialization."""
+
+    def test_pre_commands_stored(self):
+        """Test --pre commands are stored in orchestrator."""
+        pre_cmds = ["echo before", "python validate.py"]
+        orch = self.create_mock_orchestrator()
+        orch._pre_commands = pre_cmds
+        self.assertEqual(orch._pre_commands, pre_cmds)
+
+    def test_post_commands_stored(self):
+        """Test --post commands are stored in orchestrator."""
+        post_cmds = ["echo after", "python cleanup.py"]
+        orch = self.create_mock_orchestrator()
+        orch._post_commands = post_cmds
+        self.assertEqual(orch._post_commands, post_cmds)
+
+    def test_plugin_paths_stored(self):
+        """Test --plugin paths are stored in orchestrator."""
+        plugins = ["/path/to/plugin.py", "/plugins/custom/"]
+        orch = self.create_mock_orchestrator()
+        orch._plugin_paths = plugins
+        self.assertEqual(orch._plugin_paths, plugins)
+
+    def test_orchestrator_init_with_pre_commands(self):
+        """Test orchestrator initializes with --pre commands."""
+        mock_agent = self.create_mock_agent()
+        pre_cmds = ["echo before"]
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", pre=pre_cmds)
+            self.assertEqual(orch._pre_commands, pre_cmds)
+
+    def test_orchestrator_init_with_post_commands(self):
+        """Test orchestrator initializes with --post commands."""
+        mock_agent = self.create_mock_agent()
+        post_cmds = ["echo after"]
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", post=post_cmds)
+            self.assertEqual(orch._post_commands, post_cmds)
+
+    def test_orchestrator_init_with_plugin_paths(self):
+        """Test orchestrator initializes with --plugin paths."""
+        mock_agent = self.create_mock_agent()
+        plugins = ["/path/plugin.py"]
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", plugin=plugins)
+            self.assertEqual(orch._plugin_paths, plugins)
+
+    def test_empty_pre_commands_defaults_to_empty_list(self):
+        """Test pre commands default to empty list when None."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", pre=None)
+            self.assertEqual(orch._pre_commands, [])
+
+    def test_empty_post_commands_defaults_to_empty_list(self):
+        """Test post commands default to empty list when None."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", post=None)
+            self.assertEqual(orch._post_commands, [])
+
+    def test_empty_plugin_paths_defaults_to_empty_list(self):
+        """Test plugin paths default to empty list when None."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", plugin=None)
+            self.assertEqual(orch._plugin_paths, [])
+
+
+class TestPreCommandBehavior(TempConfigTestCase):
+    """Tests for --pre command execution behavior."""
+
+    def test_run_pre_commands_returns_true_when_empty(self):
+        """Test _run_pre_commands returns True when no commands."""
+        orch = self.create_mock_orchestrator()
+        orch._pre_commands = []
+        self.assertTrue(orch._run_pre_commands("architect"))
+
+    def test_run_pre_commands_returns_true_on_success(self):
+        """Test _run_pre_commands returns True when commands succeed."""
+        orch = self.create_mock_orchestrator()
+        orch._pre_commands = ["echo test"]
+        from ralph import Shell
+        with patch.object(Shell, 'run', return_value=("output", "", 0)):
+            result = orch._run_pre_commands("architect")
+            self.assertTrue(result)
+
+    def test_run_pre_commands_returns_false_on_failure(self):
+        """Test _run_pre_commands returns False when command fails."""
+        orch = self.create_mock_orchestrator()
+        orch._pre_commands = ["exit 1"]
+        from ralph import Shell
+        with patch.object(Shell, 'run', return_value=("", "error", 1)):
+            result = orch._run_pre_commands("architect")
+            self.assertFalse(result)
+
+    def test_run_pre_commands_stops_on_first_failure(self):
+        """Test _run_pre_commands stops execution on first failure."""
+        orch = self.create_mock_orchestrator()
+        orch._pre_commands = ["echo first", "exit 1", "echo should_not_run"]
+        call_count = [0]
+        def mock_run(cmd, timeout=30):
+            call_count[0] += 1
+            if "exit" in cmd:
+                return ("", "error", 1)
+            return ("ok", "", 0)
+        from ralph import Shell
+        with patch.object(Shell, 'run', side_effect=mock_run):
+            result = orch._run_pre_commands("architect")
+            self.assertFalse(result)
+            self.assertEqual(call_count[0], 2)  # Only first two commands run
+
+
+class TestPostCommandBehavior(TempConfigTestCase):
+    """Tests for --post command execution behavior."""
+
+    def test_run_post_commands_does_nothing_when_empty(self):
+        """Test _run_post_commands does nothing when no commands."""
+        orch = self.create_mock_orchestrator()
+        orch._post_commands = []
+        # Should not raise
+        orch._run_post_commands("architect", success=True)
+
+    def test_run_post_commands_sets_env_variables(self):
+        """Test _run_post_commands sets RALPH_PHASE and RALPH_SUCCESS env vars."""
+        orch = self.create_mock_orchestrator()
+        orch._post_commands = ["echo test"]
+        captured_env = {}
+        def mock_run(cmd, **kwargs):
+            captured_env.update(kwargs.get('env', {}))
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""
+            return mock_result
+        with patch('subprocess.run', side_effect=mock_run):
+            orch._run_post_commands("architect", success=True)
+            self.assertEqual(captured_env.get('RALPH_PHASE'), "architect")
+            self.assertEqual(captured_env.get('RALPH_SUCCESS'), "1")
+
+    def test_run_post_commands_sets_success_false(self):
+        """Test _run_post_commands sets RALPH_SUCCESS=0 on failure."""
+        orch = self.create_mock_orchestrator()
+        orch._post_commands = ["echo test"]
+        captured_env = {}
+        def mock_run(cmd, **kwargs):
+            captured_env.update(kwargs.get('env', {}))
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""
+            return mock_result
+        with patch('subprocess.run', side_effect=mock_run):
+            orch._run_post_commands("planner", success=False)
+            self.assertEqual(captured_env.get('RALPH_PHASE'), "planner")
+            self.assertEqual(captured_env.get('RALPH_SUCCESS'), "0")
+
+    def test_run_post_commands_continues_on_failure(self):
+        """Test _run_post_commands continues even if a command fails."""
+        orch = self.create_mock_orchestrator()
+        orch._post_commands = ["exit 1", "echo second"]
+        call_count = [0]
+        def mock_run(cmd, **kwargs):
+            call_count[0] += 1
+            mock_result = MagicMock()
+            mock_result.returncode = 1 if call_count[0] == 1 else 0
+            mock_result.stdout = ""
+            return mock_result
+        with patch('subprocess.run', side_effect=mock_run):
+            orch._run_post_commands("execute", success=True)
+            self.assertEqual(call_count[0], 2)  # Both commands run
+
+
+class TestPluginLoading(TempConfigTestCase):
+    """Tests for --plugin loading behavior."""
+
+    def test_load_plugins_warns_on_nonexistent_path(self):
+        """Test _load_plugins warns when path doesn't exist."""
+        orch = self.create_mock_orchestrator()
+        orch._plugin_paths = ["/nonexistent/path.py"]
+        from ralph import Logger
+        with patch.object(Logger, 'warning') as mock_warn:
+            orch._load_plugins()
+            mock_warn.assert_called()
+
+    def test_load_plugins_loads_py_file(self):
+        """Test _load_plugins loads .py files."""
+        plugin_dir = self.temp_path / "plugins"
+        plugin_dir.mkdir()
+        plugin_file = plugin_dir / "test_plugin.py"
+        plugin_file.write_text('''
+EVENTS = ["TASK_START"]
+def on_event(event):
+    pass
+''', encoding='utf-8')
+        orch = self.create_mock_orchestrator()
+        orch._plugin_paths = [str(plugin_file)]
+        with patch.object(orch.hooks, 'register_hook', return_value=True) as mock_reg:
+            orch._load_plugins()
+            mock_reg.assert_called_once()
+            call_kwargs = mock_reg.call_args[1]
+            self.assertEqual(call_kwargs['name'], 'plugin_test_plugin')
+            self.assertEqual(call_kwargs['events'], ['TASK_START'])
+
+    def test_load_plugins_loads_directory(self):
+        """Test _load_plugins loads all .py files from directory."""
+        plugin_dir = self.temp_path / "plugins"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin1.py").write_text('EVENTS = ["TASK_START"]\ndef on_event(e): pass', encoding='utf-8')
+        (plugin_dir / "plugin2.py").write_text('EVENTS = ["TASK_SUCCESS"]\ndef on_event(e): pass', encoding='utf-8')
+        (plugin_dir / "_private.py").write_text('EVENTS = ["ERROR"]\ndef on_event(e): pass', encoding='utf-8')
+        orch = self.create_mock_orchestrator()
+        orch._plugin_paths = [str(plugin_dir)]
+        with patch.object(orch.hooks, 'register_hook', return_value=True) as mock_reg:
+            orch._load_plugins()
+            self.assertEqual(mock_reg.call_count, 2)  # _private.py skipped
+
+    def test_load_plugin_file_warns_on_missing_events(self):
+        """Test _load_plugin_file warns when EVENTS missing."""
+        plugin_file = self.temp_path / "bad_plugin.py"
+        plugin_file.write_text('def on_event(e): pass', encoding='utf-8')
+        orch = self.create_mock_orchestrator()
+        from ralph import Logger
+        with patch.object(Logger, 'warning') as mock_warn:
+            orch._load_plugin_file(plugin_file)
+            mock_warn.assert_called()
+            self.assertIn("missing EVENTS", mock_warn.call_args[0][0])
+
+    def test_load_plugin_file_warns_on_missing_handler(self):
+        """Test _load_plugin_file warns when on_event missing."""
+        plugin_file = self.temp_path / "bad_plugin.py"
+        plugin_file.write_text('EVENTS = ["TASK_START"]', encoding='utf-8')
+        orch = self.create_mock_orchestrator()
+        from ralph import Logger
+        with patch.object(Logger, 'warning') as mock_warn:
+            orch._load_plugin_file(plugin_file)
+            mock_warn.assert_called()
+            self.assertIn("missing EVENTS or on_event", mock_warn.call_args[0][0])
+
+    def test_load_plugin_file_extracts_optional_attributes(self):
+        """Test _load_plugin_file extracts PRIORITY, TIMEOUT, MODIFIES_DATA."""
+        plugin_file = self.temp_path / "custom_plugin.py"
+        plugin_file.write_text('''
+EVENTS = ["TASK_START"]
+PRIORITY = 50
+TIMEOUT = 10.0
+MODIFIES_DATA = True
+def on_event(e): return e
+''', encoding='utf-8')
+        orch = self.create_mock_orchestrator()
+        with patch.object(orch.hooks, 'register_hook', return_value=True) as mock_reg:
+            orch._load_plugin_file(plugin_file)
+            call_kwargs = mock_reg.call_args[1]
+            self.assertEqual(call_kwargs['priority'], 50)
+            self.assertEqual(call_kwargs['timeout'], 10.0)
+            self.assertTrue(call_kwargs['modifies_data'])
+
+
+class TestPhasePrePostIntegration(TempConfigTestCase):
+    """Tests for pre/post command integration with phase execution."""
+
+    def test_architect_calls_pre_commands(self):
+        """Test run_architect calls _run_pre_commands."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "test.md").write_text("test", encoding='utf-8')
+        (CONF.BASE_DIR / "ARCH.md").write_text("test", encoding='utf-8')
+        orch = self.create_mock_orchestrator()
+        orch._pre_commands = ["echo test"]
+        with patch.object(orch, '_run_pre_commands', return_value=True) as mock_pre:
+            with patch.object(orch.agent, 'run', return_value=(True, "", None)):
+                orch.run_architect("test intent")
+                mock_pre.assert_called_once_with("architect")
+
+    def test_architect_calls_post_commands_on_success(self):
+        """Test run_architect calls _run_post_commands on success."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "test.md").write_text("test", encoding='utf-8')
+        (CONF.BASE_DIR / "ARCH.md").write_text("test", encoding='utf-8')
+        orch = self.create_mock_orchestrator()
+        orch._post_commands = ["echo done"]
+        with patch.object(orch, '_run_pre_commands', return_value=True):
+            with patch.object(orch, '_run_post_commands') as mock_post:
+                with patch.object(orch.agent, 'run', return_value=(True, "", None)):
+                    orch.run_architect("test intent")
+                    mock_post.assert_called_with("architect", success=True)
+
+    def test_architect_aborts_on_pre_command_failure(self):
+        """Test run_architect aborts when pre-command fails."""
+        orch = self.create_mock_orchestrator()
+        orch._pre_commands = ["exit 1"]
+        with patch.object(orch, '_run_pre_commands', return_value=False):
+            with patch.object(orch, '_run_post_commands') as mock_post:
+                with self.assertRaises(SystemExit):
+                    orch.run_architect("test intent")
+                mock_post.assert_called_with("architect", success=False)
+
+    def test_execute_calls_pre_commands(self):
+        """Test execute_loop calls _run_pre_commands."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.PRD_FILE.write_text('{"userStories": []}', encoding='utf-8')
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding='utf-8')
+        orch = self.create_mock_orchestrator()
+        orch._pre_commands = ["echo test"]
+        with patch.object(orch, '_run_pre_commands', return_value=True) as mock_pre:
+            orch.execute_loop()
+            mock_pre.assert_called_once_with("execute")
+
+    def test_execute_returns_early_on_pre_command_failure(self):
+        """Test execute_loop returns early when pre-command fails."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.PRD_FILE.write_text('{"userStories": [{"id": "T1", "description": "test", "status": "pending"}]}', encoding='utf-8')
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `pytest`", encoding='utf-8')
+        orch = self.create_mock_orchestrator()
+        orch._pre_commands = ["exit 1"]
+        with patch.object(orch, '_run_pre_commands', return_value=False):
+            with patch.object(orch, '_execute_task') as mock_task:
+                orch.execute_loop()
+                mock_task.assert_not_called()
+
+
+class TestExtensibilityFlagsCLI(unittest.TestCase):
+    """Tests for CLI passing extensibility flags to orchestrator."""
+
+    def test_cli_passes_pre_commands_to_orchestrator(self):
+        """Test CLI passes --pre commands to RalphOrchestrator."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            # Note: phase must come first, then flags with nargs="+" consume until next flag
+            with patch('sys.argv', ['ralph', 'execute', '--pre', 'echo before', 'python check.py']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertEqual(call_kwargs['pre'], ['echo before', 'python check.py'])
+
+    def test_cli_passes_post_commands_to_orchestrator(self):
+        """Test CLI passes --post commands to RalphOrchestrator."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'execute', '--post', 'echo done', 'python cleanup.py']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertEqual(call_kwargs['post'], ['echo done', 'python cleanup.py'])
+
+    def test_cli_passes_plugin_paths_to_orchestrator(self):
+        """Test CLI passes --plugin paths to RalphOrchestrator."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'execute', '--plugin', '/path/to/plugin.py', '/plugins/']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertEqual(call_kwargs['plugin'], ['/path/to/plugin.py', '/plugins/'])
+
+    def test_cli_passes_none_when_extensibility_flags_not_specified(self):
+        """Test CLI passes None when extensibility flags not specified."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'execute']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertIsNone(call_kwargs['pre'])
+            self.assertIsNone(call_kwargs['post'])
+            self.assertIsNone(call_kwargs['plugin'])
+
+    def test_cli_passes_all_extensibility_flags_combined(self):
+        """Test CLI passes all extensibility flags when combined."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', [
+                'ralph', 'execute',
+                '--pre', 'pre_cmd1', 'pre_cmd2',
+                '--post', 'post_cmd1',
+                '--plugin', '/plugin.py'
+            ]):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertEqual(call_kwargs['pre'], ['pre_cmd1', 'pre_cmd2'])
+            self.assertEqual(call_kwargs['post'], ['post_cmd1'])
+            self.assertEqual(call_kwargs['plugin'], ['/plugin.py'])
+
+
 if __name__ == "__main__":
     unittest.main()

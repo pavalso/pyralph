@@ -508,7 +508,9 @@ class RalphOrchestrator:
                  print_prd: bool = False, prd_out: Optional[str] = None, archive: bool = True,
                  non_interactive: bool = False, ci: bool = False, status_check: bool = False,
                  concurrency: Optional[int] = None, rate_limit: Optional[float] = None,
-                 backoff: Optional[float] = None) -> None:
+                 backoff: Optional[float] = None,
+                 pre: Optional[List[str]] = None, post: Optional[List[str]] = None,
+                 plugin: Optional[List[str]] = None) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -570,6 +572,158 @@ class RalphOrchestrator:
         self._concurrency = concurrency
         self._rate_limit = rate_limit
         self._backoff = backoff
+        # Store extensibility and hook flags
+        self._pre_commands = pre or []
+        self._post_commands = post or []
+        self._plugin_paths = plugin or []
+        # Load plugins if specified
+        self._load_plugins()
+
+    def _load_plugins(self) -> None:
+        """
+        Load plugins from specified paths.
+
+        Plugins are Python files or directories containing hook definitions.
+        Each plugin can register hooks programmatically via the HookManager API.
+        """
+        for plugin_path_str in self._plugin_paths:
+            plugin_path = Path(plugin_path_str)
+            if not plugin_path.exists():
+                Logger.warning(f"Plugin path not found: {plugin_path}")
+                continue
+
+            if plugin_path.is_file() and plugin_path.suffix == '.py':
+                self._load_plugin_file(plugin_path)
+            elif plugin_path.is_dir():
+                # Load all .py files in the directory
+                for py_file in plugin_path.glob('*.py'):
+                    if not py_file.name.startswith('_'):
+                        self._load_plugin_file(py_file)
+            else:
+                Logger.warning(f"Invalid plugin path (must be .py file or directory): {plugin_path}")
+
+    def _load_plugin_file(self, path: Path) -> None:
+        """
+        Load a single plugin file.
+
+        The plugin file should define:
+        - EVENTS: List of event names to subscribe to
+        - on_event(event): Handler function
+        - Optional: PRIORITY, TIMEOUT, MODIFIES_DATA
+
+        Args:
+            path: Path to the plugin Python file
+        """
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(path.stem, path)
+            if spec is None or spec.loader is None:
+                Logger.warning(f"Could not load plugin: {path}")
+                return
+
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            # Check if plugin has required attributes
+            if not hasattr(module, 'EVENTS') or not hasattr(module, 'on_event'):
+                Logger.warning(f"Plugin '{path.name}' missing EVENTS or on_event")
+                return
+
+            # Register the plugin as a hook
+            events = getattr(module, 'EVENTS', [])
+            priority = getattr(module, 'PRIORITY', 100)
+            timeout = getattr(module, 'TIMEOUT', 5.0)
+            modifies_data = getattr(module, 'MODIFIES_DATA', False)
+            handler = getattr(module, 'on_event')
+
+            success = self.hooks.register_hook(
+                name=f"plugin_{path.stem}",
+                handler=handler,
+                events=events,
+                priority=priority,
+                timeout=timeout,
+                modifies_data=modifies_data
+            )
+            if success:
+                Logger.debug(f"Loaded plugin: {path.name}")
+            else:
+                Logger.warning(f"Failed to register plugin: {path.name}")
+
+        except Exception as e:
+            Logger.warning(f"Error loading plugin '{path.name}': {e}")
+
+    def _run_pre_commands(self, phase: str) -> bool:
+        """
+        Run pre-execution commands before a phase.
+
+        Pre-commands are shell commands executed before each phase.
+        If any command fails (non-zero exit code), the phase is aborted.
+
+        Args:
+            phase: The phase about to run (architect, planner, execute)
+
+        Returns:
+            True if all commands succeeded, False if any failed
+        """
+        if not self._pre_commands:
+            return True
+
+        Logger.debug(f"Running {len(self._pre_commands)} pre-command(s) for {phase} phase")
+        for cmd in self._pre_commands:
+            Logger.debug(f"  Pre-command: {cmd}")
+            stdout, stderr, code = Shell.run(cmd, timeout=60)
+            if code != 0:
+                Logger.error(f"Pre-command failed: {cmd}")
+                Logger.error(f"  Exit code: {code}")
+                if stderr:
+                    Logger.error(f"  Stderr: {stderr[:500]}")
+                self.hooks.emit(Event(
+                    EventType.ERROR,
+                    phase=phase,
+                    metadata={"reason": "pre_command_failed", "command": cmd, "exit_code": code}
+                ))
+                return False
+            if stdout and Logger.verbosity >= 2:
+                Logger.trace(f"  Output: {stdout[:200]}")
+        return True
+
+    def _run_post_commands(self, phase: str, success: bool) -> None:
+        """
+        Run post-execution commands after a phase.
+
+        Post-commands are shell commands executed after each phase completes.
+        They receive the phase result via environment variables.
+
+        Args:
+            phase: The phase that just completed (architect, planner, execute)
+            success: Whether the phase completed successfully
+        """
+        if not self._post_commands:
+            return
+
+        import os
+        # Set environment variables for post-commands
+        env = os.environ.copy()
+        env['RALPH_PHASE'] = phase
+        env['RALPH_SUCCESS'] = '1' if success else '0'
+
+        Logger.debug(f"Running {len(self._post_commands)} post-command(s) for {phase} phase")
+        for cmd in self._post_commands:
+            Logger.debug(f"  Post-command: {cmd}")
+            try:
+                result = subprocess.run(
+                    cmd, shell=True, capture_output=True,
+                    text=True, encoding='utf-8', timeout=60,
+                    env=env
+                )
+                if result.returncode != 0:
+                    Logger.warning(f"Post-command failed: {cmd} (exit code: {result.returncode})")
+                elif result.stdout and Logger.verbosity >= 2:
+                    Logger.trace(f"  Output: {result.stdout[:200]}")
+            except subprocess.TimeoutExpired:
+                Logger.warning(f"Post-command timed out: {cmd}")
+            except Exception as e:
+                Logger.warning(f"Post-command error: {cmd} ({e})")
 
     def run_architect(self, user_intent: str) -> None:
         """
@@ -586,6 +740,14 @@ class RalphOrchestrator:
         self.hooks.emit(Event(EventType.PHASE_START, phase="architect"))
         self.hooks.emit(Event(EventType.ARCHITECT_START, phase="architect"))
 
+        # Run pre-commands before phase execution
+        if not self._run_pre_commands("architect"):
+            Logger.info("⚠️ Architect aborted: pre-command failed.", "RED")
+            self.hooks.emit(Event(EventType.ARCHITECT_FAILURE, phase="architect"))
+            self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
+            self._run_post_commands("architect", success=False)
+            sys.exit(1)
+
         # Generate file tree with customizable depth and ignore patterns
         file_tree = Shell.get_file_tree(depth=self._tree_depth, ignore=self._tree_ignore)
 
@@ -600,6 +762,7 @@ class RalphOrchestrator:
             Logger.info("⚠️ Architect failed.", "RED")
             self.hooks.emit(Event(EventType.ARCHITECT_FAILURE, phase="architect"))
             self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
+            self._run_post_commands("architect", success=False)
             sys.exit(1)
 
         arch_md_path = CONF.BASE_DIR / "ARCH.md"
@@ -607,6 +770,7 @@ class RalphOrchestrator:
             Logger.info("⚠️ Architect failed: ARCH.md was not created.", "RED")
             self.hooks.emit(Event(EventType.ARCHITECT_FAILURE, phase="architect"))
             self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
+            self._run_post_commands("architect", success=False)
             sys.exit(1)
 
         # Export memory to --memory-out path if specified
@@ -616,6 +780,7 @@ class RalphOrchestrator:
         Logger.info("✅ Memory Initialized.", "GREEN")
         self.hooks.emit(Event(EventType.ARCHITECT_SUCCESS, phase="architect"))
         self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
+        self._run_post_commands("architect", success=True)
 
     def run_planner(self, user_intent: str) -> None:
         """
@@ -630,6 +795,15 @@ class RalphOrchestrator:
         Logger.info("\n🧠 Planner: Creating PRD...", "CYAN")
         self.hooks.emit(Event(EventType.PHASE_START, phase="planner"))
         self.hooks.emit(Event(EventType.PLANNER_START, phase="planner"))
+
+        # Run pre-commands before phase execution
+        if not self._run_pre_commands("planner"):
+            Logger.info("⚠️ Planner aborted: pre-command failed.", "RED")
+            self.hooks.emit(Event(EventType.PLANNER_FAILURE, phase="planner"))
+            self.hooks.emit(Event(EventType.PHASE_END, phase="planner"))
+            self._run_post_commands("planner", success=False)
+            sys.exit(1)
+
         memory_map = self.memory.get_structure(
             include=self._include_patterns,
             exclude=self._exclude_patterns,
@@ -654,6 +828,7 @@ class RalphOrchestrator:
                 self.hooks.emit(Event(EventType.PRD_CREATED, phase="planner", prd_path=str(CONF.PRD_FILE)))
                 self.hooks.emit(Event(EventType.PLANNER_SUCCESS, phase="planner"))
                 self.hooks.emit(Event(EventType.PHASE_END, phase="planner"))
+                self._run_post_commands("planner", success=True)
                 return
             except Exception as e:
                 Logger.info(f"⚠️ JSON Error (Attempt {attempt+1}): {e}", "YELLOW")
@@ -661,6 +836,7 @@ class RalphOrchestrator:
         Logger.info("❌ Planning Failed.", "RED")
         self.hooks.emit(Event(EventType.PLANNER_FAILURE, phase="planner"))
         self.hooks.emit(Event(EventType.PHASE_END, phase="planner"))
+        self._run_post_commands("planner", success=False)
         sys.exit(1)
 
     def execute_loop(self) -> None:
@@ -678,6 +854,8 @@ class RalphOrchestrator:
         - --only: Execute only specified task IDs
         - --except: Skip specified task IDs
         - --resume: Resume execution from a specific task ID
+        - --pre: Run pre-commands before phase execution
+        - --post: Run post-commands after phase completion
         """
         prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
         # Use --test-cmd override if provided, otherwise extract from memory
@@ -688,6 +866,14 @@ class RalphOrchestrator:
             Logger.info("   ⏭️  Verification will be skipped (--skip-verify)", "YELLOW")
         self.hooks.emit(Event(EventType.PHASE_START, phase="execute"))
         self.hooks.emit(Event(EventType.EXECUTE_START, phase="execute", verification_command=test_cmd))
+
+        # Run pre-commands before phase execution
+        if not self._run_pre_commands("execute"):
+            Logger.info("⚠️ Execute aborted: pre-command failed.", "RED")
+            self.hooks.emit(Event(EventType.EXECUTE_END, phase="execute"))
+            self.hooks.emit(Event(EventType.PHASE_END, phase="execute"))
+            self._run_post_commands("execute", success=False)
+            return
 
         failed_tasks: List[str] = []
         resume_found = self._resume_from is None  # If no --resume, start immediately
@@ -734,6 +920,7 @@ class RalphOrchestrator:
             Logger.warning(f"Resume task '{self._resume_from}' not found in PRD. No tasks executed.")
 
         # Report summary
+        phase_success = len(failed_tasks) == 0
         if failed_tasks:
             Logger.info(f"\n⚠️  {len(failed_tasks)} task(s) failed: {', '.join(failed_tasks)}", "YELLOW")
             Logger.info("Run 'ralph execute' again to retry failed tasks.", "YELLOW")
@@ -743,6 +930,7 @@ class RalphOrchestrator:
         self._archive_prd()
         self.hooks.emit(Event(EventType.EXECUTE_END, phase="execute"))
         self.hooks.emit(Event(EventType.PHASE_END, phase="execute"))
+        self._run_post_commands("execute", success=phase_success)
 
     def _sanitize_id(self, text: str) -> str:
         """Sanitize an ID string to contain only alphanumeric chars and hyphens/underscores."""
@@ -1275,6 +1463,10 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, metavar="N", help="Maximum number of parallel tasks (default: 1, sequential)")
     parser.add_argument("--rate-limit", type=float, metavar="RPS", help="Maximum API requests per second (default: unlimited)")
     parser.add_argument("--backoff", type=float, metavar="SECS", help="Base backoff time in seconds for retries (default: 1.0)")
+    # Extensibility and hook flags for custom commands and validators
+    parser.add_argument("--pre", nargs="+", metavar="CMD", help="Shell command(s) to run before each phase (aborts on failure)")
+    parser.add_argument("--post", nargs="+", metavar="CMD", help="Shell command(s) to run after each phase (receives RALPH_PHASE, RALPH_SUCCESS env vars)")
+    parser.add_argument("--plugin", nargs="+", metavar="PATH", help="Load plugin(s) from Python file or directory path")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -1356,7 +1548,10 @@ def main() -> None:
         status_check=args.status_check,
         concurrency=args.concurrency,
         rate_limit=args.rate_limit,
-        backoff=args.backoff
+        backoff=args.backoff,
+        pre=args.pre,
+        post=args.post,
+        plugin=args.plugin
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
