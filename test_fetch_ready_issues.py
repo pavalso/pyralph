@@ -25,6 +25,9 @@ from fetch_ready_issues import (
     QueueItem,
     ProcessingQueueError,
     ProcessingQueue,
+    PromptTransformerError,
+    TransformedPrompt,
+    PromptTransformer,
     check_gh_cli,
     fetch_ready_issues,
     main,
@@ -3345,6 +3348,476 @@ class TestProcessingQueueIntegration(unittest.TestCase):
 
         item3 = self.queue.dequeue()
         self.assertEqual(item3.issue_number, 1)
+
+
+class TestPromptTransformerError(unittest.TestCase):
+    """Tests for PromptTransformerError exception."""
+
+    def test_exception_message(self):
+        """Test PromptTransformerError stores message correctly."""
+        error = PromptTransformerError("Test message")
+        self.assertEqual(str(error), "Test message")
+
+    def test_exception_inheritance(self):
+        """Test PromptTransformerError inherits from Exception."""
+        error = PromptTransformerError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestTransformedPrompt(unittest.TestCase):
+    """Tests for TransformedPrompt dataclass."""
+
+    def test_creation_with_defaults(self):
+        """Test TransformedPrompt creation with default priority."""
+        prompt = TransformedPrompt(
+            issue_number=42,
+            prompt="TASK-042: Test\n\nDescription:\nBody"
+        )
+        self.assertEqual(prompt.issue_number, 42)
+        self.assertEqual(prompt.prompt, "TASK-042: Test\n\nDescription:\nBody")
+        self.assertEqual(prompt.priority, 0)
+
+    def test_creation_with_priority(self):
+        """Test TransformedPrompt creation with custom priority."""
+        prompt = TransformedPrompt(
+            issue_number=10,
+            prompt="TASK-010: Feature\n\nDescription:\nDetails",
+            priority=5
+        )
+        self.assertEqual(prompt.issue_number, 10)
+        self.assertEqual(prompt.priority, 5)
+
+    def test_prompt_content(self):
+        """Test TransformedPrompt stores prompt content correctly."""
+        content = "TASK-001: Add login\n\nDescription:\nImplement OAuth"
+        prompt = TransformedPrompt(issue_number=1, prompt=content)
+        self.assertEqual(prompt.prompt, content)
+
+
+class TestPromptTransformer(unittest.TestCase):
+    """Tests for PromptTransformer class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import shutil
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = f"{self.temp_dir}/store"
+        self.queue_dir = f"{self.temp_dir}/queue"
+        self.store = IssueStore(self.store_dir)
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.transformer = PromptTransformer(self.queue, self.store)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(self, number, title="Test Issue", body="Test body"):
+        """Helper to create an Issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"https://github.com/owner/repo/issues/{number}",
+            labels=["ready"]
+        )
+
+    def test_properties(self):
+        """Test queue and store properties."""
+        self.assertIs(self.transformer.queue, self.queue)
+        self.assertIs(self.transformer.store, self.store)
+
+    def test_transform_single_issue(self):
+        """Test transforming a single issue to prompt."""
+        issue = self._create_issue(42, "Add feature", "Feature description")
+        self.store.save(issue)
+        self.queue.enqueue(42, priority=5)
+
+        result = self.transformer.transform(42)
+
+        self.assertIsInstance(result, TransformedPrompt)
+        self.assertEqual(result.issue_number, 42)
+        self.assertIn("TASK-042", result.prompt)
+        self.assertIn("Add feature", result.prompt)
+        self.assertIn("Feature description", result.prompt)
+        self.assertEqual(result.priority, 5)
+
+    def test_transform_issue_not_in_store(self):
+        """Test transform raises error when issue not in store."""
+        self.queue.enqueue(999)
+
+        with self.assertRaises(PromptTransformerError) as ctx:
+            self.transformer.transform(999)
+
+        self.assertIn("999", str(ctx.exception))
+        self.assertIn("not found", str(ctx.exception))
+
+    def test_transform_issue_not_in_queue(self):
+        """Test transform works for issue in store but not in queue."""
+        issue = self._create_issue(50, "Test", "Body")
+        self.store.save(issue)
+
+        result = self.transformer.transform(50)
+
+        self.assertEqual(result.issue_number, 50)
+        self.assertEqual(result.priority, 0)  # Default priority
+
+    def test_transform_preserves_none_body(self):
+        """Test transform handles None body correctly."""
+        issue = Issue(
+            number=1,
+            title="No body",
+            body=None,
+            url="http://url",
+            labels=[]
+        )
+        self.store.save(issue)
+
+        result = self.transformer.transform(1)
+
+        self.assertIn("No description provided.", result.prompt)
+
+    def test_transform_batch(self):
+        """Test transforming multiple issues."""
+        for i in range(1, 4):
+            issue = self._create_issue(i, f"Issue {i}", f"Body {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        results = self.transformer.transform_batch([1, 2, 3])
+
+        self.assertEqual(len(results), 3)
+        for i, result in enumerate(results, 1):
+            self.assertEqual(result.issue_number, i)
+            self.assertIn(f"TASK-00{i}", result.prompt)
+
+    def test_transform_batch_skips_missing(self):
+        """Test transform_batch skips issues not in store."""
+        issue = self._create_issue(1, "Test", "Body")
+        self.store.save(issue)
+
+        results = self.transformer.transform_batch([1, 999, 2])
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].issue_number, 1)
+
+    def test_transform_batch_empty_list(self):
+        """Test transform_batch with empty list."""
+        results = self.transformer.transform_batch([])
+        self.assertEqual(results, [])
+
+    def test_get_pending_prompts(self):
+        """Test getting all pending prompts."""
+        for i in range(1, 4):
+            issue = self._create_issue(i, f"Issue {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i, priority=3 - i)  # Priority: 2, 1, 0
+
+        prompts = self.transformer.get_pending_prompts()
+
+        self.assertEqual(len(prompts), 3)
+        # Should be ordered by priority (lower = higher priority)
+        self.assertEqual(prompts[0].issue_number, 3)  # priority 0
+        self.assertEqual(prompts[1].issue_number, 2)  # priority 1
+        self.assertEqual(prompts[2].issue_number, 1)  # priority 2
+
+    def test_get_pending_prompts_empty_queue(self):
+        """Test get_pending_prompts with empty queue."""
+        prompts = self.transformer.get_pending_prompts()
+        self.assertEqual(prompts, [])
+
+    def test_get_pending_prompts_skips_non_pending(self):
+        """Test get_pending_prompts only returns pending items."""
+        for i in range(1, 4):
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        # Mark some as non-pending
+        self.queue.dequeue()  # Marks first as processing
+        self.queue.mark_completed(1)
+
+        prompts = self.transformer.get_pending_prompts()
+
+        self.assertEqual(len(prompts), 2)
+        numbers = [p.issue_number for p in prompts]
+        self.assertNotIn(1, numbers)
+
+    def test_get_next_prompt(self):
+        """Test getting and dequeuing next prompt."""
+        issue = self._create_issue(42, "Test Issue")
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.transformer.get_next_prompt()
+
+        self.assertIsInstance(result, TransformedPrompt)
+        self.assertEqual(result.issue_number, 42)
+        # Item should now be marked as processing
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "processing")
+
+    def test_get_next_prompt_empty_queue(self):
+        """Test get_next_prompt returns None for empty queue."""
+        result = self.transformer.get_next_prompt()
+        self.assertIsNone(result)
+
+    def test_get_next_prompt_issue_not_in_store(self):
+        """Test get_next_prompt marks as failed when issue not in store."""
+        self.queue.enqueue(999)
+
+        with self.assertRaises(PromptTransformerError):
+            self.transformer.get_next_prompt()
+
+        # Issue should be marked as failed
+        item = self.queue.get(999)
+        self.assertEqual(item.status, "failed")
+        self.assertIn("not found", item.error)
+
+    def test_get_next_prompt_respects_priority(self):
+        """Test get_next_prompt returns highest priority item."""
+        for i, priority in [(1, 10), (2, 1), (3, 5)]:
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i, priority=priority)
+
+        result = self.transformer.get_next_prompt()
+
+        self.assertEqual(result.issue_number, 2)  # Priority 1 (highest)
+
+    def test_peek_next_prompt(self):
+        """Test peeking at next prompt without dequeuing."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        result = self.transformer.peek_next_prompt()
+
+        self.assertIsInstance(result, TransformedPrompt)
+        self.assertEqual(result.issue_number, 42)
+        # Item should still be pending
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "pending")
+
+    def test_peek_next_prompt_empty_queue(self):
+        """Test peek_next_prompt returns None for empty queue."""
+        result = self.transformer.peek_next_prompt()
+        self.assertIsNone(result)
+
+    def test_peek_next_prompt_issue_not_in_store(self):
+        """Test peek_next_prompt returns None when issue not in store."""
+        self.queue.enqueue(999)
+
+        result = self.transformer.peek_next_prompt()
+
+        self.assertIsNone(result)
+        # Item should still be pending (not marked as failed)
+        item = self.queue.get(999)
+        self.assertEqual(item.status, "pending")
+
+    def test_count_pending(self):
+        """Test counting pending items."""
+        for i in range(1, 5):
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        self.assertEqual(self.transformer.count_pending(), 4)
+
+        self.queue.dequeue()  # Mark one as processing
+        self.assertEqual(self.transformer.count_pending(), 3)
+
+    def test_count_pending_empty(self):
+        """Test count_pending returns 0 for empty queue."""
+        self.assertEqual(self.transformer.count_pending(), 0)
+
+    def test_count_transformable(self):
+        """Test counting transformable items."""
+        # Add 3 issues to store and queue
+        for i in range(1, 4):
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        # Add 2 issues only to queue (not in store)
+        self.queue.enqueue(100)
+        self.queue.enqueue(101)
+
+        self.assertEqual(self.transformer.count_pending(), 5)
+        self.assertEqual(self.transformer.count_transformable(), 3)
+
+    def test_count_transformable_excludes_non_pending(self):
+        """Test count_transformable only counts pending items."""
+        for i in range(1, 4):
+            issue = self._create_issue(i)
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        self.queue.dequeue()  # Mark as processing
+
+        self.assertEqual(self.transformer.count_transformable(), 2)
+
+    def test_mark_completed(self):
+        """Test marking issue as completed."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+        self.queue.dequeue()  # Mark as processing
+
+        result = self.transformer.mark_completed(42)
+
+        self.assertTrue(result)
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "completed")
+
+    def test_mark_completed_not_found(self):
+        """Test mark_completed returns False for unknown issue."""
+        result = self.transformer.mark_completed(999)
+        self.assertFalse(result)
+
+    def test_mark_failed(self):
+        """Test marking issue as failed."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+        self.queue.dequeue()
+
+        result = self.transformer.mark_failed(42, error="Test error")
+
+        self.assertTrue(result)
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.error, "Test error")
+
+    def test_mark_failed_not_found(self):
+        """Test mark_failed returns False for unknown issue."""
+        result = self.transformer.mark_failed(999)
+        self.assertFalse(result)
+
+    def test_mark_failed_without_error_message(self):
+        """Test marking issue as failed without error message."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        self.queue.enqueue(42)
+        self.queue.dequeue()
+
+        result = self.transformer.mark_failed(42)
+
+        self.assertTrue(result)
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+        self.assertIsNone(item.error)
+
+
+class TestPromptTransformerIntegration(unittest.TestCase):
+    """Integration tests for PromptTransformer with real queue and store."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = f"{self.temp_dir}/store"
+        self.queue_dir = f"{self.temp_dir}/queue"
+        self.store = IssueStore(self.store_dir)
+        self.queue = ProcessingQueue(self.queue_dir)
+        self.transformer = PromptTransformer(self.queue, self.store)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(self, number, title="Test", body="Body"):
+        """Helper to create an Issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"http://url/{number}",
+            labels=["ready"]
+        )
+
+    def test_full_processing_workflow(self):
+        """Test complete workflow from queue to completion."""
+        # Store and queue issues
+        for i in range(1, 4):
+            issue = self._create_issue(i, f"Task {i}", f"Description {i}")
+            self.store.save(issue)
+            self.queue.enqueue(i)
+
+        # Process all issues
+        processed = []
+        while True:
+            prompt = self.transformer.get_next_prompt()
+            if prompt is None:
+                break
+            processed.append(prompt)
+            self.transformer.mark_completed(prompt.issue_number)
+
+        self.assertEqual(len(processed), 3)
+        for p in processed:
+            item = self.queue.get(p.issue_number)
+            self.assertEqual(item.status, "completed")
+
+    def test_retry_failed_workflow(self):
+        """Test workflow with retry after failure."""
+        issue = self._create_issue(42, "Feature", "Add new feature")
+        self.store.save(issue)
+        self.queue.enqueue(42)
+
+        # Get and fail the prompt
+        prompt = self.transformer.get_next_prompt()
+        self.transformer.mark_failed(42, error="First attempt failed")
+
+        # Verify failed status
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "failed")
+
+        # Retry
+        self.queue.retry(42)
+
+        # Process again
+        prompt = self.transformer.get_next_prompt()
+        self.assertEqual(prompt.issue_number, 42)
+
+        # Complete this time
+        self.transformer.mark_completed(42)
+
+        item = self.queue.get(42)
+        self.assertEqual(item.status, "completed")
+
+    def test_prompt_format_matches_ralph_expectation(self):
+        """Test transformed prompt format matches Ralph planner expectations."""
+        issue = self._create_issue(
+            number=7,
+            title="Add user authentication",
+            body="Implement OAuth2 login flow with Google provider"
+        )
+        self.store.save(issue)
+
+        result = self.transformer.transform(7)
+
+        # Verify format matches Ralph's expected input
+        expected = "TASK-007: Add user authentication\n\nDescription:\nImplement OAuth2 login flow with Google provider"
+        self.assertEqual(result.prompt, expected)
+
+    def test_persistence_across_instances(self):
+        """Test transformer works with persisted queue/store state."""
+        # Add data with first instances
+        issue = self._create_issue(42, "Test", "Body")
+        self.store.save(issue)
+        self.queue.enqueue(42, priority=5)
+
+        # Create new instances pointing to same dirs
+        new_store = IssueStore(self.store_dir)
+        new_queue = ProcessingQueue(self.queue_dir)
+        new_transformer = PromptTransformer(new_queue, new_store)
+
+        # Verify data persisted
+        result = new_transformer.transform(42)
+        self.assertEqual(result.issue_number, 42)
+        self.assertEqual(result.priority, 5)
 
 
 if __name__ == "__main__":

@@ -1759,5 +1759,241 @@ class ProcessingQueue:
         return items
 
 
+class PromptTransformerError(Exception):
+    """Raised when prompt transformation operations fail."""
+    pass
+
+
+@dataclass
+class TransformedPrompt:
+    """Represents a transformed prompt ready for the planner phase.
+
+    Attributes:
+        issue_number: The GitHub issue number.
+        prompt: The Ralph-compatible PRD prompt string.
+        priority: Processing priority from the queue (lower = higher priority).
+    """
+    issue_number: int
+    prompt: str
+    priority: int = 0
+
+
+class PromptTransformer:
+    """Transforms queued issues into Ralph-compatible PRD prompts.
+
+    This class bridges the ProcessingQueue and IssueStore to produce prompts
+    that can be consumed by Ralph's planner phase. It retrieves pending issues
+    from the queue, looks up their details from the store, and transforms them
+    into the expected prompt format.
+
+    Example:
+        >>> store = IssueStore(".ralph/issues")
+        >>> queue = ProcessingQueue(".ralph/queue")
+        >>> transformer = PromptTransformer(queue, store)
+        >>> # Get all pending prompts
+        >>> prompts = transformer.get_pending_prompts()
+        >>> # Get and dequeue the next prompt for processing
+        >>> prompt = transformer.get_next_prompt()
+    """
+
+    def __init__(self, queue: ProcessingQueue, store: IssueStore):
+        """Initialize the PromptTransformer.
+
+        Args:
+            queue: The ProcessingQueue containing queued issue numbers.
+            store: The IssueStore containing issue details.
+        """
+        self._queue = queue
+        self._store = store
+
+    @property
+    def queue(self) -> ProcessingQueue:
+        """Get the processing queue."""
+        return self._queue
+
+    @property
+    def store(self) -> IssueStore:
+        """Get the issue store."""
+        return self._store
+
+    def _stored_issue_to_issue(self, stored: StoredIssue) -> Issue:
+        """Convert a StoredIssue to an Issue for prompt transformation.
+
+        Args:
+            stored: The StoredIssue to convert.
+
+        Returns:
+            An Issue object with the same core fields.
+        """
+        return Issue(
+            number=stored.number,
+            title=stored.title,
+            body=stored.body,
+            url=stored.url,
+            labels=stored.labels,
+        )
+
+    def transform(self, issue_number: int) -> TransformedPrompt:
+        """Transform a single issue into a Ralph-compatible prompt.
+
+        Retrieves the issue from the store and transforms it into the
+        prompt format expected by Ralph's planner phase.
+
+        Args:
+            issue_number: The GitHub issue number to transform.
+
+        Returns:
+            A TransformedPrompt containing the issue number and prompt string.
+
+        Raises:
+            PromptTransformerError: If the issue is not found in the store.
+        """
+        stored_issue = self._store.get(issue_number)
+        if stored_issue is None:
+            raise PromptTransformerError(
+                f"Issue {issue_number} not found in store"
+            )
+
+        issue = self._stored_issue_to_issue(stored_issue)
+        prompt = issue_to_prompt(issue)
+
+        # Try to get priority from queue if the issue is queued
+        priority = 0
+        for item in self._queue.list_items():
+            if item.issue_number == issue_number:
+                priority = item.priority
+                break
+
+        return TransformedPrompt(
+            issue_number=issue_number,
+            prompt=prompt,
+            priority=priority,
+        )
+
+    def transform_batch(self, issue_numbers: List[int]) -> List[TransformedPrompt]:
+        """Transform multiple issues into Ralph-compatible prompts.
+
+        Args:
+            issue_numbers: List of issue numbers to transform.
+
+        Returns:
+            List of TransformedPrompt objects. Issues not found in the store
+            are silently skipped.
+        """
+        prompts: List[TransformedPrompt] = []
+        for issue_number in issue_numbers:
+            try:
+                prompt = self.transform(issue_number)
+                prompts.append(prompt)
+            except PromptTransformerError:
+                # Skip issues not in store
+                continue
+        return prompts
+
+    def get_pending_prompts(self) -> List[TransformedPrompt]:
+        """Get prompts for all pending issues in the queue.
+
+        Retrieves all issues with 'pending' status from the queue,
+        looks up their details, and transforms them into prompts.
+        Results are ordered by queue priority (lower = higher priority).
+
+        Returns:
+            List of TransformedPrompt objects for pending issues,
+            ordered by priority. Issues not found in the store are skipped.
+        """
+        pending_items = self._queue.list_items(status="pending")
+        issue_numbers = [item.issue_number for item in pending_items]
+        return self.transform_batch(issue_numbers)
+
+    def get_next_prompt(self) -> Optional[TransformedPrompt]:
+        """Get and dequeue the next pending issue as a prompt.
+
+        This method dequeues the next pending issue from the queue
+        (marking it as 'processing') and transforms it into a prompt.
+
+        Returns:
+            A TransformedPrompt for the next issue, or None if the queue
+            is empty or the issue is not found in the store.
+
+        Raises:
+            PromptTransformerError: If the dequeued issue is not found
+                in the store.
+        """
+        item = self._queue.dequeue()
+        if item is None:
+            return None
+
+        try:
+            return self.transform(item.issue_number)
+        except PromptTransformerError:
+            # Issue not in store - mark as failed and re-raise
+            self._queue.mark_failed(
+                item.issue_number,
+                error="Issue not found in store"
+            )
+            raise
+
+    def peek_next_prompt(self) -> Optional[TransformedPrompt]:
+        """Preview the next pending issue as a prompt without dequeuing.
+
+        Returns:
+            A TransformedPrompt for the next issue, or None if the queue
+            is empty or the issue is not found in the store.
+        """
+        item = self._queue.peek()
+        if item is None:
+            return None
+
+        try:
+            return self.transform(item.issue_number)
+        except PromptTransformerError:
+            return None
+
+    def count_pending(self) -> int:
+        """Count the number of pending issues in the queue.
+
+        Returns:
+            The number of issues with 'pending' status.
+        """
+        return self._queue.count(status="pending")
+
+    def count_transformable(self) -> int:
+        """Count pending issues that can be transformed (exist in store).
+
+        Returns:
+            The number of pending issues that have entries in the store.
+        """
+        count = 0
+        for item in self._queue.list_items(status="pending"):
+            if self._store.get(item.issue_number) is not None:
+                count += 1
+        return count
+
+    def mark_completed(self, issue_number: int) -> bool:
+        """Mark an issue as completed in the queue.
+
+        Args:
+            issue_number: The issue number to mark as completed.
+
+        Returns:
+            True if the issue was found and marked, False otherwise.
+        """
+        result = self._queue.mark_completed(issue_number)
+        return result is not None
+
+    def mark_failed(self, issue_number: int, error: Optional[str] = None) -> bool:
+        """Mark an issue as failed in the queue.
+
+        Args:
+            issue_number: The issue number to mark as failed.
+            error: Optional error message describing the failure.
+
+        Returns:
+            True if the issue was found and marked, False otherwise.
+        """
+        result = self._queue.mark_failed(issue_number, error=error)
+        return result is not None
+
+
 if __name__ == "__main__":
     sys.exit(main())
