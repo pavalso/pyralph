@@ -13,6 +13,8 @@ from fetch_ready_issues import (
     UserStory,
     CreatedIssue,
     CreateIssueResult,
+    HookConfig,
+    HookRegistrationError,
     check_gh_cli,
     fetch_ready_issues,
     main,
@@ -26,6 +28,8 @@ from fetch_ready_issues import (
     mark_issue_processed,
     create_argument_parser,
     format_issues_as_text,
+    generate_hook_config,
+    register_hook,
 )
 
 
@@ -1388,6 +1392,390 @@ class TestMarkIssueProcessed(unittest.TestCase):
                 mark_issue_processed(issue_num)
                 call_args = mock_run.call_args[0][0]
                 self.assertEqual(call_args[3], str(issue_num))
+
+
+class TestHookConfig(unittest.TestCase):
+    """Tests for HookConfig dataclass."""
+
+    def test_hook_config_creation(self):
+        """Test HookConfig dataclass creation with all fields."""
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS", "TASK_SUCCESS"],
+            priority=50,
+            timeout=10.0
+        )
+        self.assertEqual(config.name, "test_hook")
+        self.assertEqual(config.path, "/path/to/script.py")
+        self.assertEqual(config.events, ["PLANNER_SUCCESS", "TASK_SUCCESS"])
+        self.assertEqual(config.priority, 50)
+        self.assertEqual(config.timeout, 10.0)
+
+    def test_hook_config_default_values(self):
+        """Test HookConfig dataclass default values."""
+        config = HookConfig(
+            name="minimal_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+        self.assertEqual(config.priority, 100)
+        self.assertEqual(config.timeout, 5.0)
+
+    def test_hook_config_to_dict(self):
+        """Test HookConfig.to_dict() method."""
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"],
+            priority=75,
+            timeout=15.0
+        )
+        result = config.to_dict()
+        self.assertEqual(result, {
+            "name": "test_hook",
+            "path": "/path/to/script.py",
+            "events": ["PLANNER_SUCCESS"],
+            "priority": 75,
+            "timeout": 15.0
+        })
+
+
+class TestHookRegistrationError(unittest.TestCase):
+    """Tests for HookRegistrationError exception."""
+
+    def test_exception_message(self):
+        """Test HookRegistrationError stores message correctly."""
+        error = HookRegistrationError("Test message")
+        self.assertEqual(str(error), "Test message")
+
+    def test_exception_inheritance(self):
+        """Test HookRegistrationError inherits from Exception."""
+        error = HookRegistrationError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestGenerateHookConfig(unittest.TestCase):
+    """Tests for generate_hook_config function."""
+
+    def test_generate_hook_config_default_path(self):
+        """Test generate_hook_config uses default path."""
+        config = generate_hook_config()
+        self.assertEqual(config.name, "fetch_ready_issues")
+        self.assertEqual(config.events, ["PLANNER_SUCCESS"])
+        self.assertEqual(config.priority, 100)
+        self.assertEqual(config.timeout, 30.0)
+        # Path should be absolute
+        self.assertTrue(config.path.endswith("fetch_ready_issues.py"))
+
+    def test_generate_hook_config_custom_path(self):
+        """Test generate_hook_config with custom script path."""
+        custom_path = "/custom/path/to/script.py"
+        config = generate_hook_config(script_path=custom_path)
+        self.assertEqual(config.path, custom_path)
+        self.assertEqual(config.name, "fetch_ready_issues")
+        self.assertEqual(config.events, ["PLANNER_SUCCESS"])
+
+    def test_generate_hook_config_events(self):
+        """Test generate_hook_config returns correct events."""
+        config = generate_hook_config()
+        self.assertIn("PLANNER_SUCCESS", config.events)
+        self.assertEqual(len(config.events), 1)
+
+
+class TestRegisterHook(unittest.TestCase):
+    """Tests for register_hook function."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import shutil
+        self.temp_dir = tempfile.mkdtemp()
+        self.hooks_dir = f"{self.temp_dir}/.ralph/hooks"
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_register_hook_creates_directory(self):
+        """Test register_hook creates hooks directory if it doesn't exist."""
+        import os
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        result = register_hook(self.hooks_dir, config)
+
+        self.assertTrue(os.path.exists(self.hooks_dir))
+        self.assertTrue(os.path.exists(result))
+
+    def test_register_hook_creates_yaml_file(self):
+        """Test register_hook creates hooks.yaml file."""
+        import os
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        result = register_hook(self.hooks_dir, config)
+
+        self.assertTrue(result.endswith("hooks.yaml"))
+        self.assertTrue(os.path.exists(result))
+
+    def test_register_hook_writes_correct_yaml(self):
+        """Test register_hook writes correct YAML content."""
+        import yaml
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"],
+            priority=50,
+            timeout=10.0
+        )
+
+        result = register_hook(self.hooks_dir, config)
+
+        with open(result, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertIn("hooks", content)
+        self.assertEqual(len(content["hooks"]), 1)
+        hook = content["hooks"][0]
+        self.assertEqual(hook["name"], "test_hook")
+        self.assertEqual(hook["path"], "/path/to/script.py")
+        self.assertEqual(hook["events"], ["PLANNER_SUCCESS"])
+        self.assertEqual(hook["priority"], 50)
+        self.assertEqual(hook["timeout"], 10.0)
+
+    def test_register_hook_appends_to_existing_config(self):
+        """Test register_hook appends to existing hooks.yaml."""
+        import os
+        import yaml
+
+        # Create initial hooks directory and config
+        os.makedirs(self.hooks_dir, exist_ok=True)
+        config_path = f"{self.hooks_dir}/hooks.yaml"
+        initial_config = {
+            "hooks": [
+                {"name": "existing_hook", "path": "/existing/path.py", "events": ["TASK_SUCCESS"]}
+            ]
+        }
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(initial_config, f)
+
+        # Register new hook
+        config = HookConfig(
+            name="new_hook",
+            path="/new/path.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        register_hook(self.hooks_dir, config)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertEqual(len(content["hooks"]), 2)
+        hook_names = [h["name"] for h in content["hooks"]]
+        self.assertIn("existing_hook", hook_names)
+        self.assertIn("new_hook", hook_names)
+
+    def test_register_hook_replaces_existing_hook_with_same_name(self):
+        """Test register_hook replaces hook with same name."""
+        import os
+        import yaml
+
+        # Create initial hooks directory and config
+        os.makedirs(self.hooks_dir, exist_ok=True)
+        config_path = f"{self.hooks_dir}/hooks.yaml"
+        initial_config = {
+            "hooks": [
+                {"name": "test_hook", "path": "/old/path.py", "events": ["TASK_SUCCESS"]}
+            ]
+        }
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(initial_config, f)
+
+        # Register hook with same name but different config
+        config = HookConfig(
+            name="test_hook",
+            path="/new/path.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        register_hook(self.hooks_dir, config)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertEqual(len(content["hooks"]), 1)
+        self.assertEqual(content["hooks"][0]["path"], "/new/path.py")
+        self.assertEqual(content["hooks"][0]["events"], ["PLANNER_SUCCESS"])
+
+    def test_register_hook_handles_empty_yaml(self):
+        """Test register_hook handles empty existing hooks.yaml."""
+        import os
+        import yaml
+
+        # Create empty hooks.yaml
+        os.makedirs(self.hooks_dir, exist_ok=True)
+        config_path = f"{self.hooks_dir}/hooks.yaml"
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write("")
+
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        register_hook(self.hooks_dir, config)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertEqual(len(content["hooks"]), 1)
+
+    def test_register_hook_handles_malformed_hooks_list(self):
+        """Test register_hook handles hooks.yaml with non-list hooks value."""
+        import os
+        import yaml
+
+        # Create hooks.yaml with non-list hooks value
+        os.makedirs(self.hooks_dir, exist_ok=True)
+        config_path = f"{self.hooks_dir}/hooks.yaml"
+        initial_config = {"hooks": "not_a_list"}
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(initial_config, f)
+
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        register_hook(self.hooks_dir, config)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = yaml.safe_load(f)
+
+        self.assertIsInstance(content["hooks"], list)
+        self.assertEqual(len(content["hooks"]), 1)
+
+    def test_register_hook_returns_config_path(self):
+        """Test register_hook returns the path to hooks.yaml."""
+        config = HookConfig(
+            name="test_hook",
+            path="/path/to/script.py",
+            events=["PLANNER_SUCCESS"]
+        )
+
+        result = register_hook(self.hooks_dir, config)
+
+        self.assertTrue(result.endswith("hooks.yaml"))
+        self.assertIn(self.temp_dir, result)
+
+
+class TestMainRegisterHook(unittest.TestCase):
+    """Tests for main function with --register-hook option."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.hooks_dir = f"{self.temp_dir}/.ralph/hooks"
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_main_register_hook_success(self):
+        """Test main with --register-hook returns 0 on success."""
+        with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
+            result = main(["--register-hook", "--hooks-dir", self.hooks_dir])
+
+        self.assertEqual(result, 0)
+        output = mock_stdout.getvalue()
+        self.assertIn("Hook registered successfully", output)
+        self.assertIn("fetch_ready_issues", output)
+        self.assertIn("PLANNER_SUCCESS", output)
+
+    def test_main_register_hook_custom_hooks_dir(self):
+        """Test main with --register-hook uses custom hooks directory."""
+        import os
+        custom_hooks_dir = f"{self.temp_dir}/custom/hooks"
+
+        with patch("sys.stdout", new_callable=StringIO):
+            result = main(["--register-hook", "--hooks-dir", custom_hooks_dir])
+
+        self.assertEqual(result, 0)
+        self.assertTrue(os.path.exists(f"{custom_hooks_dir}/hooks.yaml"))
+
+    def test_main_register_hook_error(self):
+        """Test main with --register-hook returns 1 on error."""
+        with patch("fetch_ready_issues.register_hook") as mock_register:
+            mock_register.side_effect = HookRegistrationError("Test error")
+            with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
+                result = main(["--register-hook", "--hooks-dir", self.hooks_dir])
+
+        self.assertEqual(result, 1)
+        self.assertIn("Test error", mock_stderr.getvalue())
+
+    def test_main_register_hook_skips_gh_check(self):
+        """Test main with --register-hook does not check gh CLI."""
+        with patch("fetch_ready_issues.check_gh_cli") as mock_check:
+            with patch("sys.stdout", new_callable=StringIO):
+                main(["--register-hook", "--hooks-dir", self.hooks_dir])
+
+        mock_check.assert_not_called()
+
+    def test_main_register_hook_skips_fetch(self):
+        """Test main with --register-hook does not fetch issues."""
+        with patch("fetch_ready_issues.fetch_ready_issues") as mock_fetch:
+            with patch("sys.stdout", new_callable=StringIO):
+                main(["--register-hook", "--hooks-dir", self.hooks_dir])
+
+        mock_fetch.assert_not_called()
+
+
+class TestCreateArgumentParserRegisterHook(unittest.TestCase):
+    """Tests for create_argument_parser with register hook options."""
+
+    def test_parser_register_hook_default(self):
+        """Test parser has register_hook default to False."""
+        parser = create_argument_parser()
+        args = parser.parse_args([])
+        self.assertFalse(args.register_hook)
+
+    def test_parser_register_hook_option(self):
+        """Test parser parses --register-hook option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--register-hook"])
+        self.assertTrue(args.register_hook)
+
+    def test_parser_hooks_dir_default(self):
+        """Test parser has hooks_dir default value."""
+        parser = create_argument_parser()
+        args = parser.parse_args([])
+        self.assertEqual(args.hooks_dir, ".ralph/hooks")
+
+    def test_parser_hooks_dir_option(self):
+        """Test parser parses --hooks-dir option."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--hooks-dir", "/custom/path"])
+        self.assertEqual(args.hooks_dir, "/custom/path")
+
+    def test_parser_register_hook_with_hooks_dir(self):
+        """Test parser parses both --register-hook and --hooks-dir options."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--register-hook", "--hooks-dir", "/my/hooks"])
+        self.assertTrue(args.register_hook)
+        self.assertEqual(args.hooks_dir, "/my/hooks")
 
 
 if __name__ == "__main__":

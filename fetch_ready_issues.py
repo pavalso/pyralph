@@ -164,6 +164,20 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help="Skip gh CLI authentication check"
     )
 
+    parser.add_argument(
+        "--register-hook",
+        action="store_true",
+        dest="register_hook",
+        help="Register this script as a Ralph hook for PLANNER_SUCCESS events"
+    )
+
+    parser.add_argument(
+        "--hooks-dir",
+        default=".ralph/hooks",
+        dest="hooks_dir",
+        help="Path to Ralph hooks directory (default: .ralph/hooks)"
+    )
+
     return parser
 
 
@@ -207,6 +221,20 @@ def main(args: Optional[List[str]] = None) -> int:
     """
     parser = create_argument_parser()
     parsed_args = parser.parse_args(args)
+
+    # Handle --register-hook option
+    if parsed_args.register_hook:
+        try:
+            config = generate_hook_config()
+            config_path = register_hook(parsed_args.hooks_dir, config)
+            print(f"Hook registered successfully: {config_path}")
+            print(f"  Name: {config.name}")
+            print(f"  Events: {', '.join(config.events)}")
+            print(f"  Path: {config.path}")
+            return 0
+        except HookRegistrationError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
 
     if parsed_args.verbose:
         print(f"Label filter: {parsed_args.label}", file=sys.stderr)
@@ -593,6 +621,127 @@ def mark_issue_processed(issue_number: int) -> bool:
         add_labels=["processed"],
         remove_labels=["ready"]
     )
+
+
+@dataclass
+class HookConfig:
+    """Configuration for a Ralph hook entry."""
+    name: str
+    path: str
+    events: List[str]
+    priority: int = 100
+    timeout: float = 5.0
+
+    def to_dict(self) -> dict:
+        """Convert hook config to dictionary."""
+        return {
+            "name": self.name,
+            "path": self.path,
+            "events": self.events,
+            "priority": self.priority,
+            "timeout": self.timeout,
+        }
+
+
+def generate_hook_config(script_path: Optional[str] = None) -> HookConfig:
+    """Generate a hook configuration for registering this script as a Ralph hook.
+
+    Creates a HookConfig that subscribes to PLANNER_SUCCESS events, allowing
+    the script to automatically sync completed plans to GitHub.
+
+    Args:
+        script_path: Optional path to the script. If None, uses sys.executable
+            with the module path for a portable configuration.
+
+    Returns:
+        A HookConfig object configured for PLANNER_SUCCESS events.
+    """
+    import os
+
+    if script_path is None:
+        # Use absolute path to the current script file
+        script_path = os.path.abspath(__file__)
+
+    return HookConfig(
+        name="fetch_ready_issues",
+        path=script_path,
+        events=["PLANNER_SUCCESS"],
+        priority=100,
+        timeout=30.0
+    )
+
+
+class HookRegistrationError(Exception):
+    """Raised when hook registration fails."""
+    pass
+
+
+def register_hook(hooks_dir: str, config: HookConfig) -> str:
+    """Register a hook by adding it to the hooks.yaml configuration file.
+
+    Creates or updates the hooks.yaml file in the specified hooks directory
+    with the provided hook configuration. If the hooks directory doesn't exist,
+    it will be created.
+
+    Args:
+        hooks_dir: Path to the Ralph hooks directory (e.g., ".ralph/hooks").
+        config: A HookConfig object containing the hook configuration.
+
+    Returns:
+        Path to the updated hooks.yaml file.
+
+    Raises:
+        HookRegistrationError: If registration fails due to I/O or YAML errors.
+    """
+    from pathlib import Path
+
+    try:
+        import yaml
+    except ImportError:
+        raise HookRegistrationError(
+            "PyYAML is required for hook registration. Install it with: pip install pyyaml"
+        )
+
+    hooks_path = Path(hooks_dir)
+    config_path = hooks_path / "hooks.yaml"
+
+    try:
+        # Create hooks directory if it doesn't exist
+        hooks_path.mkdir(parents=True, exist_ok=True)
+
+        # Load existing config or create new one
+        existing_config: dict = {"hooks": []}
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                loaded = yaml.safe_load(f)
+                if loaded and isinstance(loaded, dict):
+                    existing_config = loaded
+                    if "hooks" not in existing_config:
+                        existing_config["hooks"] = []
+
+        # Check if hook with same name already exists
+        hooks_list = existing_config.get("hooks", [])
+        if not isinstance(hooks_list, list):
+            hooks_list = []
+            existing_config["hooks"] = hooks_list
+
+        # Remove any existing hook with the same name
+        hooks_list = [h for h in hooks_list if h.get("name") != config.name]
+
+        # Add the new hook config
+        hooks_list.append(config.to_dict())
+        existing_config["hooks"] = hooks_list
+
+        # Write the updated config
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(existing_config, f, default_flow_style=False, sort_keys=False)
+
+        return str(config_path)
+
+    except OSError as e:
+        raise HookRegistrationError(f"Failed to write hook config: {e}")
+    except yaml.YAMLError as e:
+        raise HookRegistrationError(f"Failed to parse or write YAML: {e}")
 
 
 if __name__ == "__main__":
