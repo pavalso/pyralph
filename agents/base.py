@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 import traceback
 
 
@@ -45,6 +45,80 @@ class AgentError:
 
 class BaseAgent(ABC):
     """Abstract base class for all Ralph agents."""
+
+    def __init__(self, timeout_seconds: int = 600) -> None:
+        """
+        Initialize the agent.
+
+        Args:
+            timeout_seconds: Maximum time to wait for the agent to respond
+        """
+        self.timeout_seconds = timeout_seconds
+        self._logger: Any = None
+        self._config: Any = None
+
+    def set_logger(self, logger: Any) -> None:
+        """Set the logger instance for this agent."""
+        self._logger = logger
+
+    def set_config(self, config: Any) -> None:
+        """Set the config instance for this agent."""
+        self._config = config
+
+    def _log_prompt(self, prompt: str, tag: str) -> None:
+        """Log the prompt being sent to the agent."""
+        if self._logger:
+            self._logger.file_log(prompt, "PROMPT", tag)
+            if self._logger.verbose:
+                self._logger.debug(f"=== {self.get_name().upper()} PROMPT [{tag}] ===", "CYAN")
+                self._logger.debug(prompt, "CYAN")
+                self._logger.debug("=" * 40, "CYAN")
+
+    def _log_response(self, log_content: str, stdout: str, tag: str) -> None:
+        """Log a successful response from the agent."""
+        if self._logger:
+            self._logger.file_log(log_content, "RESPONSE", tag)
+            if self._logger.verbose:
+                self._logger.debug(f"=== {self.get_name().upper()} RESPONSE [{tag}] ===", "GREEN")
+                self._logger.debug(stdout, "GREEN")
+                self._logger.debug("=" * 40, "GREEN")
+
+    def _log_cli_error(self, log_content: str, stdout: str, stderr: str, tag: str) -> None:
+        """Log a CLI error from the agent."""
+        if self._logger:
+            self._logger.file_log(log_content, "ERROR", tag)
+            if self._logger.verbose:
+                self._logger.debug(f"=== {self.get_name().upper()} ERROR [{tag}] ===", "RED")
+                self._logger.debug(f"STDOUT:\n{stdout}", "RED")
+                self._logger.debug(f"STDERR:\n{stderr}", "RED")
+                self._logger.debug("=" * 40, "RED")
+
+    def _log_exception(self, error: AgentError, tag: str) -> None:
+        """Log an exception that occurred during agent execution."""
+        if self._logger:
+            self._logger.file_log(error.format_log_entry(), "SYSTEM_EXCEPTION", tag)
+            if self._logger.verbose:
+                self._logger.debug(f"=== {self.get_name().upper()} EXCEPTION [{tag}] ===", "RED")
+                self._logger.debug(error.format_log_entry(), "RED")
+                self._logger.debug("=" * 40, "RED")
+
+    def _build_log_content(self, stdout: str, stderr: str) -> str:
+        """Build log content from stdout and stderr."""
+        log_content = stdout
+        if stderr.strip():
+            log_content += f"\n\n--- [CLI STDERR] ---\n{stderr}"
+        return log_content
+
+    def _create_cli_error(self, returncode: int, stdout: str, stderr: str, tag: str) -> AgentError:
+        """Create an AgentError for CLI failures."""
+        return AgentError(
+            exception_type="CLIError",
+            message=f"{self.get_name()} CLI exited with code {returncode}",
+            stack_trace=f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}",
+            timestamp=datetime.now().isoformat(),
+            agent_name=self.get_name(),
+            task_id=tag,
+        )
 
     @abstractmethod
     def run(self, prompt: str, tag: str) -> Tuple[bool, str, Optional[AgentError]]:

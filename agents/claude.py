@@ -9,24 +9,14 @@ from .base import BaseAgent, AgentError
 class ClaudeAgent(BaseAgent):
     """Interface to the Claude CLI agent."""
 
-    def __init__(self, timeout_seconds: int = 600):
+    def __init__(self, timeout_seconds: int = 600) -> None:
         """
         Initialize the Claude agent.
 
         Args:
             timeout_seconds: Maximum time to wait for Claude to respond
         """
-        self.timeout_seconds = timeout_seconds
-        self._logger = None
-        self._config = None
-
-    def set_logger(self, logger):
-        """Set the logger instance for this agent."""
-        self._logger = logger
-
-    def set_config(self, config):
-        """Set the config instance for this agent."""
-        self._config = config
+        super().__init__(timeout_seconds)
 
     def get_name(self) -> str:
         """Get the display name of this agent."""
@@ -47,14 +37,7 @@ class ClaudeAgent(BaseAgent):
         Returns:
             Tuple of (success: bool, output: str, error: Optional[AgentError])
         """
-        if self._logger:
-            self._logger.file_log(prompt, "PROMPT", tag)
-
-            # Display prompt in verbose mode
-            if self._logger.verbose:
-                self._logger.debug(f"=== CLAUDE PROMPT [{tag}] ===", "CYAN")
-                self._logger.debug(prompt, "CYAN")
-                self._logger.debug("=" * 40, "CYAN")
+        self._log_prompt(prompt, tag)
 
         cmd = [
             shutil.which("claude"),
@@ -68,46 +51,17 @@ class ClaudeAgent(BaseAgent):
                 encoding='utf-8', timeout=self.timeout_seconds
             )
 
-            log_content = result.stdout
-            if result.stderr.strip():
-                log_content += f"\n\n--- [CLI STDERR] ---\n{result.stderr}"
+            log_content = self._build_log_content(result.stdout, result.stderr)
 
             if result.returncode != 0:
-                if self._logger:
-                    self._logger.file_log(log_content, "ERROR", tag)
-                    # Display error in verbose mode
-                    if self._logger.verbose:
-                        self._logger.debug(f"=== CLAUDE ERROR [{tag}] ===", "RED")
-                        self._logger.debug(f"STDOUT:\n{result.stdout}", "RED")
-                        self._logger.debug(f"STDERR:\n{result.stderr}", "RED")
-                        self._logger.debug("=" * 40, "RED")
-                error = AgentError(
-                    exception_type="CLIError",
-                    message=f"Claude CLI exited with code {result.returncode}",
-                    stack_trace=f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
-                    timestamp=__import__('datetime').datetime.now().isoformat(),
-                    agent_name=self.get_name(),
-                    task_id=tag,
-                )
+                self._log_cli_error(log_content, result.stdout, result.stderr, tag)
+                error = self._create_cli_error(result.returncode, result.stdout, result.stderr, tag)
                 return False, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}", error
 
-            if self._logger:
-                self._logger.file_log(log_content, "RESPONSE", tag)
-
-                # Display response in verbose mode
-                if self._logger.verbose:
-                    self._logger.debug(f"=== CLAUDE RESPONSE [{tag}] ===", "GREEN")
-                    self._logger.debug(result.stdout, "GREEN")
-                    self._logger.debug("=" * 40, "GREEN")
-
+            self._log_response(log_content, result.stdout, tag)
             return True, result.stdout, None
 
         except Exception as e:
             error = AgentError.from_exception(e, self.get_name(), tag)
-            if self._logger:
-                self._logger.file_log(error.format_log_entry(), "SYSTEM_EXCEPTION", tag)
-                if self._logger.verbose:
-                    self._logger.debug(f"=== CLAUDE EXCEPTION [{tag}] ===", "RED")
-                    self._logger.debug(error.format_log_entry(), "RED")
-                    self._logger.debug("=" * 40, "RED")
+            self._log_exception(error, tag)
             return False, error.format_log_entry(), error

@@ -1,5 +1,7 @@
 """Agent implementations for Ralph orchestrator."""
 
+from typing import List
+
 from .base import BaseAgent, AgentError
 from .claude import ClaudeAgent
 from .copilot import GithubAgent
@@ -34,7 +36,7 @@ def get_agent(agent_name: str, **kwargs) -> BaseAgent:
     return agent_class(**kwargs)
 
 
-def list_agents():
+def list_agents() -> List[str]:
     """
     Get a list of available agent names.
 
