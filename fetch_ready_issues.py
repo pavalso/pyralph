@@ -26,7 +26,8 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple
 
 
@@ -918,6 +919,388 @@ def register_hook(hooks_dir: str, config: HookConfig) -> str:
         raise HookRegistrationError(f"Failed to write hook config: {e}")
     except yaml.YAMLError as e:
         raise HookRegistrationError(f"Failed to parse or write YAML: {e}")
+
+
+@dataclass
+class StoredIssue:
+    """Represents a persisted GitHub issue with metadata.
+
+    Extends the Issue data with persistence-related fields for tracking
+    when issues were stored and their processing status.
+
+    Attributes:
+        number: The GitHub issue number.
+        title: The issue title.
+        body: The issue body/description (may be None).
+        url: The URL to the issue on GitHub.
+        labels: List of label names on the issue.
+        stored_at: ISO 8601 timestamp when the issue was stored.
+        status: Processing status ('pending', 'processing', 'completed', 'failed').
+    """
+    number: int
+    title: str
+    body: Optional[str]
+    url: str
+    labels: List[str]
+    stored_at: str
+    status: str = "pending"
+
+    def to_dict(self) -> dict:
+        """Convert stored issue to dictionary for JSON serialization."""
+        return {
+            "number": self.number,
+            "title": self.title,
+            "body": self.body,
+            "url": self.url,
+            "labels": self.labels,
+            "stored_at": self.stored_at,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StoredIssue":
+        """Create a StoredIssue from a dictionary.
+
+        Args:
+            data: Dictionary containing issue data.
+
+        Returns:
+            A StoredIssue instance.
+        """
+        return cls(
+            number=data["number"],
+            title=data["title"],
+            body=data.get("body"),
+            url=data["url"],
+            labels=data.get("labels", []),
+            stored_at=data["stored_at"],
+            status=data.get("status", "pending"),
+        )
+
+    @classmethod
+    def from_issue(cls, issue: "Issue", status: str = "pending") -> "StoredIssue":
+        """Create a StoredIssue from an Issue.
+
+        Args:
+            issue: The Issue to convert.
+            status: Initial processing status.
+
+        Returns:
+            A StoredIssue instance with current timestamp.
+        """
+        from datetime import datetime, timezone
+
+        return cls(
+            number=issue.number,
+            title=issue.title,
+            body=issue.body,
+            url=issue.url,
+            labels=issue.labels,
+            stored_at=datetime.now(timezone.utc).isoformat(),
+            status=status,
+        )
+
+
+class IssueStoreError(Exception):
+    """Raised when issue storage operations fail."""
+    pass
+
+
+class IssueStore:
+    """Persists GitHub issues locally in JSON format for audit and restart recovery.
+
+    Issues are stored in a directory structure where each issue is saved as a
+    separate JSON file named by issue number. This allows for easy auditing,
+    individual issue access, and atomic updates.
+
+    Directory structure:
+        <store_dir>/
+            issues/
+                1.json
+                2.json
+                ...
+            index.json  # Optional: metadata about the store
+
+    Example:
+        >>> store = IssueStore(".ralph/issues")
+        >>> store.save(issue)
+        >>> stored = store.get(42)
+        >>> all_issues = store.list_issues()
+    """
+
+    def __init__(self, store_dir: str = ".ralph/issues"):
+        """Initialize the IssueStore.
+
+        Args:
+            store_dir: Path to the directory for storing issues.
+                Defaults to ".ralph/issues".
+        """
+        self._store_dir = Path(store_dir)
+        self._issues_dir = self._store_dir / "issues"
+
+    @property
+    def store_dir(self) -> Path:
+        """Get the store directory path."""
+        return self._store_dir
+
+    @property
+    def issues_dir(self) -> Path:
+        """Get the issues subdirectory path."""
+        return self._issues_dir
+
+    def _ensure_dirs(self) -> None:
+        """Ensure the storage directories exist."""
+        try:
+            self._issues_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise IssueStoreError(f"Failed to create storage directory: {e}")
+
+    def _issue_path(self, issue_number: int) -> Path:
+        """Get the file path for an issue.
+
+        Args:
+            issue_number: The issue number.
+
+        Returns:
+            Path to the issue's JSON file.
+        """
+        return self._issues_dir / f"{issue_number}.json"
+
+    def save(self, issue: Issue, status: str = "pending") -> StoredIssue:
+        """Save an issue to the local store.
+
+        If the issue already exists, it will be overwritten.
+
+        Args:
+            issue: The Issue to save.
+            status: Initial processing status.
+
+        Returns:
+            The StoredIssue that was saved.
+
+        Raises:
+            IssueStoreError: If the save operation fails.
+        """
+        self._ensure_dirs()
+
+        stored = StoredIssue.from_issue(issue, status=status)
+        issue_path = self._issue_path(issue.number)
+
+        try:
+            with open(issue_path, 'w', encoding='utf-8') as f:
+                json.dump(stored.to_dict(), f, indent=2)
+            return stored
+        except OSError as e:
+            raise IssueStoreError(f"Failed to save issue #{issue.number}: {e}")
+        except (TypeError, ValueError) as e:
+            raise IssueStoreError(f"Failed to serialize issue #{issue.number}: {e}")
+
+    def save_stored(self, stored_issue: StoredIssue) -> StoredIssue:
+        """Save a StoredIssue to the local store.
+
+        This method is used for updating existing stored issues.
+
+        Args:
+            stored_issue: The StoredIssue to save.
+
+        Returns:
+            The StoredIssue that was saved.
+
+        Raises:
+            IssueStoreError: If the save operation fails.
+        """
+        self._ensure_dirs()
+
+        issue_path = self._issue_path(stored_issue.number)
+
+        try:
+            with open(issue_path, 'w', encoding='utf-8') as f:
+                json.dump(stored_issue.to_dict(), f, indent=2)
+            return stored_issue
+        except OSError as e:
+            raise IssueStoreError(f"Failed to save issue #{stored_issue.number}: {e}")
+        except (TypeError, ValueError) as e:
+            raise IssueStoreError(f"Failed to serialize issue #{stored_issue.number}: {e}")
+
+    def get(self, issue_number: int) -> Optional[StoredIssue]:
+        """Retrieve a stored issue by number.
+
+        Args:
+            issue_number: The issue number to retrieve.
+
+        Returns:
+            The StoredIssue if found, None otherwise.
+
+        Raises:
+            IssueStoreError: If reading the issue file fails (other than not found).
+        """
+        issue_path = self._issue_path(issue_number)
+
+        if not issue_path.exists():
+            return None
+
+        try:
+            with open(issue_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return StoredIssue.from_dict(data)
+        except OSError as e:
+            raise IssueStoreError(f"Failed to read issue #{issue_number}: {e}")
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            raise IssueStoreError(f"Failed to parse issue #{issue_number}: {e}")
+
+    def exists(self, issue_number: int) -> bool:
+        """Check if an issue exists in the store.
+
+        Args:
+            issue_number: The issue number to check.
+
+        Returns:
+            True if the issue exists, False otherwise.
+        """
+        return self._issue_path(issue_number).exists()
+
+    def delete(self, issue_number: int) -> bool:
+        """Delete a stored issue.
+
+        Args:
+            issue_number: The issue number to delete.
+
+        Returns:
+            True if the issue was deleted, False if it didn't exist.
+
+        Raises:
+            IssueStoreError: If the delete operation fails.
+        """
+        issue_path = self._issue_path(issue_number)
+
+        if not issue_path.exists():
+            return False
+
+        try:
+            issue_path.unlink()
+            return True
+        except OSError as e:
+            raise IssueStoreError(f"Failed to delete issue #{issue_number}: {e}")
+
+    def list_issues(self, status: Optional[str] = None) -> List[StoredIssue]:
+        """List all stored issues, optionally filtered by status.
+
+        Args:
+            status: Optional status to filter by ('pending', 'processing',
+                'completed', 'failed'). If None, returns all issues.
+
+        Returns:
+            List of StoredIssue objects, sorted by issue number.
+
+        Raises:
+            IssueStoreError: If reading issues fails.
+        """
+        if not self._issues_dir.exists():
+            return []
+
+        issues: List[StoredIssue] = []
+
+        try:
+            for path in self._issues_dir.glob("*.json"):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    stored = StoredIssue.from_dict(data)
+                    if status is None or stored.status == status:
+                        issues.append(stored)
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    # Skip malformed files but continue processing
+                    continue
+
+            # Sort by issue number
+            issues.sort(key=lambda x: x.number)
+            return issues
+
+        except OSError as e:
+            raise IssueStoreError(f"Failed to list issues: {e}")
+
+    def update_status(self, issue_number: int, status: str) -> Optional[StoredIssue]:
+        """Update the status of a stored issue.
+
+        Args:
+            issue_number: The issue number to update.
+            status: The new status value.
+
+        Returns:
+            The updated StoredIssue if found, None if the issue doesn't exist.
+
+        Raises:
+            IssueStoreError: If the update operation fails.
+        """
+        stored = self.get(issue_number)
+        if stored is None:
+            return None
+
+        from dataclasses import replace
+        updated = replace(stored, status=status)
+        return self.save_stored(updated)
+
+    def count(self, status: Optional[str] = None) -> int:
+        """Count stored issues, optionally filtered by status.
+
+        Args:
+            status: Optional status to filter by.
+
+        Returns:
+            The number of matching issues.
+        """
+        if not self._issues_dir.exists():
+            return 0
+
+        if status is None:
+            # Fast path: just count JSON files
+            return len(list(self._issues_dir.glob("*.json")))
+
+        # Need to read files to filter by status
+        return len(self.list_issues(status=status))
+
+    def clear(self) -> int:
+        """Remove all stored issues.
+
+        Returns:
+            The number of issues that were deleted.
+
+        Raises:
+            IssueStoreError: If the clear operation fails.
+        """
+        if not self._issues_dir.exists():
+            return 0
+
+        count = 0
+        try:
+            for path in self._issues_dir.glob("*.json"):
+                path.unlink()
+                count += 1
+            return count
+        except OSError as e:
+            raise IssueStoreError(f"Failed to clear issues: {e}")
+
+    def save_batch(self, issues: List[Issue], status: str = "pending") -> List[StoredIssue]:
+        """Save multiple issues in batch.
+
+        Args:
+            issues: List of Issues to save.
+            status: Initial processing status for all issues.
+
+        Returns:
+            List of StoredIssue objects that were saved.
+
+        Raises:
+            IssueStoreError: If saving any issue fails.
+        """
+        self._ensure_dirs()
+        stored_issues: List[StoredIssue] = []
+
+        for issue in issues:
+            stored = self.save(issue, status=status)
+            stored_issues.append(stored)
+
+        return stored_issues
 
 
 if __name__ == "__main__":

@@ -19,6 +19,9 @@ from fetch_ready_issues import (
     HookRegistrationError,
     PollerConfig,
     GitHubPoller,
+    StoredIssue,
+    IssueStoreError,
+    IssueStore,
     check_gh_cli,
     fetch_ready_issues,
     main,
@@ -2114,6 +2117,529 @@ class TestGitHubPoller(unittest.TestCase):
 
         self.assertLess(elapsed, 2.0)  # Should complete well within timeout
         self.assertFalse(poller.is_running)
+
+
+class TestStoredIssue(unittest.TestCase):
+    """Tests for StoredIssue dataclass."""
+
+    def test_stored_issue_creation(self):
+        """Test StoredIssue dataclass creation with all fields."""
+        stored = StoredIssue(
+            number=42,
+            title="Test Issue",
+            body="Issue body content",
+            url="https://github.com/owner/repo/issues/42",
+            labels=["ready", "bug"],
+            stored_at="2024-01-15T10:30:00+00:00",
+            status="pending"
+        )
+        self.assertEqual(stored.number, 42)
+        self.assertEqual(stored.title, "Test Issue")
+        self.assertEqual(stored.body, "Issue body content")
+        self.assertEqual(stored.url, "https://github.com/owner/repo/issues/42")
+        self.assertEqual(stored.labels, ["ready", "bug"])
+        self.assertEqual(stored.stored_at, "2024-01-15T10:30:00+00:00")
+        self.assertEqual(stored.status, "pending")
+
+    def test_stored_issue_default_status(self):
+        """Test StoredIssue default status is 'pending'."""
+        stored = StoredIssue(
+            number=1,
+            title="Test",
+            body=None,
+            url="http://url",
+            labels=[],
+            stored_at="2024-01-15T10:30:00+00:00"
+        )
+        self.assertEqual(stored.status, "pending")
+
+    def test_stored_issue_to_dict(self):
+        """Test StoredIssue.to_dict() method."""
+        stored = StoredIssue(
+            number=10,
+            title="Dict Test",
+            body="Body text",
+            url="https://github.com/owner/repo/issues/10",
+            labels=["ready"],
+            stored_at="2024-01-15T10:30:00+00:00",
+            status="completed"
+        )
+        result = stored.to_dict()
+        self.assertEqual(result, {
+            "number": 10,
+            "title": "Dict Test",
+            "body": "Body text",
+            "url": "https://github.com/owner/repo/issues/10",
+            "labels": ["ready"],
+            "stored_at": "2024-01-15T10:30:00+00:00",
+            "status": "completed"
+        })
+
+    def test_stored_issue_from_dict(self):
+        """Test StoredIssue.from_dict() class method."""
+        data = {
+            "number": 5,
+            "title": "From Dict",
+            "body": "Test body",
+            "url": "http://url",
+            "labels": ["bug"],
+            "stored_at": "2024-01-15T10:30:00+00:00",
+            "status": "processing"
+        }
+        stored = StoredIssue.from_dict(data)
+        self.assertEqual(stored.number, 5)
+        self.assertEqual(stored.title, "From Dict")
+        self.assertEqual(stored.body, "Test body")
+        self.assertEqual(stored.labels, ["bug"])
+        self.assertEqual(stored.status, "processing")
+
+    def test_stored_issue_from_dict_missing_optional_fields(self):
+        """Test StoredIssue.from_dict() with missing optional fields."""
+        data = {
+            "number": 1,
+            "title": "Test",
+            "url": "http://url",
+            "stored_at": "2024-01-15T10:30:00+00:00"
+        }
+        stored = StoredIssue.from_dict(data)
+        self.assertIsNone(stored.body)
+        self.assertEqual(stored.labels, [])
+        self.assertEqual(stored.status, "pending")
+
+    def test_stored_issue_from_issue(self):
+        """Test StoredIssue.from_issue() class method."""
+        issue = Issue(
+            number=42,
+            title="Test Issue",
+            body="Body",
+            url="http://url",
+            labels=["ready"]
+        )
+        stored = StoredIssue.from_issue(issue)
+        self.assertEqual(stored.number, 42)
+        self.assertEqual(stored.title, "Test Issue")
+        self.assertEqual(stored.body, "Body")
+        self.assertEqual(stored.labels, ["ready"])
+        self.assertEqual(stored.status, "pending")
+        self.assertIsNotNone(stored.stored_at)
+
+    def test_stored_issue_from_issue_custom_status(self):
+        """Test StoredIssue.from_issue() with custom status."""
+        issue = Issue(
+            number=1,
+            title="Test",
+            body="Body",
+            url="http://url",
+            labels=[]
+        )
+        stored = StoredIssue.from_issue(issue, status="processing")
+        self.assertEqual(stored.status, "processing")
+
+
+class TestIssueStoreError(unittest.TestCase):
+    """Tests for IssueStoreError exception."""
+
+    def test_exception_message(self):
+        """Test IssueStoreError stores message correctly."""
+        error = IssueStoreError("Test message")
+        self.assertEqual(str(error), "Test message")
+
+    def test_exception_inheritance(self):
+        """Test IssueStoreError inherits from Exception."""
+        error = IssueStoreError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestIssueStore(unittest.TestCase):
+    """Tests for IssueStore class."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        import shutil
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = f"{self.temp_dir}/issues_store"
+        self.store = IssueStore(self.store_dir)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_issue(self, number: int, title: str = "Test") -> Issue:
+        """Helper to create a test issue."""
+        return Issue(
+            number=number,
+            title=title,
+            body=f"Body for issue {number}",
+            url=f"http://url/{number}",
+            labels=["ready"]
+        )
+
+    def test_store_initialization(self):
+        """Test IssueStore initialization."""
+        import os
+        store = IssueStore("/custom/path")
+        # Use os.path.normpath to handle platform differences
+        self.assertEqual(os.path.normpath(store.store_dir), os.path.normpath("/custom/path"))
+        self.assertEqual(os.path.normpath(store.issues_dir), os.path.normpath("/custom/path/issues"))
+
+    def test_store_default_path(self):
+        """Test IssueStore default path."""
+        import os
+        store = IssueStore()
+        self.assertEqual(os.path.normpath(store.store_dir), os.path.normpath(".ralph/issues"))
+
+    def test_save_creates_directory(self):
+        """Test save creates storage directory if it doesn't exist."""
+        import os
+        issue = self._create_issue(1)
+        self.store.save(issue)
+        self.assertTrue(os.path.exists(self.store.issues_dir))
+
+    def test_save_creates_json_file(self):
+        """Test save creates a JSON file for the issue."""
+        import os
+        issue = self._create_issue(42)
+        self.store.save(issue)
+        expected_path = os.path.join(self.store.issues_dir, "42.json")
+        self.assertTrue(os.path.exists(expected_path))
+
+    def test_save_returns_stored_issue(self):
+        """Test save returns a StoredIssue."""
+        issue = self._create_issue(1)
+        stored = self.store.save(issue)
+        self.assertIsInstance(stored, StoredIssue)
+        self.assertEqual(stored.number, 1)
+        self.assertEqual(stored.status, "pending")
+
+    def test_save_with_custom_status(self):
+        """Test save with custom status."""
+        issue = self._create_issue(1)
+        stored = self.store.save(issue, status="processing")
+        self.assertEqual(stored.status, "processing")
+
+    def test_save_overwrites_existing(self):
+        """Test save overwrites existing issue."""
+        issue1 = self._create_issue(1, title="Original")
+        issue2 = self._create_issue(1, title="Updated")
+
+        self.store.save(issue1)
+        self.store.save(issue2)
+
+        retrieved = self.store.get(1)
+        self.assertEqual(retrieved.title, "Updated")
+
+    def test_save_stored(self):
+        """Test save_stored saves a StoredIssue."""
+        issue = self._create_issue(1)
+        stored = self.store.save(issue)
+
+        # Modify and save again
+        from dataclasses import replace
+        updated = replace(stored, status="completed")
+        self.store.save_stored(updated)
+
+        retrieved = self.store.get(1)
+        self.assertEqual(retrieved.status, "completed")
+
+    def test_get_returns_stored_issue(self):
+        """Test get returns the stored issue."""
+        issue = self._create_issue(42)
+        self.store.save(issue)
+
+        retrieved = self.store.get(42)
+        self.assertIsInstance(retrieved, StoredIssue)
+        self.assertEqual(retrieved.number, 42)
+        self.assertEqual(retrieved.title, "Test")
+
+    def test_get_returns_none_for_missing(self):
+        """Test get returns None for non-existent issue."""
+        result = self.store.get(999)
+        self.assertIsNone(result)
+
+    def test_get_preserves_all_fields(self):
+        """Test get preserves all issue fields."""
+        issue = Issue(
+            number=1,
+            title="Full Test",
+            body="Body content",
+            url="http://example.com/1",
+            labels=["ready", "bug", "high-priority"]
+        )
+        self.store.save(issue, status="processing")
+
+        retrieved = self.store.get(1)
+        self.assertEqual(retrieved.title, "Full Test")
+        self.assertEqual(retrieved.body, "Body content")
+        self.assertEqual(retrieved.url, "http://example.com/1")
+        self.assertEqual(retrieved.labels, ["ready", "bug", "high-priority"])
+        self.assertEqual(retrieved.status, "processing")
+
+    def test_exists_returns_true_for_existing(self):
+        """Test exists returns True for stored issue."""
+        issue = self._create_issue(1)
+        self.store.save(issue)
+        self.assertTrue(self.store.exists(1))
+
+    def test_exists_returns_false_for_missing(self):
+        """Test exists returns False for non-existent issue."""
+        self.assertFalse(self.store.exists(999))
+
+    def test_delete_removes_issue(self):
+        """Test delete removes the issue file."""
+        issue = self._create_issue(1)
+        self.store.save(issue)
+        self.assertTrue(self.store.exists(1))
+
+        result = self.store.delete(1)
+        self.assertTrue(result)
+        self.assertFalse(self.store.exists(1))
+
+    def test_delete_returns_false_for_missing(self):
+        """Test delete returns False for non-existent issue."""
+        result = self.store.delete(999)
+        self.assertFalse(result)
+
+    def test_list_issues_empty_store(self):
+        """Test list_issues returns empty list for empty store."""
+        result = self.store.list_issues()
+        self.assertEqual(result, [])
+
+    def test_list_issues_returns_all_issues(self):
+        """Test list_issues returns all stored issues."""
+        for i in range(1, 4):
+            self.store.save(self._create_issue(i))
+
+        issues = self.store.list_issues()
+        self.assertEqual(len(issues), 3)
+        numbers = [i.number for i in issues]
+        self.assertEqual(numbers, [1, 2, 3])
+
+    def test_list_issues_sorted_by_number(self):
+        """Test list_issues returns issues sorted by number."""
+        # Save in random order
+        for i in [5, 2, 8, 1, 3]:
+            self.store.save(self._create_issue(i))
+
+        issues = self.store.list_issues()
+        numbers = [i.number for i in issues]
+        self.assertEqual(numbers, [1, 2, 3, 5, 8])
+
+    def test_list_issues_filter_by_status(self):
+        """Test list_issues filters by status."""
+        self.store.save(self._create_issue(1), status="pending")
+        self.store.save(self._create_issue(2), status="processing")
+        self.store.save(self._create_issue(3), status="completed")
+        self.store.save(self._create_issue(4), status="pending")
+
+        pending = self.store.list_issues(status="pending")
+        self.assertEqual(len(pending), 2)
+        self.assertEqual([i.number for i in pending], [1, 4])
+
+        completed = self.store.list_issues(status="completed")
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].number, 3)
+
+    def test_list_issues_skips_malformed_files(self):
+        """Test list_issues skips malformed JSON files."""
+        import os
+
+        # Create a valid issue
+        self.store.save(self._create_issue(1))
+
+        # Create a malformed JSON file
+        malformed_path = os.path.join(self.store.issues_dir, "2.json")
+        with open(malformed_path, 'w') as f:
+            f.write("not valid json")
+
+        # Should only return the valid issue
+        issues = self.store.list_issues()
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].number, 1)
+
+    def test_update_status(self):
+        """Test update_status updates the issue status."""
+        self.store.save(self._create_issue(1), status="pending")
+
+        updated = self.store.update_status(1, "completed")
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.status, "completed")
+
+        # Verify persisted
+        retrieved = self.store.get(1)
+        self.assertEqual(retrieved.status, "completed")
+
+    def test_update_status_returns_none_for_missing(self):
+        """Test update_status returns None for non-existent issue."""
+        result = self.store.update_status(999, "completed")
+        self.assertIsNone(result)
+
+    def test_count_empty_store(self):
+        """Test count returns 0 for empty store."""
+        self.assertEqual(self.store.count(), 0)
+
+    def test_count_all_issues(self):
+        """Test count returns total number of issues."""
+        for i in range(5):
+            self.store.save(self._create_issue(i))
+        self.assertEqual(self.store.count(), 5)
+
+    def test_count_by_status(self):
+        """Test count filters by status."""
+        self.store.save(self._create_issue(1), status="pending")
+        self.store.save(self._create_issue(2), status="pending")
+        self.store.save(self._create_issue(3), status="completed")
+
+        self.assertEqual(self.store.count(status="pending"), 2)
+        self.assertEqual(self.store.count(status="completed"), 1)
+        self.assertEqual(self.store.count(status="failed"), 0)
+
+    def test_clear_removes_all_issues(self):
+        """Test clear removes all stored issues."""
+        for i in range(3):
+            self.store.save(self._create_issue(i))
+        self.assertEqual(self.store.count(), 3)
+
+        count = self.store.clear()
+        self.assertEqual(count, 3)
+        self.assertEqual(self.store.count(), 0)
+
+    def test_clear_returns_zero_for_empty_store(self):
+        """Test clear returns 0 for empty store."""
+        count = self.store.clear()
+        self.assertEqual(count, 0)
+
+    def test_save_batch(self):
+        """Test save_batch saves multiple issues."""
+        issues = [self._create_issue(i) for i in range(1, 4)]
+        stored = self.store.save_batch(issues)
+
+        self.assertEqual(len(stored), 3)
+        self.assertEqual(self.store.count(), 3)
+
+        for i, s in enumerate(stored, 1):
+            self.assertEqual(s.number, i)
+            self.assertEqual(s.status, "pending")
+
+    def test_save_batch_with_custom_status(self):
+        """Test save_batch with custom status."""
+        issues = [self._create_issue(i) for i in range(1, 3)]
+        stored = self.store.save_batch(issues, status="processing")
+
+        for s in stored:
+            self.assertEqual(s.status, "processing")
+
+    def test_save_batch_empty_list(self):
+        """Test save_batch with empty list."""
+        stored = self.store.save_batch([])
+        self.assertEqual(stored, [])
+        self.assertEqual(self.store.count(), 0)
+
+    def test_stored_issue_survives_restart(self):
+        """Test stored issues survive creating a new IssueStore instance."""
+        # Save with first store instance
+        self.store.save(self._create_issue(42), status="processing")
+
+        # Create new store instance pointing to same directory
+        new_store = IssueStore(self.store_dir)
+
+        # Issue should be retrievable
+        retrieved = new_store.get(42)
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.number, 42)
+        self.assertEqual(retrieved.status, "processing")
+
+    def test_json_file_format(self):
+        """Test the JSON file format is human-readable."""
+        import os
+
+        issue = Issue(
+            number=1,
+            title="Test Issue",
+            body="Test body",
+            url="http://url",
+            labels=["ready"]
+        )
+        self.store.save(issue)
+
+        file_path = os.path.join(self.store.issues_dir, "1.json")
+        with open(file_path, 'r') as f:
+            content = f.read()
+
+        # Should be indented JSON
+        self.assertIn('"number": 1', content)
+        self.assertIn('"title": "Test Issue"', content)
+        self.assertIn('\n', content)  # Should have newlines (indented)
+
+
+class TestIssueStoreIntegration(unittest.TestCase):
+    """Integration tests for IssueStore with GitHubPoller workflow."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.store_dir = f"{self.temp_dir}/issues_store"
+        self.store = IssueStore(self.store_dir)
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_store_issues_from_poller_callback(self):
+        """Test storing issues received from a poller callback."""
+        mock_issues = [
+            Issue(number=1, title="First", body="Body", url="http://url/1", labels=["ready"]),
+            Issue(number=2, title="Second", body="Body", url="http://url/2", labels=["ready"]),
+        ]
+
+        # Simulate callback storing issues
+        def on_new_issues(issues):
+            self.store.save_batch(issues)
+
+        on_new_issues(mock_issues)
+
+        self.assertEqual(self.store.count(), 2)
+        self.assertIsNotNone(self.store.get(1))
+        self.assertIsNotNone(self.store.get(2))
+
+    def test_track_processing_status(self):
+        """Test tracking issue processing status through workflow."""
+        issue = Issue(number=1, title="Test", body="Body", url="http://url", labels=["ready"])
+
+        # Issue arrives - save as pending
+        self.store.save(issue, status="pending")
+        self.assertEqual(self.store.get(1).status, "pending")
+
+        # Start processing
+        self.store.update_status(1, "processing")
+        self.assertEqual(self.store.get(1).status, "processing")
+
+        # Processing complete
+        self.store.update_status(1, "completed")
+        self.assertEqual(self.store.get(1).status, "completed")
+
+    def test_resume_after_restart(self):
+        """Test resuming incomplete processing after restart."""
+        # Save issues with various statuses
+        for i, status in [(1, "completed"), (2, "processing"), (3, "pending")]:
+            issue = Issue(number=i, title=f"Issue {i}", body="Body", url="http://url", labels=[])
+            self.store.save(issue, status=status)
+
+        # Simulate restart - create new store instance
+        new_store = IssueStore(self.store_dir)
+
+        # Find incomplete issues to resume
+        pending = new_store.list_issues(status="pending")
+        processing = new_store.list_issues(status="processing")
+
+        # Issues needing attention
+        incomplete = pending + processing
+        self.assertEqual(len(incomplete), 2)
+        incomplete_numbers = {i.number for i in incomplete}
+        self.assertEqual(incomplete_numbers, {2, 3})
 
 
 if __name__ == "__main__":
