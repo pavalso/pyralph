@@ -405,6 +405,54 @@ class TestShell(unittest.TestCase):
                 entry = line.split('/')[-1].split('\\')[-1].strip().lstrip('├─└│ ')
                 self.assertNotEqual(entry, excluded)
 
+    def test_get_file_tree_default_ignore_list(self):
+        """Test that DEFAULT_TREE_IGNORE contains expected patterns."""
+        expected = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
+        self.assertEqual(Shell.DEFAULT_TREE_IGNORE, expected)
+
+    def test_get_file_tree_with_custom_depth(self):
+        """Test get_file_tree accepts custom depth parameter."""
+        with patch('ralph.Shell.run') as mock_run:
+            mock_run.return_value = ("tree output", "", 0)
+            Shell.get_file_tree(depth=5)
+            call_args = mock_run.call_args[0][0]
+            self.assertIn("-L 5", call_args)
+
+    def test_get_file_tree_with_custom_ignore(self):
+        """Test get_file_tree accepts custom ignore patterns."""
+        with patch('ralph.Shell.run') as mock_run:
+            mock_run.return_value = ("tree output", "", 0)
+            Shell.get_file_tree(ignore=['build', 'dist'])
+            call_args = mock_run.call_args[0][0]
+            self.assertIn("-I 'build|dist'", call_args)
+
+    def test_get_file_tree_with_empty_ignore(self):
+        """Test get_file_tree with empty ignore list."""
+        with patch('ralph.Shell.run') as mock_run:
+            mock_run.return_value = ("tree output", "", 0)
+            Shell.get_file_tree(ignore=[])
+            call_args = mock_run.call_args[0][0]
+            self.assertNotIn("-I", call_args)
+
+    def test_get_file_tree_fallback_respects_ignore(self):
+        """Test fallback Python walker respects ignore patterns."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            # Create test directories/files
+            (temp_path / "src").mkdir()
+            (temp_path / "node_modules").mkdir()
+
+            original_base_dir = CONF.BASE_DIR
+            CONF.BASE_DIR = temp_path
+            try:
+                with patch('ralph.Shell.run') as mock_run:
+                    mock_run.return_value = ("", "", 1)  # Force fallback
+                    result = Shell.get_file_tree(ignore=['node_modules'])
+                    self.assertIn("src", result)
+                    self.assertNotIn("node_modules", result)
+            finally:
+                CONF.BASE_DIR = original_base_dir
+
 
 # ==============================================================================
 # JSON UTILS TESTS
@@ -909,6 +957,234 @@ class TestMainIntentValidation(unittest.TestCase):
                         main()
                         mock_error.assert_called_with("Cannot use both --intent and --intent-file together.")
                         mock_exit.assert_called_with(1)
+
+
+# ==============================================================================
+# ARCHITECT CONTROL FLAGS TESTS
+# ==============================================================================
+
+
+class TestArchitectControlFlags(TempConfigTestCase):
+    """Tests for --tree-depth, --tree-ignore, and --memory-out CLI flags."""
+
+    def setUp(self):
+        super().setUp()
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?")
+        self.parser.add_argument("--tree-depth", type=int, default=2, metavar="N")
+        self.parser.add_argument("--tree-ignore", nargs="+", metavar="PATTERN")
+        self.parser.add_argument("--memory-out", type=str, metavar="FILE")
+
+    def test_tree_depth_flag_parses(self):
+        """Test --tree-depth flag accepts integer value."""
+        args = self.parser.parse_args(["--tree-depth", "5", "architect"])
+        self.assertEqual(args.tree_depth, 5)
+        self.assertEqual(args.phase, "architect")
+
+    def test_tree_depth_default_value(self):
+        """Test --tree-depth defaults to 2."""
+        args = self.parser.parse_args([])
+        self.assertEqual(args.tree_depth, 2)
+
+    def test_tree_ignore_flag_parses_single(self):
+        """Test --tree-ignore flag accepts single pattern."""
+        args = self.parser.parse_args(["--tree-ignore", "build"])
+        self.assertEqual(args.tree_ignore, ["build"])
+
+    def test_tree_ignore_flag_parses_multiple(self):
+        """Test --tree-ignore flag accepts multiple patterns."""
+        args = self.parser.parse_args(["--tree-ignore", "build", "dist", "coverage"])
+        self.assertEqual(args.tree_ignore, ["build", "dist", "coverage"])
+
+    def test_tree_ignore_default_none(self):
+        """Test --tree-ignore defaults to None."""
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.tree_ignore)
+
+    def test_memory_out_flag_parses(self):
+        """Test --memory-out flag accepts file path."""
+        args = self.parser.parse_args(["--memory-out", "/path/to/context.md"])
+        self.assertEqual(args.memory_out, "/path/to/context.md")
+
+    def test_all_architect_flags_combined(self):
+        """Test all architect control flags can be used together."""
+        args = self.parser.parse_args([
+            "--tree-depth", "4",
+            "--tree-ignore", "node_modules", "dist",
+            "--memory-out", "output.md",
+            "architect"
+        ])
+        self.assertEqual(args.tree_depth, 4)
+        self.assertEqual(args.tree_ignore, ["node_modules", "dist"])
+        self.assertEqual(args.memory_out, "output.md")
+        self.assertEqual(args.phase, "architect")
+
+
+class TestOrchestratorArchitectControlFlags(TempConfigTestCase):
+    """Tests for RalphOrchestrator architect control flag handling."""
+
+    def test_orchestrator_stores_tree_depth(self):
+        """Test orchestrator stores --tree-depth flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", tree_depth=5)
+            self.assertEqual(orch._tree_depth, 5)
+
+    def test_orchestrator_stores_tree_ignore(self):
+        """Test orchestrator stores --tree-ignore flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", tree_ignore=["build", "dist"])
+            self.assertEqual(orch._tree_ignore, ["build", "dist"])
+
+    def test_orchestrator_stores_memory_out(self):
+        """Test orchestrator stores --memory-out flag."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock", memory_out="/path/to/output.md")
+            self.assertEqual(orch._memory_out, "/path/to/output.md")
+
+    def test_orchestrator_defaults_tree_depth_to_2(self):
+        """Test orchestrator defaults tree_depth to 2."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            self.assertEqual(orch._tree_depth, 2)
+
+    def test_orchestrator_defaults_tree_ignore_to_none(self):
+        """Test orchestrator defaults tree_ignore to None."""
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            self.assertIsNone(orch._tree_ignore)
+
+    def test_run_architect_uses_tree_flags(self):
+        """Test run_architect passes tree flags to Shell.get_file_tree."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "STATUS: CREATED", None)
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "architecture.md").write_text("content", encoding="utf-8")
+        (CONF.BASE_DIR / "ARCH.md").write_text("# Arch", encoding="utf-8")
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.get_file_tree') as mock_tree:
+                mock_tree.return_value = "tree output"
+                orch = RalphOrchestrator(agent_name="mock", tree_depth=5, tree_ignore=["build"])
+                with patch('ralph.Logger.info'):
+                    orch.run_architect("test intent")
+                mock_tree.assert_called_once_with(depth=5, ignore=["build"])
+
+
+class TestOrchestratorExportMemory(TempConfigTestCase):
+    """Tests for RalphOrchestrator._export_memory() method."""
+
+    def test_export_memory_creates_output_file(self):
+        """Test _export_memory creates output file."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "architecture.md").write_text("# Architecture\nContent here", encoding="utf-8")
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            output_path = self.temp_path / "output" / "context.md"
+            orch._export_memory(str(output_path))
+
+            self.assertTrue(output_path.exists())
+            content = output_path.read_text(encoding='utf-8')
+            self.assertIn("architecture.md", content)
+            self.assertIn("# Architecture", content)
+
+    def test_export_memory_creates_parent_directories(self):
+        """Test _export_memory creates parent directories if they don't exist."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "test.md").write_text("test content", encoding="utf-8")
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            output_path = self.temp_path / "nested" / "deep" / "output.md"
+            orch._export_memory(str(output_path))
+
+            self.assertTrue(output_path.exists())
+
+    def test_export_memory_concatenates_multiple_files(self):
+        """Test _export_memory concatenates all memory files."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("Architecture content", encoding="utf-8")
+        (CONF.MEMORY_DIR / "tasks.md").write_text("Task content", encoding="utf-8")
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            output_path = self.temp_path / "output.md"
+            orch._export_memory(str(output_path))
+
+            content = output_path.read_text(encoding='utf-8')
+            self.assertIn("Architecture content", content)
+            self.assertIn("Task content", content)
+            self.assertIn("---", content)  # separator
+
+    def test_export_memory_skips_hidden_files(self):
+        """Test _export_memory skips files starting with dot."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "visible.md").write_text("visible content", encoding="utf-8")
+        (CONF.MEMORY_DIR / ".hidden").write_text("hidden content", encoding="utf-8")
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            output_path = self.temp_path / "output.md"
+            orch._export_memory(str(output_path))
+
+            content = output_path.read_text(encoding='utf-8')
+            self.assertIn("visible content", content)
+            self.assertNotIn("hidden content", content)
+
+    def test_export_memory_warns_on_empty(self):
+        """Test _export_memory warns when no memory files exist."""
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+
+        mock_agent = self.create_mock_agent()
+        with patch('ralph.get_agent', return_value=mock_agent):
+            orch = RalphOrchestrator(agent_name="mock")
+            output_path = self.temp_path / "output.md"
+            with patch('ralph.Logger.warning') as mock_warning:
+                orch._export_memory(str(output_path))
+                mock_warning.assert_called_with("No memory files to export.")
+
+    def test_run_architect_calls_export_memory(self):
+        """Test run_architect calls _export_memory when --memory-out is set."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "STATUS: CREATED", None)
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "architecture.md").write_text("content", encoding="utf-8")
+        (CONF.BASE_DIR / "ARCH.md").write_text("# Arch", encoding="utf-8")
+
+        output_path = self.temp_path / "exported.md"
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.get_file_tree', return_value="tree"):
+                orch = RalphOrchestrator(agent_name="mock", memory_out=str(output_path))
+                with patch('ralph.Logger.info'):
+                    orch.run_architect("test intent")
+
+                self.assertTrue(output_path.exists())
+
+    def test_run_architect_skips_export_when_no_memory_out(self):
+        """Test run_architect doesn't export when --memory-out not set."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "STATUS: CREATED", None)
+        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (CONF.MEMORY_DIR / "architecture.md").write_text("content", encoding="utf-8")
+        (CONF.BASE_DIR / "ARCH.md").write_text("# Arch", encoding="utf-8")
+
+        with patch('ralph.get_agent', return_value=mock_agent):
+            with patch('ralph.Shell.get_file_tree', return_value="tree"):
+                orch = RalphOrchestrator(agent_name="mock")
+                with patch.object(orch, '_export_memory') as mock_export:
+                    with patch('ralph.Logger.info'):
+                        orch.run_architect("test intent")
+                    mock_export.assert_not_called()
 
 
 # ==============================================================================

@@ -181,22 +181,40 @@ class Shell:
         except Exception as e:
             return "", str(e), 1
 
+    # Default exclusion patterns for file tree
+    DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
+
     @staticmethod
-    def get_file_tree() -> str:
+    def get_file_tree(depth: int = 2, ignore: Optional[List[str]] = None) -> str:
         """
         Generate a file tree representation of the project directory.
 
+        Args:
+            depth: Maximum directory depth to traverse (default: 2)
+            ignore: List of directory/file patterns to exclude (default: node_modules, venv, .git, .ralph, __pycache__)
+
         Returns:
-            String representation of the directory tree (depth 2)
+            String representation of the directory tree
         """
+        if ignore is None:
+            ignore = Shell.DEFAULT_TREE_IGNORE
+
+        # Build the ignore pattern for tree command
+        ignore_pattern = '|'.join(ignore) if ignore else ''
+
         # We explicitly list '.' to ensure we are looking at CWD
-        stdout, _, code = Shell.run("tree -L 2 --noreport -I 'node_modules|venv|.git|.ralph|__pycache__'")
-        if code == 0 and stdout.strip(): return stdout
+        cmd = f"tree -L {depth} --noreport"
+        if ignore_pattern:
+            cmd += f" -I '{ignore_pattern}'"
+        stdout, _, code = Shell.run(cmd)
+        if code == 0 and stdout.strip():
+            return stdout
 
         # Fallback python walker using CWD
+        ignore_set = set(ignore) if ignore else set()
         lines = []
         for path in CONF.BASE_DIR.glob('*'):
-            if path.name not in ['node_modules', 'venv', '.git', '.ralph', '__pycache__']:
+            if path.name not in ignore_set:
                 lines.append(f"├── {path.name}")
         return "\n".join(lines)
 
@@ -304,7 +322,8 @@ class TemplateManager:
 
 class RalphOrchestrator:
     def __init__(self, agent_name: str = "claude", enable_hooks: bool = True, enabled_hook_names: Optional[List[str]] = None,
-                 intent: Optional[str] = None, intent_file: Optional[str] = None, prompt_file: Optional[str] = None) -> None:
+                 intent: Optional[str] = None, intent_file: Optional[str] = None, prompt_file: Optional[str] = None,
+                 tree_depth: int = 2, tree_ignore: Optional[List[str]] = None, memory_out: Optional[str] = None) -> None:
         self.agent = get_agent(agent_name, timeout_seconds=CONF.TIMEOUT_SECONDS)
         if hasattr(self.agent, 'set_logger'): self.agent.set_logger(Logger)
         if hasattr(self.agent, 'set_config'): self.agent.set_config(CONF)
@@ -323,6 +342,10 @@ class RalphOrchestrator:
         self._intent = intent
         self._intent_file = intent_file
         self._prompt_file_override = prompt_file
+        # Store architect control flags
+        self._tree_depth = tree_depth
+        self._tree_ignore = tree_ignore
+        self._memory_out = memory_out
 
     def run_architect(self, user_intent: str) -> None:
         """
@@ -339,10 +362,13 @@ class RalphOrchestrator:
         self.hooks.emit(Event(EventType.PHASE_START, phase="architect"))
         self.hooks.emit(Event(EventType.ARCHITECT_START, phase="architect"))
 
+        # Generate file tree with customizable depth and ignore patterns
+        file_tree = Shell.get_file_tree(depth=self._tree_depth, ignore=self._tree_ignore)
+
         prompt = TemplateManager.render(
             "architect.txt",
             user_intent=user_intent,
-            file_tree=Shell.get_file_tree()
+            file_tree=file_tree
         )
 
         success, _, _ = self.agent.run(prompt, "ARCHITECT")
@@ -358,6 +384,10 @@ class RalphOrchestrator:
             self.hooks.emit(Event(EventType.ARCHITECT_FAILURE, phase="architect"))
             self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
             sys.exit(1)
+
+        # Export memory to --memory-out path if specified
+        if self._memory_out:
+            self._export_memory(self._memory_out)
 
         Logger.info("✅ Memory Initialized.", "GREEN")
         self.hooks.emit(Event(EventType.ARCHITECT_SUCCESS, phase="architect"))
@@ -623,6 +653,34 @@ class RalphOrchestrator:
         Logger.info(f"📦 PRD Archived to {dest}", "MAGENTA")
         self.hooks.emit(Event(EventType.PRD_ARCHIVED, prd_path=str(dest)))
 
+    def _export_memory(self, output_path: str) -> None:
+        """
+        Export memory contents to a file.
+
+        Concatenates all memory files into a single output file for external use.
+
+        Args:
+            output_path: Path to write the exported memory content
+        """
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        content_parts = []
+        for path in sorted(CONF.MEMORY_DIR.rglob('*')):
+            if path.is_file() and not path.name.startswith('.'):
+                try:
+                    rel_path = path.relative_to(CONF.MEMORY_DIR)
+                    file_content = path.read_text(encoding='utf-8')
+                    content_parts.append(f"# {rel_path}\n\n{file_content}")
+                except Exception as e:
+                    Logger.warning(f"Could not read memory file {path}: {e}")
+
+        if content_parts:
+            out_path.write_text("\n\n---\n\n".join(content_parts), encoding='utf-8')
+            Logger.info(f"📋 Memory exported to {out_path}", "MAGENTA")
+        else:
+            Logger.warning("No memory files to export.")
+
     def _validate_memory_on_startup(self) -> None:
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()): return
         result = self.memory.validate_memory()
@@ -760,6 +818,10 @@ def main() -> None:
     parser.add_argument("--intent", type=str, metavar="TEXT", help="Provide intent inline (what to build)")
     parser.add_argument("--intent-file", type=str, metavar="FILE", help="Load intent from a file")
     parser.add_argument("--prompt-file", type=str, metavar="FILE", help="Override prompt.md path for user context")
+    # Architect control flags for context generation
+    parser.add_argument("--tree-depth", type=int, default=2, metavar="N", help="File tree depth for architect (default: 2)")
+    parser.add_argument("--tree-ignore", nargs="+", metavar="PATTERN", help="Patterns to ignore in file tree (default: node_modules, venv, .git, .ralph, __pycache__)")
+    parser.add_argument("--memory-out", type=str, metavar="FILE", help="Export memory contents to file after architect phase")
     args = parser.parse_args()
 
     # Configure logger settings
@@ -788,7 +850,10 @@ def main() -> None:
         enabled_hook_names=enabled_hook_names,
         intent=args.intent,
         intent_file=args.intent_file,
-        prompt_file=args.prompt_file
+        prompt_file=args.prompt_file,
+        tree_depth=args.tree_depth,
+        tree_ignore=args.tree_ignore,
+        memory_out=args.memory_out
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
