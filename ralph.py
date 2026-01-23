@@ -411,10 +411,14 @@ class RalphOrchestrator:
                  resume: Optional[str] = None, include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
                  context_limit: Optional[int] = None, git: bool = True, git_message: Optional[str] = None,
                  git_branch: Optional[str] = None, write_allow: Optional[List[str]] = None,
-                 write_deny: Optional[List[str]] = None, dry_run: bool = False) -> None:
+                 write_deny: Optional[List[str]] = None, dry_run: bool = False,
+                 model: Optional[str] = None, temperature: Optional[float] = None,
+                 max_tokens: Optional[int] = None, seed: Optional[int] = None) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
-        self.agent = get_agent(agent_name, timeout_seconds=agent_timeout)
+        self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
+                               model=model, temperature=temperature,
+                               max_tokens=max_tokens, seed=seed)
         if hasattr(self.agent, 'set_logger'): self.agent.set_logger(Logger)
         if hasattr(self.agent, 'set_config'): self.agent.set_config(CONF)
         if not self.agent.check_dependencies():
@@ -1019,6 +1023,11 @@ def main() -> None:
     parser.add_argument("--write-allow", nargs="+", metavar="PATTERN", help="Allow writes only to paths matching these glob patterns")
     parser.add_argument("--write-deny", nargs="+", metavar="PATTERN", help="Deny writes to paths matching these glob patterns")
     parser.add_argument("--dry-run", action="store_true", help="Simulate file writes without actually writing")
+    # Model and prompting flags for LLM customization
+    parser.add_argument("--model", type=str, metavar="MODEL", help="Model identifier for LLM requests (e.g., claude-3-opus)")
+    parser.add_argument("--temperature", type=float, metavar="TEMP", help="Sampling temperature (0.0-1.0) for response generation")
+    parser.add_argument("--max-tokens", type=int, metavar="N", help="Maximum number of tokens in the LLM response")
+    parser.add_argument("--seed", type=int, metavar="N", help="Random seed for reproducible outputs")
     args = parser.parse_args()
 
     # Configure logger settings
@@ -1066,7 +1075,11 @@ def main() -> None:
         git_branch=args.git_branch,
         write_allow=args.write_allow,
         write_deny=args.write_deny,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        model=args.model,
+        temperature=args.temperature,
+        max_tokens=args.max_tokens,
+        seed=args.seed
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

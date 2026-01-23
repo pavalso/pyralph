@@ -16,7 +16,14 @@ class ClaudeAgent(BaseAgent):
         return shutil.which("claude") is not None
 
     def _build_command(self, prompt: str) -> List[str]:
-        return [shutil.which("claude"), "-p", "--dangerously-skip-permissions"]
+        cmd = [shutil.which("claude"), "-p", "--dangerously-skip-permissions"]
+        if self.model:
+            cmd.extend(["--model", self.model])
+        if self.max_tokens is not None:
+            cmd.extend(["--max-tokens", str(self.max_tokens)])
+        # Note: Claude CLI does not support --temperature or --seed flags directly
+        # These are stored for potential future use or custom implementations
+        return cmd
 
     def _prepare_input(self, prompt: str) -> Optional[str]:
         return prompt

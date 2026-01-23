@@ -1430,7 +1430,10 @@ class TestOrchestratorTimeoutBehavior(TempConfigTestCase):
             mock_agent = self.create_mock_agent()
             mock_get_agent.return_value = mock_agent
             RalphOrchestrator(agent_name="mock", timeout=300)
-            mock_get_agent.assert_called_once_with("mock", timeout_seconds=300)
+            mock_get_agent.assert_called_once_with(
+                "mock", timeout_seconds=300,
+                model=None, temperature=None, max_tokens=None, seed=None
+            )
 
     def test_timeout_default_passed_to_agent(self):
         """Test default timeout is passed when not overridden."""
@@ -1438,7 +1441,10 @@ class TestOrchestratorTimeoutBehavior(TempConfigTestCase):
             mock_agent = self.create_mock_agent()
             mock_get_agent.return_value = mock_agent
             RalphOrchestrator(agent_name="mock")
-            mock_get_agent.assert_called_once_with("mock", timeout_seconds=CONF.TIMEOUT_SECONDS)
+            mock_get_agent.assert_called_once_with(
+                "mock", timeout_seconds=CONF.TIMEOUT_SECONDS,
+                model=None, temperature=None, max_tokens=None, seed=None
+            )
 
 
 class TestOrchestratorOnlyBehavior(TempConfigTestCase):
@@ -2833,6 +2839,335 @@ class TestPromptMdValidation(unittest.TestCase):
         self.assertIn("No specific user preferences provided", captured_prompt[0])
         # Make sure no unreplaced variables from prompt.md
         self.assertNotIn("{{PRD_ID}}", captured_prompt[0])
+
+
+# ==============================================================================
+# MODEL AND PROMPTING FLAGS TESTS
+# ==============================================================================
+
+
+class TestModelPromptingFlagsBaseAgent(unittest.TestCase):
+    """Tests for model and prompting parameters in BaseAgent."""
+
+    def test_base_agent_accepts_model_parameters(self):
+        """Test that BaseAgent accepts model, temperature, max_tokens, and seed."""
+        from agents.base import BaseAgent
+
+        # Create a concrete subclass for testing
+        class TestAgent(BaseAgent):
+            def check_dependencies(self):
+                return True
+            def get_name(self):
+                return "TestAgent"
+            def _build_command(self, prompt):
+                return ["echo", prompt]
+            def _prepare_input(self, prompt):
+                return None
+
+        agent = TestAgent(
+            timeout_seconds=300,
+            model="claude-3-opus",
+            temperature=0.7,
+            max_tokens=4096,
+            seed=42
+        )
+
+        self.assertEqual(agent.timeout_seconds, 300)
+        self.assertEqual(agent.model, "claude-3-opus")
+        self.assertEqual(agent.temperature, 0.7)
+        self.assertEqual(agent.max_tokens, 4096)
+        self.assertEqual(agent.seed, 42)
+
+    def test_base_agent_defaults_model_parameters_to_none(self):
+        """Test that model parameters default to None when not provided."""
+        from agents.base import BaseAgent
+
+        class TestAgent(BaseAgent):
+            def check_dependencies(self):
+                return True
+            def get_name(self):
+                return "TestAgent"
+            def _build_command(self, prompt):
+                return ["echo", prompt]
+            def _prepare_input(self, prompt):
+                return None
+
+        agent = TestAgent(timeout_seconds=600)
+
+        self.assertIsNone(agent.model)
+        self.assertIsNone(agent.temperature)
+        self.assertIsNone(agent.max_tokens)
+        self.assertIsNone(agent.seed)
+
+
+class TestModelPromptingFlagsClaudeAgent(unittest.TestCase):
+    """Tests for model and prompting parameters in ClaudeAgent."""
+
+    def test_claude_agent_build_command_without_model_params(self):
+        """Test ClaudeAgent._build_command without model parameters."""
+        agent = ClaudeAgent(timeout_seconds=600)
+        with patch('shutil.which', return_value='/usr/bin/claude'):
+            cmd = agent._build_command("test prompt")
+
+        self.assertEqual(cmd, ['/usr/bin/claude', '-p', '--dangerously-skip-permissions'])
+
+    def test_claude_agent_build_command_with_model(self):
+        """Test ClaudeAgent._build_command with model parameter."""
+        agent = ClaudeAgent(timeout_seconds=600, model="claude-3-opus")
+        with patch('shutil.which', return_value='/usr/bin/claude'):
+            cmd = agent._build_command("test prompt")
+
+        self.assertIn('--model', cmd)
+        self.assertIn('claude-3-opus', cmd)
+        model_idx = cmd.index('--model')
+        self.assertEqual(cmd[model_idx + 1], 'claude-3-opus')
+
+    def test_claude_agent_build_command_with_max_tokens(self):
+        """Test ClaudeAgent._build_command with max_tokens parameter."""
+        agent = ClaudeAgent(timeout_seconds=600, max_tokens=4096)
+        with patch('shutil.which', return_value='/usr/bin/claude'):
+            cmd = agent._build_command("test prompt")
+
+        self.assertIn('--max-tokens', cmd)
+        self.assertIn('4096', cmd)
+        tokens_idx = cmd.index('--max-tokens')
+        self.assertEqual(cmd[tokens_idx + 1], '4096')
+
+    def test_claude_agent_build_command_with_all_supported_params(self):
+        """Test ClaudeAgent._build_command with all supported parameters."""
+        agent = ClaudeAgent(
+            timeout_seconds=600,
+            model="claude-3-sonnet",
+            max_tokens=2048,
+            temperature=0.5,  # Not used in CLI but stored
+            seed=123  # Not used in CLI but stored
+        )
+        with patch('shutil.which', return_value='/usr/bin/claude'):
+            cmd = agent._build_command("test prompt")
+
+        # Should include model and max-tokens
+        self.assertIn('--model', cmd)
+        self.assertIn('claude-3-sonnet', cmd)
+        self.assertIn('--max-tokens', cmd)
+        self.assertIn('2048', cmd)
+        # Temperature and seed are stored but not in command
+        self.assertEqual(agent.temperature, 0.5)
+        self.assertEqual(agent.seed, 123)
+
+
+class TestModelPromptingFlagsGithubAgent(unittest.TestCase):
+    """Tests for model and prompting parameters in GithubAgent."""
+
+    def test_github_agent_build_command_without_model_params(self):
+        """Test GithubAgent._build_command without model parameters."""
+        agent = GithubAgent(timeout_seconds=600)
+        agent._temp_file_path = "/tmp/test.txt"
+        with patch('shutil.which', return_value='/usr/bin/copilot'):
+            cmd = agent._build_command("test prompt")
+
+        self.assertNotIn('--model', cmd)
+
+    def test_github_agent_build_command_with_model(self):
+        """Test GithubAgent._build_command with model parameter."""
+        agent = GithubAgent(timeout_seconds=600, model="gpt-4")
+        agent._temp_file_path = "/tmp/test.txt"
+        with patch('shutil.which', return_value='/usr/bin/copilot'):
+            cmd = agent._build_command("test prompt")
+
+        self.assertIn('--model', cmd)
+        self.assertIn('gpt-4', cmd)
+        model_idx = cmd.index('--model')
+        self.assertEqual(cmd[model_idx + 1], 'gpt-4')
+
+    def test_github_agent_stores_unsupported_params(self):
+        """Test GithubAgent stores temperature, max_tokens, seed even if not used in CLI."""
+        agent = GithubAgent(
+            timeout_seconds=600,
+            model="gpt-4",
+            temperature=0.8,
+            max_tokens=1024,
+            seed=999
+        )
+
+        self.assertEqual(agent.model, "gpt-4")
+        self.assertEqual(agent.temperature, 0.8)
+        self.assertEqual(agent.max_tokens, 1024)
+        self.assertEqual(agent.seed, 999)
+
+
+class TestModelPromptingFlagsGetAgent(unittest.TestCase):
+    """Tests for get_agent passing model parameters to agents."""
+
+    def test_get_agent_passes_model_params_to_claude(self):
+        """Test that get_agent passes model parameters to ClaudeAgent."""
+        agent = get_agent(
+            "claude",
+            timeout_seconds=300,
+            model="claude-3-haiku",
+            temperature=0.3,
+            max_tokens=512,
+            seed=77
+        )
+
+        self.assertIsInstance(agent, ClaudeAgent)
+        self.assertEqual(agent.timeout_seconds, 300)
+        self.assertEqual(agent.model, "claude-3-haiku")
+        self.assertEqual(agent.temperature, 0.3)
+        self.assertEqual(agent.max_tokens, 512)
+        self.assertEqual(agent.seed, 77)
+
+    def test_get_agent_passes_model_params_to_copilot(self):
+        """Test that get_agent passes model parameters to GithubAgent."""
+        agent = get_agent(
+            "copilot",
+            timeout_seconds=450,
+            model="gpt-4-turbo",
+            temperature=1.0,
+            max_tokens=8192,
+            seed=0
+        )
+
+        self.assertIsInstance(agent, GithubAgent)
+        self.assertEqual(agent.timeout_seconds, 450)
+        self.assertEqual(agent.model, "gpt-4-turbo")
+        self.assertEqual(agent.temperature, 1.0)
+        self.assertEqual(agent.max_tokens, 8192)
+        self.assertEqual(agent.seed, 0)
+
+
+class TestModelPromptingFlagsOrchestrator(TempConfigTestCase):
+    """Tests for RalphOrchestrator passing model parameters to agents."""
+
+    def test_orchestrator_passes_model_params_to_agent(self):
+        """Test that RalphOrchestrator passes model parameters to the agent."""
+        captured_kwargs = {}
+
+        def capture_get_agent(agent_name, **kwargs):
+            captured_kwargs.update(kwargs)
+            mock_agent = MagicMock()
+            mock_agent.check_dependencies.return_value = True
+            mock_agent.get_name.return_value = "MockAgent"
+            return mock_agent
+
+        with patch('ralph.get_agent', side_effect=capture_get_agent):
+            RalphOrchestrator(
+                agent_name="claude",
+                model="claude-3-opus",
+                temperature=0.5,
+                max_tokens=2048,
+                seed=42
+            )
+
+        self.assertEqual(captured_kwargs.get('model'), "claude-3-opus")
+        self.assertEqual(captured_kwargs.get('temperature'), 0.5)
+        self.assertEqual(captured_kwargs.get('max_tokens'), 2048)
+        self.assertEqual(captured_kwargs.get('seed'), 42)
+
+    def test_orchestrator_passes_none_when_model_params_not_specified(self):
+        """Test that RalphOrchestrator passes None when model params not specified."""
+        captured_kwargs = {}
+
+        def capture_get_agent(agent_name, **kwargs):
+            captured_kwargs.update(kwargs)
+            mock_agent = MagicMock()
+            mock_agent.check_dependencies.return_value = True
+            mock_agent.get_name.return_value = "MockAgent"
+            return mock_agent
+
+        with patch('ralph.get_agent', side_effect=capture_get_agent):
+            RalphOrchestrator(agent_name="claude")
+
+        self.assertIsNone(captured_kwargs.get('model'))
+        self.assertIsNone(captured_kwargs.get('temperature'))
+        self.assertIsNone(captured_kwargs.get('max_tokens'))
+        self.assertIsNone(captured_kwargs.get('seed'))
+
+
+class TestModelPromptingFlagsCLI(unittest.TestCase):
+    """Tests for CLI argument parsing of model and prompting flags."""
+
+    def test_cli_parses_model_flag(self):
+        """Test that CLI correctly parses --model flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--model', 'claude-3-opus', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['model'], 'claude-3-opus')
+
+    def test_cli_parses_temperature_flag(self):
+        """Test that CLI correctly parses --temperature flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--temperature', '0.7', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['temperature'], 0.7)
+
+    def test_cli_parses_max_tokens_flag(self):
+        """Test that CLI correctly parses --max-tokens flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--max-tokens', '4096', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['max_tokens'], 4096)
+
+    def test_cli_parses_seed_flag(self):
+        """Test that CLI correctly parses --seed flag."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--seed', '12345', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['seed'], 12345)
+
+    def test_cli_parses_all_model_flags_together(self):
+        """Test that CLI correctly parses all model flags together."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', [
+                'ralph',
+                '--model', 'claude-3-sonnet',
+                '--temperature', '0.5',
+                '--max-tokens', '2048',
+                '--seed', '99',
+                'execute'
+            ]):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertEqual(call_kwargs['model'], 'claude-3-sonnet')
+            self.assertEqual(call_kwargs['temperature'], 0.5)
+            self.assertEqual(call_kwargs['max_tokens'], 2048)
+            self.assertEqual(call_kwargs['seed'], 99)
+
+    def test_cli_model_flags_default_to_none(self):
+        """Test that CLI model flags default to None when not specified."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertIsNone(call_kwargs['model'])
+            self.assertIsNone(call_kwargs['temperature'])
+            self.assertIsNone(call_kwargs['max_tokens'])
+            self.assertIsNone(call_kwargs['seed'])
+
+    def test_cli_temperature_accepts_float(self):
+        """Test that --temperature accepts decimal float values."""
+        with patch('ralph.RalphOrchestrator') as mock_orchestrator:
+            mock_instance = MagicMock()
+            mock_orchestrator.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--temperature', '0.123', 'execute']):
+                main()
+            call_kwargs = mock_orchestrator.call_args[1]
+            self.assertAlmostEqual(call_kwargs['temperature'], 0.123)
 
 
 if __name__ == "__main__":
