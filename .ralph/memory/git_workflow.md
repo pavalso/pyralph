@@ -1,75 +1,67 @@
-# Ralph Git Workflow for PRD Execution
+# Ralph Recommended Git Workflow
 
-## Core Principle
-Ralph MUST follow this branching strategy when executing tasks from a PRD:
+## Overview
+This workflow ensures efficient, consistent, and conflict-free collaboration for all contributors. It is designed for PRD-driven development, but can be adapted for general feature work.
 
-## Workflow Steps
+## Branching Strategy
+- **Feature branches**: For each PRD or major feature, create a branch named `feature/<prd_name>` from `main` (or `develop` if used).
+- **Task branches**: For each task or sub-feature, create a branch named `task/<task_or_feature_name>` from the relevant `feature/<prd_name>` branch.
 
-### 1. **Check Current Branch**
-When starting a task from the PRD, first verify the current git branch:
-- If workspace is NOT on `feature/<prd_name>` branch, this step is skipped
-- If workspace IS on `feature/<prd_name>` branch, proceed to step 2
+## Step-by-Step Workflow
 
-### 2. **Create Task Branch**
-When on a `feature/<prd_name>` branch, ALWAYS create a new task branch:
-- **Branch naming**: `task/<task_or_feature_name>`
-- **Source**: Branch from the current `feature/<prd_name>` branch
-- **Purpose**: Isolate work for a single task/feature before merging back to feature branch
+1. **Start from the correct base**
+   - Ensure you are on the `feature/<prd_name>` branch before starting a new task.
 
-```bash
-git checkout -b task/<task_or_feature_name>
-```
+2. **Create a task branch**
+   - Branch from the feature branch:
+     ```bash
+     git checkout feature/<prd_name>
+     git pull
+     git checkout -b task/<task_or_feature_name>
+     ```
 
-### 3. **Implement & Verify**
-Execute the task:
-- Implement the feature/fix
-- Run tests and verify it works
-- Commit changes to the task branch
+3. **Implement and commit**
+   - Make your changes, commit frequently with clear messages.
+   - Run tests locally to verify your work.
 
-### 4. **Merge Back to Feature Branch**
-Once implementation is complete and verified:
-- Switch to the `feature/<prd_name>` branch
-- Merge the task branch into the feature branch
-- Delete the task branch (optional cleanup)
+4. **Merge task branch back to feature branch**
+   - When the task is complete and tested:
+     ```bash
+     git checkout feature/<prd_name>
+     git pull
+     git merge task/<task_or_feature_name>
+     git branch -d task/<task_or_feature_name>  # optional cleanup
+     ```
 
-```bash
-git checkout feature/<prd_name>
-git merge task/<task_or_feature_name>
-```
-
-### 5. **PRD Completion Workflow**
-When ALL tasks in the PRD are completed:
-- The `feature/<prd_name>` branch is merged to the branch it originated from (usually `main` or `develop`)
-- Workspace is switched to that parent branch
-- Feature branch can be deleted after merge
-
-```bash
-git checkout <parent_branch>
-git merge feature/<prd_name>
-```
+5. **Complete the PRD/feature**
+   - When all tasks are merged into the feature branch, merge the feature branch into `main` (or `develop`):
+     ```bash
+     git checkout main
+     git pull
+     git merge feature/<prd_name>
+     git branch -d feature/<prd_name>  # optional cleanup
+     ```
 
 ## Key Rules
-- ✅ ALWAYS check if on `feature/<prd_name>` before creating task branches
-- ✅ ALWAYS create task branches FROM the feature branch
-- ✅ ALWAYS merge back to feature branch when task is done
-- ✅ ALWAYS verify implementation works before merging
-- ✅ ALWAYS merge feature to parent branch when PRD is fully complete
-- ✅ ALWAYS switch workspace to correct branch after merge operations
+- ALWAYS branch from the correct base (feature or main).
+- ALWAYS use task branches for individual work.
+- ALWAYS verify with tests before merging.
+- NEVER commit directly to `main` or `feature/<prd_name>` without review.
+- Keep branches up to date with their base before merging.
 
-## Example Flow
+## Example
 ```
 main
-  └── feature/user-auth (PRD branch)
-        ├── task/login-form (work on this)
-        │   └── [implement, test, merge back to feature]
-        └── task/password-reset (work on this)
-            └── [implement, test, merge back to feature]
-
-[After all tasks done]
-main ← merge feature/user-auth back here
+  └── feature/user-auth
+        ├── task/login-form
+        └── task/password-reset
 ```
 
-## Implementation Notes
-- This workflow prevents conflicts and maintains clean history
-- Task branches allow parallel work while feature branch acts as integration point
-- Feature branch isolation from main ensures stable main branch during development
+## Benefits
+- Isolates work for easier review and conflict resolution.
+- Enables parallel development on multiple tasks.
+- Maintains a clean, understandable git history.
+
+## Notes
+- Adapt branch names to your team's conventions if needed.
+- For hotfixes, branch from `main` and merge back after testing.

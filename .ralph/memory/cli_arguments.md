@@ -30,6 +30,21 @@ parser = argparse.ArgumentParser(
 
 ## Arguments
 
+### --agent Argument
+
+```python
+parser.add_argument(
+    "--agent",
+    choices=list_agents(),
+    default="claude",
+    help="Select which agent to use (default: claude)"
+)
+```
+- **Choices**: dynamically listed by `list_agents()`
+- **Default**: claude
+- **Description**: Select which agent implementation to use for the run
+
+
 ### --version Flag
 
 ```python
@@ -46,7 +61,7 @@ parser.add_argument(
 
 The version is sourced from `pyproject.toml` using the `get_version()` helper function which parses the version field dynamically.
 
-### --phase Argument
+### phase Argument (positional or --phase)
 
 ```python
 parser.add_argument(
@@ -105,7 +120,9 @@ parser.add_argument(
 - **Default**: False
 - **Description**: Disable colored output in CLI messages
 - **Behavior**: Sets `Logger.no_color = True` to suppress ANSI color codes in all output
+- **Integration**: The Logger class uses this flag to disable all color codes in console output and logs.
 - **Use cases**: Useful for environments where colored output is not supported (e.g., CI logs, plain terminals)
+- **Tested**: CLI output is plain when --no-color is set; all 26 CLI argument tests pass including this flag.
 
 ## Argument Passing
 
@@ -127,7 +144,7 @@ User intent prompts still appear when needed (architect, planner phases) unless 
 ## Help Output
 
 ```
-usage: ralph.py [-h] [--version] [--phase {architect,planner,execute,all}] [--accept-all] [--no-easter-eggs] [--verbose]
+usage: ralph.py [-h] [--version] [--phase {architect,planner,execute,all}] [--accept-all] [--verbose]
 
 Ralph - Autonomous Software Development Agent
 
@@ -137,7 +154,6 @@ options:
   --phase {architect,planner,execute,all}
                         Select which phase to run (default: all)
   --accept-all          Skip user feedback prompts and proceed with all phases
-  --no-easter-eggs      Disable easter egg messages on successful task completion
   --verbose             Enable debug-level logging and display Claude CLI prompts and responses
 
 Examples:
@@ -160,4 +176,3 @@ All 26 tests pass, including:
 - Verbose flag integration (Logger.set_verbose() called correctly)
 - Prompt behavior validation
 - Integration tests for argument passing
-- Easter eggs feature tests

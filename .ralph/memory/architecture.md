@@ -12,32 +12,36 @@ created: 2026-01-20
 |-------|------------|
 | Language | Python 3.x |
 | Testing | pytest |
-| AI Backend | Claude CLI (`claude -p --dangerously-skip-permissions`) |
+| AI Backend | Claude CLI (`claude -p --dangerously-skip-permissions`), Copilot CLI |
 | VCS | Git |
 
 ## Test Command
 
-```
-pytest
-```
+Test Command: `pytest`
 
 ## Project Structure
 
 ```
-testralph/
-├── ralph.py        # Main orchestrator and agent logic
-├── test_ralph.py   # Unit tests (pytest)
-├── pyproject.toml  # Package metadata and build config
-├── MANIFEST.in     # Distribution file inclusions/exclusions
-├── README.md       # PyPI long description
-├── CLAUDE.md       # Instructions for Claude Code
-└── .ralph/         # Agent state directory
-    ├── memory/     # Knowledge base (wiki files)
-    ├── archive/    # Completed PRD archives
-    ├── prd.json    # Current project plan
-    ├── progress.txt # Error state (if failing)
-    └── ralph_log.txt # Audit trail
+ralph.py            # Main orchestrator and agent logic
+agents/
+    base.py         # Abstract agent interface
+    claude.py       # Claude CLI agent implementation
+    copilot.py      # Copilot CLI agent implementation
+__init__.py         # Package marker
+prompt.md           # Prompt templates
+pyproject.toml      # Package metadata and build config
+MANIFEST.in         # Distribution file inclusions/exclusions
+README.md           # PyPI long description
+.ralph/             # Agent state directory
+    memory/         # Knowledge base (wiki files)
+    archive/        # Completed PRD archives
+    prd.json        # Current project plan
+    progress.txt    # Error state (if failing)
+    ralph_log.txt   # Audit trail
+venv/               # (gitignored) Virtual environment
+build/, dist/, *.egg-info/ # Build artifacts
 ```
+
 
 ## Packaging
 
@@ -100,8 +104,15 @@ Controls what files are included in source distributions:
 - Extracts test command from wiki files
 - Validates memory files on startup (checks readability and emptiness)
 
+### BaseAgent
+- Abstract interface for all agent implementations
+
 ### ClaudeAgent
 - Invokes Claude CLI with prompts
+- Returns `(success: bool, output: str)`
+
+### GithubAgent (Copilot)
+- Invokes Copilot CLI with prompts
 - Returns `(success: bool, output: str)`
 
 ### RalphOrchestrator
@@ -128,13 +139,13 @@ start() -> run_architect() -> run_planner() -> execute_loop()
 2. **Verification gate**: Agent claims are validated by running actual tests
 3. **Retry mechanism**: Failed tasks retry with error feedback in prompt
 4. **Memory injection**: Drop `.md` files in `memory/` to teach the agent
+5. **Pluggable agent interface**: Supports multiple agent backends (Claude, Copilot) via a common interface
 
 ## Test Suite
 
-37 unit tests in `test_ralph.py` covering:
+Unit tests in `test_ralph.py` cover:
 - JSON extraction and shell subprocess handling
 - Memory structure and test command extraction
 - Memory file validation (readability, emptiness, hidden files)
 - Planner retry logic and task verification flows
 - Phase selection and prompt handling
-- Easter egg display logic

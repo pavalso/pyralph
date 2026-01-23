@@ -33,12 +33,26 @@ Run specific phases individually:
 - `execute`: Run task execution loop
 - `all`: Run all three phases sequentially (default)
 
-### Accept-All Flag
+### CLI Flags
 
 ```bash
 ralph --accept-all
 ralph --phase execute --accept-all
+ralph --verbose
+ralph --no-color
+ralph --version
+ralph --help
 ```
+
+- `--accept-all`: Skip user feedback prompts before each phase and proceed automatically.
+- `--verbose`: Enable debug-level logging to see all Claude CLI prompts and responses.
+- `--no-color`: Disables colored output in CLI messages and logs.
+- `--version`: Displays the current version of Ralph.
+- `--help`: Displays comprehensive help with all available options and usage examples.
+- `--phase {architect,planner,execute,all}`: Select which phase to run (default: all)
+
+See `ralph --help` for the full list of options.
+
 
 Skip user feedback prompts before each phase and proceed automatically. When `phase='all'`, automatically runs all phases without asking for confirmation. When combined with `--phase`, skips the phase-specific prompt if applicable.
 
@@ -72,7 +86,8 @@ ralph --no-color
 ralph --no-color --phase execute
 ```
 
-Disables colored output in CLI messages. Useful for environments that do not support ANSI color codes, such as CI pipelines or plain terminals.
+Disables colored output in CLI messages and logs. Useful for environments that do not support ANSI color codes, such as CI pipelines or plain terminals.
+When set, all CLI output is plain (no ANSI codes). This is controlled by the --no-color flag and handled by the Logger class.
 
 ### Version
 

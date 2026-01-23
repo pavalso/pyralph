@@ -4,82 +4,44 @@ title: Memory File Validation Feature
 created: 2026-01-21
 ---
 
-# Memory File Validation on Startup
+# Memory File Validation Logic
 
 ## Overview
-Ralph validates all memory files in `.ralph/memory/` when the agent starts up. This ensures that the knowledge base is healthy and alerts users to any corrupted or empty files.
+Ralph validates all memory files in `.ralph/memory/` at startup to ensure the knowledge base is healthy. It alerts users to corrupted or empty files but does not block execution.
 
-## Implementation
+## Validation Logic
 
 ### MemoryManager.validate_memory()
-Validates all files in `.ralph/memory/` directory.
-
-**Returns:** Dictionary with structure:
-```python
-{
-    'valid': bool,              # True if all files are readable
-    'corrupted': list[str],     # Paths to unreadable files
-    'empty': list[str],         # Paths to empty/whitespace-only files
-    'total': int                # Total files checked
-}
-```
-
-**Behavior:**
-- Ignores hidden files (starting with `.`)
-- Ignores directories
-- Checks for read access on all `.md`, `.txt`, and other files
-- Flags files that cannot be read (encoding errors, permission issues)
-- Flags files that are empty or contain only whitespace
-- Returns gracefully if memory directory doesn't exist
+- Recursively scans `.ralph/memory/` for files (excluding hidden files and directories).
+- Checks read access for `.md`, `.txt`, and all other files.
+- Flags files as corrupted if unreadable (encoding/permission errors).
+- Flags files as empty if they contain only whitespace.
+- Returns a dictionary:
+  ```python
+  {
+      'valid': bool,              # True if all files are readable
+      'corrupted': list[str],     # Paths to unreadable files
+      'empty': list[str],         # Paths to empty/whitespace-only files
+      'total': int                # Total files checked
+  }
+  ```
+- Ignores hidden files (starting with `.`) and directories.
+- Handles missing memory directory gracefully.
 
 ### RalphOrchestrator._validate_memory_on_startup()
-Called during initialization to validate memory and warn user.
+- Invoked during agent initialization.
+- Skips validation if memory directory is empty.
+- Logs warnings (yellow) for corrupted or empty files.
+- Logs success in debug mode if all files are valid.
+- Never halts execution due to validation warnings.
 
-**Behavior:**
-- Skips if memory directory is empty (no validation needed)
-- Logs warnings about corrupted files (yellow color)
-- Logs warnings about empty files (yellow color)
-- Logs success message in debug mode
-- Continues execution gracefully (no exit on warnings)
+## Design Principles
+- **Non-blocking:** Warnings do not stop the agent; users can fix files manually.
+- **Graceful degradation:** Only critical files are essential; partial memory is allowed.
+- **Clear messaging:** Warnings specify problematic files for user action.
+- **Recursive:** Supports nested directories for future-proofing.
 
-## Test Coverage
-
-### Validation Tests (8 tests)
-- `test_validate_memory_empty_directory` - Empty directory passes
-- `test_validate_memory_with_readable_files` - All readable files pass
-- `test_validate_memory_with_empty_files` - Detects empty/whitespace files
-- `test_validate_memory_with_unreadable_files` - Detects read errors
-- `test_validate_memory_ignores_hidden_files` - Skips `.` prefixed files
-- `test_validate_memory_ignores_directories` - Skips directory entries
-- `test_validate_memory_returns_correct_structure` - Validates return dict structure
-- `test_validate_memory_with_subdirectories` - Handles nested files
-
-### Integration Tests (3 tests)
-- `test_orchestrator_validates_memory_on_startup` - Validation called on init
-- `test_orchestrator_warns_on_corrupted_memory` - Warnings displayed for bad files
-- `test_orchestrator_continues_gracefully_with_warnings` - No exit on warnings
-
-## Design Decisions
-
-1. **Non-blocking validation**: Warnings don't halt execution
-   - Agent can still proceed even with corrupted/empty files
-   - Users can investigate and fix files manually
-
-2. **Graceful degradation**: Missing/empty non-critical files are acceptable
-   - Only critical files (like architecture.md) are essential
-   - Partial memory is better than none
-
-3. **Clear messaging**: Warnings specify which files have issues
-   - User can identify and fix problems
-   - Yellow color highlights warnings without being critical
-
-4. **Recursive scanning**: Supports nested directories in memory
-   - Future-proof for organized memory structures
-   - Validates all files regardless of nesting level
-
-## Usage Example
-
-When Ralph starts with corrupted memory:
+## Example Output
 ```
 ⚠️ Memory Validation: 1 file(s) empty:
    - .ralph/memory/notes.md
@@ -87,7 +49,6 @@ When Ralph starts with corrupted memory:
    - .ralph/memory/bad.txt
 ```
 
-User can then:
-1. Check and repair the files
-2. Restart Ralph to re-validate
-3. Continue with the partial memory if needed
+## Test Coverage
+- Unit tests cover empty directories, readable files, empty/whitespace files, unreadable files, hidden files, directories, return structure, and subdirectories.
+- Integration tests ensure validation is called on startup, warnings are logged, and execution continues on warnings.
