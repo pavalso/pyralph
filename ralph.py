@@ -1808,7 +1808,125 @@ IMPORTANT:
 - Output ONLY valid JSON within the <REVISED_PRD> tags
 - The JSON must have the same structure as the input PRD
 - If the original PRD has invalid JSON, attempt to fix the formatting issues
-- If the PRD is already optimal, output it unchanged with a note in the summary"""
+- If the PRD is already optimal, output it unchanged with a note in the summary""",
+
+        "qa_review.txt": """# ROLE
+QA Code Review Agent
+
+# OBJECTIVE
+Review implemented code changes for quality issues including missing error handling, security vulnerabilities, code style violations, missing tests, and documentation gaps.
+
+# CONTEXT
+
+## Task Information
+<TASK_ID>{{task_id}}</TASK_ID>
+<TASK_DESCRIPTION>{{task_description}}</TASK_DESCRIPTION>
+
+## Acceptance Criteria
+<ACCEPTANCE_CRITERIA>
+{{acceptance_criteria}}
+</ACCEPTANCE_CRITERIA>
+
+## Code Changes
+<CODE_CHANGES>
+{{code_changes}}
+</CODE_CHANGES>
+
+## Project Memory
+<MEMORY>
+{{memory_map}}
+</MEMORY>
+
+# QA REVIEW CHECKLIST
+
+Review the implemented code for the following quality issues:
+
+## 1. Error Handling
+- Are all potential exceptions properly caught and handled?
+- Are error messages informative and user-friendly?
+- Are resources properly cleaned up in error scenarios?
+- Is there appropriate use of try/except/finally or context managers?
+
+## 2. Security Vulnerabilities (OWASP Top 10)
+- Input validation: Is all user input validated before processing?
+- Injection prevention: Are parameterized queries/prepared statements used?
+- XSS prevention: Is output properly escaped/encoded?
+- Authentication/Authorization: Are access controls properly implemented?
+- Sensitive data exposure: Are secrets, credentials, or PII protected?
+- Security misconfiguration: Are debug modes disabled, defaults changed?
+
+## 3. Code Style and Quality
+- Does the code follow the project's existing conventions?
+- Are variable and function names descriptive and consistent?
+- Is the code DRY (Don't Repeat Yourself)?
+- Is the code readable and maintainable?
+- Are there any code smells or anti-patterns?
+
+## 4. Testing Coverage
+- Are there tests for the new functionality?
+- Are edge cases covered by tests?
+- Are error scenarios tested?
+- Do tests follow the project's testing conventions?
+
+## 5. Documentation
+- Are complex functions documented?
+- Are public APIs documented?
+- Are any TODOs or FIXMEs addressed?
+- Is README or other user documentation updated if needed?
+
+# OUTPUT FORMAT
+
+Provide your review in the following format:
+
+<QA_FINDINGS>
+{
+  "summary": "[Overall assessment: PASS, WARN, or FAIL]",
+  "critical_issues": [
+    {
+      "category": "[error_handling|security|style|testing|documentation]",
+      "severity": "critical",
+      "description": "[description of the issue]",
+      "location": "[file:line or general location]",
+      "recommendation": "[how to fix]"
+    }
+  ],
+  "warnings": [
+    {
+      "category": "[error_handling|security|style|testing|documentation]",
+      "severity": "warning",
+      "description": "[description of the issue]",
+      "location": "[file:line or general location]",
+      "recommendation": "[how to fix]"
+    }
+  ],
+  "suggestions": [
+    {
+      "category": "[error_handling|security|style|testing|documentation]",
+      "severity": "suggestion",
+      "description": "[description of the improvement]",
+      "location": "[file:line or general location]",
+      "recommendation": "[suggested improvement]"
+    }
+  ],
+  "passed_checks": [
+    "[List of checks that passed without issues]"
+  ]
+}
+</QA_FINDINGS>
+
+# SEVERITY LEVELS
+
+- **critical**: Issues that must be fixed before merging (security vulnerabilities, data loss risks, breaking bugs)
+- **warning**: Issues that should be addressed (error handling gaps, style violations, missing tests)
+- **suggestion**: Nice-to-have improvements (documentation, minor refactoring)
+
+# CONSTRAINTS
+
+- ONLY review code quality, DO NOT modify the code
+- DO NOT duplicate task creation logic - focus solely on review
+- Be specific about issue locations and how to fix them
+- If no issues found, output summary as "PASS" with empty issue arrays
+- Output ONLY valid JSON within the <QA_FINDINGS> tags"""
     }
 
     @staticmethod
@@ -1857,7 +1975,8 @@ class RalphOrchestrator:
                  pre: Optional[List[str]] = None, post: Optional[List[str]] = None,
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
-                 label: Optional[List[str]] = None, revise_prd: bool = False) -> None:
+                 label: Optional[List[str]] = None, revise_prd: bool = False,
+                 qa_review: bool = False, qa_strict: bool = False) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -1924,6 +2043,9 @@ class RalphOrchestrator:
         self._min_criteria = min_criteria
         self._labels = label or []
         self._revise_prd = revise_prd
+        # Store QA review flags
+        self._qa_review = qa_review
+        self._qa_strict = qa_strict
         # Initialize PRD manager for consolidated file operations
         self._prd = PRDManager(CONF.PRD_FILE)
 
@@ -2683,6 +2805,12 @@ class RalphOrchestrator:
                 # Handle --skip-verify: skip verification step if flag is set
                 if self._skip_verify:
                     Logger.info("   ⏭️  Skipping verification (--skip-verify)", "YELLOW")
+                    # Run QA review if enabled (after verification/skip-verify)
+                    qa_passed, _ = self._run_qa_review(task)
+                    if not qa_passed:
+                        self._record_failure(retry, "QA Review Failed (Critical Issues)", "", task_id=task['id'])
+                        self._emit_retry_event(task, retry, max_retries)
+                        continue
                     task['status'] = 'completed'
                     if CONF.PROGRESS_FILE.exists():
                         CONF.PROGRESS_FILE.unlink()
@@ -2694,6 +2822,12 @@ class RalphOrchestrator:
 
                 verified, verify_error = self._verify_task(task, test_cmd)
                 if verified:
+                    # Run QA review if enabled (after verification success)
+                    qa_passed, _ = self._run_qa_review(task)
+                    if not qa_passed:
+                        self._record_failure(retry, "QA Review Failed (Critical Issues)", "", task_id=task['id'])
+                        self._emit_retry_event(task, retry, max_retries)
+                        continue
                     task['status'] = 'completed'
                     if CONF.PROGRESS_FILE.exists():
                         CONF.PROGRESS_FILE.unlink()
@@ -2756,6 +2890,204 @@ class RalphOrchestrator:
             error=agent_error,
             metadata={"reason": reason, "retry": retry + 1}
         ))
+
+    def _get_code_changes(self) -> str:
+        """Get recent code changes using git diff.
+
+        Returns:
+            String containing diff output, or message if no changes or git unavailable.
+        """
+        try:
+            stdout, stderr, code = Shell.run("git diff HEAD~1 --stat", timeout=30)
+            if code != 0:
+                stdout, stderr, code = Shell.run("git diff --cached --stat", timeout=30)
+            if code == 0 and stdout.strip():
+                diff_stdout, _, diff_code = Shell.run("git diff HEAD~1", timeout=60)
+                if diff_code == 0 and diff_stdout.strip():
+                    if len(diff_stdout) > 50000:
+                        return diff_stdout[:50000] + "\n... (truncated, diff too large)"
+                    return diff_stdout
+                return "(No detailed diff available)"
+            return "(No code changes detected)"
+        except Exception as e:
+            Logger.debug(f"Failed to get code changes: {e}")
+            return "(Unable to detect code changes)"
+
+    def _run_qa_review(self, task: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """Run QA review on the implemented code.
+
+        Args:
+            task: The task that was just completed
+
+        Returns:
+            Tuple of (passed: bool, findings: Optional[Dict]).
+            passed is True if no critical issues found (or QA review disabled/failed).
+            findings contains the parsed QA findings if available.
+        """
+        if not self._qa_review:
+            return True, None
+
+        Logger.info("   🔍 Running QA review...", "CYAN")
+        self.hooks.emit(Event(
+            EventType.QA_REVIEW_START, phase="execute",
+            task_id=task['id'], task_description=task['description']
+        ))
+
+        code_changes = self._get_code_changes()
+        if code_changes in ("(No code changes detected)", "(Unable to detect code changes)"):
+            Logger.info("   ⏭️  Skipping QA review: no code changes detected", "YELLOW")
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_SKIPPED, phase="execute",
+                task_id=task['id'], task_description=task['description'],
+                metadata={"reason": "no_changes"}
+            ))
+            return True, None
+
+        prompt = TemplateManager.render(
+            "qa_review.txt",
+            task_id=task['id'],
+            task_description=task['description'],
+            acceptance_criteria=self._format_acceptance_criteria(task),
+            code_changes=code_changes,
+            memory_map=self.memory.get_structure(
+                include=self._include_patterns,
+                exclude=self._exclude_patterns,
+                limit=self._context_limit
+            )
+        )
+
+        try:
+            success, output, agent_error = self.agent.run(prompt, f"QA-{task['id']}")
+        except Exception as e:
+            Logger.warning(f"QA review agent failed: {e}")
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_FAILURE, phase="execute",
+                task_id=task['id'], task_description=task['description'],
+                metadata={"reason": "agent_exception", "error": str(e)}
+            ))
+            return True, None
+
+        if not success:
+            Logger.warning("QA review agent failed to respond. Continuing without QA review.")
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_FAILURE, phase="execute",
+                task_id=task['id'], task_description=task['description'],
+                error=agent_error,
+                metadata={"reason": "agent_failure"}
+            ))
+            return True, None
+
+        findings = self._parse_qa_findings(output)
+        if findings is None:
+            Logger.warning("Could not parse QA findings. Continuing without QA review.")
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_FAILURE, phase="execute",
+                task_id=task['id'], task_description=task['description'],
+                metadata={"reason": "parse_failure"}
+            ))
+            return True, None
+
+        self._report_qa_findings(task, findings)
+
+        has_critical = len(findings.get("critical_issues", [])) > 0
+        if has_critical:
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_SUCCESS, phase="execute",
+                task_id=task['id'], task_description=task['description'],
+                metadata={"summary": findings.get("summary", "FAIL"), "critical_count": len(findings.get("critical_issues", []))}
+            ))
+            if self._qa_strict:
+                Logger.info("   ❌ QA review found critical issues (--qa-strict mode)", "RED")
+                return False, findings
+            else:
+                Logger.info("   ⚠️  QA review found critical issues (non-strict mode, continuing)", "YELLOW")
+        else:
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_SUCCESS, phase="execute",
+                task_id=task['id'], task_description=task['description'],
+                metadata={"summary": findings.get("summary", "PASS")}
+            ))
+            Logger.info("   ✅ QA review passed.", "GREEN")
+
+        return True, findings
+
+    def _parse_qa_findings(self, response: str) -> Optional[Dict[str, Any]]:
+        """Parse QA findings from agent response.
+
+        Args:
+            response: Raw response from the QA agent
+
+        Returns:
+            Parsed findings dictionary or None if parsing fails
+        """
+        import re
+        pattern = r'<QA_FINDINGS>\s*(.*?)\s*</QA_FINDINGS>'
+        match = re.search(pattern, response, re.DOTALL)
+
+        if not match:
+            Logger.debug("Could not find <QA_FINDINGS> tags in response.")
+            return None
+
+        findings_text = match.group(1).strip()
+
+        try:
+            findings = JsonUtils.parse(findings_text)
+            if not isinstance(findings, dict):
+                return None
+            return findings
+        except json.JSONDecodeError as e:
+            Logger.debug(f"Failed to parse QA findings JSON: {e}")
+            return None
+
+    def _report_qa_findings(self, task: Dict[str, Any], findings: Dict[str, Any]) -> None:
+        """Report QA findings in the appropriate format.
+
+        Args:
+            task: The task being reviewed
+            findings: Parsed QA findings dictionary
+        """
+        summary = findings.get("summary", "UNKNOWN")
+        critical_issues = findings.get("critical_issues", [])
+        warnings = findings.get("warnings", [])
+        suggestions = findings.get("suggestions", [])
+
+        if Logger.json_output or Logger.ndjson_output:
+            qa_report = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "level": "info",
+                "message": "QA Review Complete",
+                "task_id": task['id'],
+                "qa_summary": summary,
+                "critical_issues": critical_issues,
+                "warnings": warnings,
+                "suggestions": suggestions
+            }
+            print(json.dumps(qa_report))
+        else:
+            Logger.info(f"   📋 QA Summary: {summary}", "CYAN")
+
+            if critical_issues:
+                Logger.info(f"   ❌ Critical Issues ({len(critical_issues)}):", "RED")
+                for issue in critical_issues[:5]:
+                    Logger.info(f"      - [{issue.get('category', 'unknown')}] {issue.get('description', 'No description')}", "RED")
+                    if issue.get('location'):
+                        Logger.info(f"        Location: {issue.get('location')}", "RED")
+                if len(critical_issues) > 5:
+                    Logger.info(f"      ... and {len(critical_issues) - 5} more critical issues", "RED")
+
+            if warnings:
+                Logger.info(f"   ⚠️  Warnings ({len(warnings)}):", "YELLOW")
+                for warning in warnings[:3]:
+                    Logger.info(f"      - [{warning.get('category', 'unknown')}] {warning.get('description', 'No description')}", "YELLOW")
+                if len(warnings) > 3:
+                    Logger.info(f"      ... and {len(warnings) - 3} more warnings", "YELLOW")
+
+            if suggestions and Logger.verbosity >= 1:
+                Logger.debug(f"   💡 Suggestions ({len(suggestions)}):")
+                for suggestion in suggestions[:3]:
+                    Logger.debug(f"      - [{suggestion.get('category', 'unknown')}] {suggestion.get('description', 'No description')}")
+
+        Logger.file_log(json.dumps(findings, indent=2), "QA_REVIEW", f"QA-{task['id']}")
 
     def _archive_prd(self) -> None:
         if not self._prd.exists():
@@ -3200,6 +3532,9 @@ def main() -> None:
     parser.add_argument("--min-criteria", type=int, metavar="N", help="Require at least N acceptance criteria per user story")
     parser.add_argument("--label", nargs="+", metavar="KEY=VAL", help="Add custom labels to PRD (format: key=value or just key)")
     parser.add_argument("--revise-prd", action="store_true", help="Pass PRD through revision agent for quality improvements before planner phase")
+    # QA review flags for automated code quality review
+    parser.add_argument("--qa-review", action="store_true", help="Enable QA agent to review implemented code for quality issues after each task")
+    parser.add_argument("--qa-strict", action="store_true", help="Fail tasks when QA review finds critical issues (requires --qa-review)")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -3287,7 +3622,9 @@ def main() -> None:
         schema=args.schema,
         min_criteria=args.min_criteria,
         label=args.label,
-        revise_prd=args.revise_prd
+        revise_prd=args.revise_prd,
+        qa_review=args.qa_review,
+        qa_strict=args.qa_strict
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
