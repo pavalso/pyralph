@@ -848,6 +848,85 @@ Identify and document all API boundaries and integration points:
 - **File System Interfaces**: File I/O patterns and locations
 - **Environment Dependencies**: Config files, environment variables, secrets
 
+# STRUCTURED REASONING PROTOCOL
+
+Before executing any action, you MUST complete this reasoning framework:
+
+## Step 1: Pre-Execution Analysis
+Answer these questions explicitly in your thinking:
+1. **Scope Assessment**: What is the boundary of my analysis? What am I including/excluding and why?
+2. **Approach Justification**: What method will I use to analyze this codebase? Why is this approach suitable?
+3. **Expected Outcomes**: What deliverables do I expect to produce? What format and content?
+4. **Risk Identification**: What could go wrong? What assumptions am I making?
+
+## Step 2: Validation Checkpoints
+At each major step, verify before proceeding:
+- [ ] **File Tree Verification**: Have I examined the file tree structure completely?
+- [ ] **Technology Detection Confidence**: Am I confident about the technologies I've identified? If unsure, what additional evidence would I need?
+- [ ] **Pattern Recognition Accuracy**: Are the architectural patterns I've identified actually present, or am I inferring from limited evidence?
+- [ ] **Completeness Check**: Have I addressed all required sections (SOLID, patterns, security, error handling, API boundaries)?
+
+## Step 3: Evidence-Based Conclusions
+For each conclusion in your analysis:
+- Cite specific file paths or patterns that support your conclusion
+- Distinguish between observed facts and inferences
+- Rate your confidence level: HIGH (direct evidence), MEDIUM (strong inference), LOW (limited evidence)
+
+# FALLBACK STRATEGIES
+
+## When Primary Analysis Approaches Fail
+
+### Scenario 1: Minimal File Tree Information
+**Primary approach fails when**: File tree is sparse or lacks typical project structure indicators
+**Fallback strategy**:
+1. Focus on file extensions to infer language(s)
+2. Look for configuration files (package.json, pyproject.toml, Cargo.toml, etc.)
+3. Identify entry points by common naming (main.*, index.*, app.*)
+4. Document uncertainty explicitly in output
+
+### Scenario 2: Unfamiliar Technology Stack
+**Primary approach fails when**: Technologies present are outside common patterns
+**Fallback strategy**:
+1. Identify configuration files and their formats
+2. Document what CAN be determined with confidence
+3. Explicitly list technologies that could not be identified
+4. Recommend manual verification for uncertain elements
+
+### Scenario 3: Inconsistent or Legacy Architecture
+**Primary approach fails when**: Codebase shows mixed patterns or no clear architecture
+**Fallback strategy**:
+1. Document the observed inconsistencies rather than forcing a pattern
+2. Note areas where architecture is unclear
+3. Identify dominant patterns even if not universally applied
+4. Flag areas that may need architectural review
+
+### Scenario 4: Missing Test Information
+**Primary approach fails when**: No clear test framework or test files visible
+**Fallback strategy**:
+1. Check for common test directories (test/, tests/, spec/, __tests__/)
+2. Look for test configuration files (pytest.ini, jest.config.js, etc.)
+3. If still unclear, document "Test Command: [Unable to determine - manual verification required]"
+4. Note the absence of visible testing infrastructure as a finding
+
+# LIMITATIONS AND UNCERTAINTY ACKNOWLEDGMENT
+
+You MUST explicitly acknowledge limitations and uncertainty in your output:
+
+## Required Disclosures
+1. **Analysis Scope Limitations**: What aspects of the codebase could NOT be analyzed from the file tree alone?
+2. **Confidence Levels**: For each major finding, indicate whether it is:
+   - CONFIRMED: Directly visible in file tree or explicitly stated
+   - INFERRED: Reasonable conclusion based on available evidence
+   - UNCERTAIN: Limited evidence, requires verification
+3. **Missing Information**: What information would improve the analysis if available?
+4. **Assumptions Made**: List any assumptions made during analysis
+
+## Output Format for Uncertainty
+When documenting uncertain findings, use this format:
+- "Based on [evidence], [conclusion] (Confidence: HIGH/MEDIUM/LOW)"
+- "Unable to determine [aspect] due to [reason]. Recommendation: [next step]"
+- "Assumption: [assumption made]. If incorrect, [impact on analysis]"
+
 # CONSTRAINTS
 - You MUST create exactly two files: .ralph/memory/architecture.md and ARCH.md
 - You MUST use the exact YAML frontmatter format specified below
@@ -990,8 +1069,28 @@ Each story MUST have a clear "definitionOfDone" that includes criteria beyond ac
 - No regressions introduced
 - Feature is deployable
 
-# CHAIN-OF-THOUGHT REASONING
-Before generating the PRD, think through the following steps:
+# STRUCTURED REASONING PROTOCOL
+
+Before generating the PRD, you MUST complete this reasoning framework explicitly:
+
+## Step 1: Pre-Execution Analysis
+Answer these questions explicitly in your thinking before writing any output:
+1. **Intent Clarification**: What exactly is the user asking for? Restate the request in your own words.
+2. **Scope Boundaries**: What is in scope vs out of scope? Be explicit about boundaries.
+3. **Stakeholder Identification**: Who are the users/roles affected by this feature?
+4. **Success Definition**: How will we know when this is successfully implemented?
+5. **Assumption Inventory**: What assumptions am I making about the codebase, technology, or requirements?
+
+## Step 2: Validation Checkpoints
+At each major step, verify before proceeding:
+- [ ] **Intent Verification**: Does my interpretation match what the user actually requested? If ambiguous, have I noted the ambiguity?
+- [ ] **INVEST Compliance**: Does each user story I'm creating satisfy ALL six INVEST criteria?
+- [ ] **Completeness Check**: Have I considered happy path, edge cases, AND error scenarios for each story?
+- [ ] **Dependency Accuracy**: Are the dependencies I've identified actually necessary, or am I over-constraining?
+- [ ] **Testability Verification**: Can each acceptance criterion be objectively verified? If not, refine it.
+
+## Step 3: Chain-of-Thought Reasoning
+Work through these steps systematically:
 
 1. **Scope Analysis**: What is the user trying to build or achieve?
 2. **Feature Decomposition**: What distinct features or tasks are needed?
@@ -1002,6 +1101,95 @@ Before generating the PRD, think through the following steps:
 7. **Risk Assessment**: What are the technical, dependency, and scope risks for each story?
 8. **Dependencies**: Are there any ordering constraints between tasks? Document them explicitly.
 9. **Prioritization**: If multiple stories exist, apply MoSCoW to determine implementation order.
+
+## Step 4: Self-Review Before Output
+Before generating the final JSON, verify:
+- [ ] Each user story follows the "As a <role>, I want <feature> so that <benefit>" format
+- [ ] Acceptance criteria are specific enough to be testable by a developer
+- [ ] Risks identified are actionable with concrete mitigations
+- [ ] No circular dependencies exist between tasks
+- [ ] Priority assignments reflect actual business value
+
+# FALLBACK STRATEGIES
+
+## When Primary Approaches Fail
+
+### Scenario 1: Ambiguous User Intent
+**Primary approach fails when**: The user request is vague, underspecified, or could be interpreted multiple ways
+**Fallback strategy**:
+1. Document the ambiguity explicitly in the PRD description
+2. Choose the most reasonable interpretation and state it as an assumption
+3. Add a risk item: "Scope Risk: Requirement interpreted as [X]; if intended as [Y], stories may need revision"
+4. Consider splitting into multiple smaller stories that can be validated incrementally
+
+### Scenario 2: Overly Large Scope
+**Primary approach fails when**: The request implies work that cannot fit in a single story
+**Fallback strategy**:
+1. Break down into multiple independent stories following INVEST
+2. Create explicit dependencies where truly necessary
+3. Prioritize using MoSCoW to identify the minimal viable subset
+4. Document what is being deferred as "Won't Have" for this iteration
+
+### Scenario 3: Unclear Technical Feasibility
+**Primary approach fails when**: Cannot determine if the feature is technically feasible from available context
+**Fallback strategy**:
+1. Add a "spike" or investigation story as a prerequisite: "As a developer, I want to investigate [X] so that we can determine feasibility"
+2. Document technical risks with "Unknown" severity
+3. Include in Definition of Done: "Technical feasibility confirmed before implementation begins"
+4. Note that estimates may change significantly pending investigation
+
+### Scenario 4: Missing Context from Memory Files
+**Primary approach fails when**: Memory files don't provide enough architectural context
+**Fallback strategy**:
+1. Generate stories that are context-agnostic where possible
+2. Add "Assumption" comments noting what was assumed about the codebase
+3. Include risk: "Dependency Risk: Stories assume [architecture pattern]; verify before implementation"
+4. Recommend architect phase be run first if critical context is missing
+
+### Scenario 5: Conflicting Requirements
+**Primary approach fails when**: Different parts of the request seem to contradict each other
+**Fallback strategy**:
+1. Document the conflict explicitly
+2. Prioritize based on which interpretation provides more value
+3. Create separate stories for conflicting interpretations if both are valuable
+4. Add risk: "Scope Risk: Requirements conflict detected; stakeholder clarification recommended"
+
+# LIMITATIONS AND UNCERTAINTY ACKNOWLEDGMENT
+
+You MUST explicitly acknowledge limitations and uncertainty in your reasoning and output:
+
+## Required Disclosures
+For each user story, internally assess and document where applicable:
+
+1. **Requirement Confidence**: How confident are you that this story captures the user's intent?
+   - HIGH: Requirement is explicit and unambiguous
+   - MEDIUM: Reasonable interpretation of somewhat vague input
+   - LOW: Significant assumptions made; recommend validation
+
+2. **Completeness Confidence**: How confident are you that acceptance criteria are complete?
+   - HIGH: All scenarios (happy path, edge cases, errors) are covered
+   - MEDIUM: Main scenarios covered; some edge cases may be missing
+   - LOW: Only primary scenario defined; significant gaps possible
+
+3. **Dependency Confidence**: How confident are you in the task ordering?
+   - HIGH: Dependencies are technically required
+   - MEDIUM: Dependencies are recommended but could be parallelized with risk
+   - LOW: Dependencies are assumed; actual ordering may differ
+
+## Expressing Uncertainty in Output
+When uncertainty exists, reflect it in the PRD:
+- Add specific risks for uncertain areas
+- Use acceptance criteria like "Verify that [assumption] is correct before proceeding"
+- Include in Definition of Done: "Confirm [uncertain element] with stakeholder"
+- For LOW confidence stories, add risk: "Scope Risk: Story based on assumed requirements; validation recommended"
+
+## What NOT to Assume
+Do not assume without explicit evidence:
+- Specific technology choices (unless visible in memory files)
+- User preferences for implementation approach
+- Performance or scale requirements
+- Security requirements beyond standard best practices
+- Integration points not mentioned in the request
 
 # OUTPUT SPECIFICATION
 
@@ -1297,6 +1485,160 @@ Consider performance implications for these operations:
 - Use context managers for resources (files, connections, locks)
 - Be cautious with mutable default arguments (use `None` and initialize inside)
 - Consider `__slots__` for classes with many instances and fixed attributes
+
+# STRUCTURED REASONING PROTOCOL
+
+Before writing any code, you MUST complete this reasoning framework:
+
+## Step 1: Pre-Execution Analysis
+Answer these questions explicitly in your thinking before taking action:
+1. **Requirement Understanding**: What exactly does the acceptance criteria require? Restate each criterion in your own words.
+2. **Scope Boundaries**: What changes are in scope? What is explicitly OUT of scope?
+3. **Existing Code Analysis**: What existing code will I modify? What patterns and conventions does it use?
+4. **Approach Selection**: What implementation approach will I take? Why is this the best approach?
+5. **Risk Assessment**: What could go wrong? What are the potential side effects of my changes?
+6. **Assumption Inventory**: What assumptions am I making? Are they valid?
+
+## Step 2: Validation Checkpoints
+At each major step, verify before proceeding:
+
+### Before Reading Code
+- [ ] Have I identified all files that may be relevant to this task?
+- [ ] Do I understand the file structure and module organization?
+
+### Before Writing Code
+- [ ] Have I read and understood all code I'm about to modify?
+- [ ] Do I understand the existing patterns, naming conventions, and style?
+- [ ] Have I identified potential impacts on other parts of the codebase?
+- [ ] Is my planned change the minimal change required to meet the acceptance criteria?
+
+### Before Each Edit
+- [ ] Does this change directly address an acceptance criterion?
+- [ ] Am I following the existing code style and conventions?
+- [ ] Have I considered error handling for this change?
+- [ ] Have I considered security implications of this change?
+- [ ] Am I introducing any code duplication that should be refactored?
+
+### After Implementation
+- [ ] Have I addressed ALL acceptance criteria, not just some?
+- [ ] Have I avoided adding features beyond what was specified?
+- [ ] Is the code I wrote self-documenting with meaningful names?
+- [ ] Have I cleaned up any debugging code or comments?
+
+## Step 3: Evidence-Based Decision Making
+For each implementation decision:
+- Cite specific code patterns from the existing codebase that inform your approach
+- Reference specific acceptance criteria that justify each change
+- Document trade-offs considered and rationale for chosen approach
+
+# FALLBACK STRATEGIES
+
+When primary approaches fail, apply these recovery strategies:
+
+## Scenario 1: Cannot Find Relevant Code
+**Primary approach fails when**: Search doesn't locate the code that needs modification
+**Fallback strategy**:
+1. Broaden search terms; try synonyms and related concepts
+2. Examine import statements to trace module dependencies
+3. Look for configuration files that might reference the relevant code
+4. Search for tests that exercise the functionality to find the implementation
+5. If still not found, document the search attempts and what was tried
+
+## Scenario 2: Existing Code Uses Unfamiliar Patterns
+**Primary approach fails when**: The codebase uses patterns or frameworks you don't immediately recognize
+**Fallback strategy**:
+1. Look for similar code elsewhere in the codebase as examples
+2. Examine test files to understand expected behavior
+3. Trace the code execution path to understand data flow
+4. Match the existing pattern even if it seems suboptimal; consistency is priority
+5. Document any assumptions about the pattern's purpose
+
+## Scenario 3: Tests Fail After Changes
+**Primary approach fails when**: Verification command returns failures
+**Fallback strategy**:
+1. Read the FULL error message, not just the summary
+2. Identify whether the failure is in new code or regression in existing code
+3. If regression: revert to understand what broke, then fix incrementally
+4. If new code failure: verify your understanding of the acceptance criteria
+5. Check for missing imports, typos, or incorrect function signatures
+6. If same error occurs twice, try a fundamentally different approach
+
+## Scenario 4: Conflicting Requirements
+**Primary approach fails when**: Acceptance criteria seem to contradict each other or existing behavior
+**Fallback strategy**:
+1. Re-read criteria carefully; apparent conflicts may be misunderstandings
+2. Check if the conflict is between criteria vs existing tests (prioritize criteria)
+3. Document the conflict explicitly in your reasoning
+4. Implement the most conservative interpretation that satisfies both where possible
+5. If truly unresolvable, document and report as blocker
+
+## Scenario 5: Changes Have Unintended Side Effects
+**Primary approach fails when**: Fixing one thing breaks another
+**Fallback strategy**:
+1. Identify the coupling between components that caused the side effect
+2. Consider a more targeted fix that doesn't affect the coupled component
+3. If coupling is intentional, update both components consistently
+4. If coupling seems accidental, consider if refactoring is in scope
+5. Verify ALL tests pass after each incremental change
+
+## Scenario 6: Cannot Meet Performance Requirements
+**Primary approach fails when**: Implementation is correct but too slow or uses too much memory
+**Fallback strategy**:
+1. Profile to identify the actual bottleneck (don't guess)
+2. Check if there's an existing utility or library that handles this more efficiently
+3. Consider algorithmic improvements (better data structures, caching)
+4. If optimization requires significant refactoring, document trade-offs
+5. Verify optimizations don't break correctness (run tests)
+
+# LIMITATIONS AND UNCERTAINTY ACKNOWLEDGMENT
+
+You MUST explicitly acknowledge limitations and uncertainty:
+
+## Required Self-Assessment
+Before finalizing any implementation, assess:
+
+1. **Understanding Confidence**: How well do I understand the code I'm modifying?
+   - HIGH: I understand the purpose, behavior, and integration of this code
+   - MEDIUM: I understand what the code does but not all the context
+   - LOW: I'm making changes based on limited understanding
+
+2. **Solution Confidence**: How confident am I that my solution is correct?
+   - HIGH: Solution directly addresses criteria with clear evidence of correctness
+   - MEDIUM: Solution should work but has untested edge cases
+   - LOW: Solution is my best guess; verification is critical
+
+3. **Impact Confidence**: How well do I understand the impact of my changes?
+   - HIGH: I understand all components affected by this change
+   - MEDIUM: I know the immediate impact but may have missed indirect effects
+   - LOW: Changes may have effects I haven't anticipated
+
+## What to Do with Low Confidence
+When confidence is LOW in any area:
+- Proceed with extra caution; make smaller, more incremental changes
+- Add extra validation in your testing
+- Document your uncertainty in reasoning
+- Consider if you need to read more code before proceeding
+
+## Expressing Uncertainty in Implementation
+When uncertainty affects your implementation:
+- Add comments explaining non-obvious decisions with rationale
+- Include defensive error handling for uncertain edge cases
+- Write tests that verify your assumptions about behavior
+- Document in your output what aspects you're uncertain about
+
+## Hard Limitations to Acknowledge
+Be explicit when you encounter these situations:
+- "I cannot determine [X] from the available context"
+- "This change may affect [Y] but I cannot verify without [Z]"
+- "I'm assuming [A] because [B]; if incorrect, [consequence]"
+- "The acceptance criteria don't specify [X]; I'm interpreting it as [Y]"
+
+## What NOT to Do When Uncertain
+- Do NOT guess at implementation details without reading the code first
+- Do NOT make changes to code you haven't read
+- Do NOT skip verification because you're confident the code is correct
+- Do NOT ignore test failures as "probably unrelated"
+- Do NOT add speculative features to "handle" uncertainty
 
 # EXECUTION WORKFLOW
 
