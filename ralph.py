@@ -667,7 +667,76 @@ After creating the files, output EXACTLY:
 STATUS: CREATED .ralph/memory/architecture.md
 ```
 """,
-        "planner.txt": "ROLE: Product Manager\nTASK: Create PRD JSON for: {{user_intent}}\nMEMORY: {{memory_map}}\nOUTPUT: Raw JSON only. Schema: {\"id\":\"PRD-001\",\"description\":\"...\",\"userStories\":[{\"id\":\"TASK-001\",\"description\":\"As a...\",\"acceptanceCriteria\":[\"...\",\"...\",\"...\"],\"status\":\"pending\"}]}",
+        "planner.txt": """# ROLE
+Product Manager
+
+# OBJECTIVE
+Create a comprehensive Product Requirements Document (PRD) in JSON format.
+
+# CONTEXT
+## User Intent
+{{user_intent}}
+
+## Available Memory Files
+{{memory_map}}
+
+# CHAIN-OF-THOUGHT REASONING
+Before generating the PRD, think through the following steps:
+
+1. **Scope Analysis**: What is the user trying to build or achieve?
+2. **Feature Decomposition**: What distinct features or tasks are needed?
+3. **User Story Mapping**: For each feature, who is the user and what value do they get?
+4. **Acceptance Criteria**: What specific, testable conditions define "done" for each story?
+5. **Dependencies**: Are there any ordering constraints between tasks?
+
+# OUTPUT SPECIFICATION
+
+## JSON Schema
+You MUST output valid JSON matching this exact schema:
+
+```json
+{
+  "id": "PRD-001",
+  "description": "Brief description of the overall PRD",
+  "userStories": [
+    {
+      "id": "TASK-001",
+      "description": "As a <role>, I want <feature> so that <benefit>",
+      "acceptanceCriteria": [
+        "Given <context>, when <action>, then <expected result>",
+        "The feature must <specific requirement>",
+        "Error handling: <error case> should <expected behavior>"
+      ],
+      "status": "pending"
+    }
+  ]
+}
+```
+
+## Schema Field Requirements
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| id | string | Yes | Unique PRD identifier (format: PRD-XXX) |
+| description | string | Yes | Clear, concise PRD summary (1-2 sentences) |
+| userStories | array | Yes | List of user stories (minimum 1) |
+| userStories[].id | string | Yes | Unique task ID (format: TASK-XXX) |
+| userStories[].description | string | Yes | User story in "As a... I want... so that..." format |
+| userStories[].acceptanceCriteria | array | Yes | Testable conditions (minimum 2 per story) |
+| userStories[].status | string | Yes | Must be "pending" for new stories |
+
+# CONSTRAINTS
+- Output ONLY valid JSON - no markdown fences, no explanatory text before or after
+- Each user story MUST follow the "As a <role>, I want <feature> so that <benefit>" format
+- Each acceptance criterion MUST be specific and testable
+- Task IDs MUST be sequential (TASK-001, TASK-002, etc.)
+- Status MUST always be "pending" for new stories
+- Minimum 2 acceptance criteria per user story
+- Do NOT include any text outside the JSON object
+
+# RESPONSE FORMAT
+Output the raw JSON object directly. Example:
+{"id":"PRD-001","description":"...","userStories":[...]}
+""",
         "developer.txt": "ROLE: Developer\nTASK: {{task_id}} - {{task_description}}\n\n## MANDATORY INSTRUCTIONS (MUST FOLLOW)\nThe following user preferences are REQUIRED. You MUST strictly adhere to these instructions:\n{{user_context}}\n## END MANDATORY INSTRUCTIONS\n\nCONTEXT: {{memory_tree}}\nFLOW: Plan, Implement, Verify ({{test_cmd}}), Print STATUS: SUCCESS or FAILURE - <reason>\nRETRY: {{prev_errors}}"
     }
 

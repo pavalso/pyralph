@@ -1081,6 +1081,82 @@ class TestTemplateManager(unittest.TestCase):
             self.assertTrue(len(template) > 0)
 
 
+class TestPlannerPromptStructure(unittest.TestCase):
+    """Tests for planner prompt template structure and content (TASK-002)."""
+
+    def setUp(self):
+        self.template = TemplateManager.load("planner.txt")
+
+    def test_planner_has_role_section(self):
+        """Planner template should have a ROLE section."""
+        self.assertIn("# ROLE", self.template)
+        self.assertIn("Product Manager", self.template)
+
+    def test_planner_has_objective_section(self):
+        """Planner template should have an OBJECTIVE section."""
+        self.assertIn("# OBJECTIVE", self.template)
+        self.assertIn("PRD", self.template)
+
+    def test_planner_has_context_section(self):
+        """Planner template should have a CONTEXT section with placeholders."""
+        self.assertIn("# CONTEXT", self.template)
+        self.assertIn("{{user_intent}}", self.template)
+        self.assertIn("{{memory_map}}", self.template)
+
+    def test_planner_has_chain_of_thought_section(self):
+        """Planner template should include chain-of-thought reasoning guidance."""
+        self.assertIn("# CHAIN-OF-THOUGHT REASONING", self.template)
+        self.assertIn("Scope Analysis", self.template)
+        self.assertIn("Feature Decomposition", self.template)
+        self.assertIn("User Story Mapping", self.template)
+        self.assertIn("Acceptance Criteria", self.template)
+
+    def test_planner_has_output_specification(self):
+        """Planner template should have detailed output specification."""
+        self.assertIn("# OUTPUT SPECIFICATION", self.template)
+        self.assertIn("## JSON Schema", self.template)
+
+    def test_planner_has_schema_field_requirements(self):
+        """Planner template should document required schema fields."""
+        self.assertIn("## Schema Field Requirements", self.template)
+        required_fields = ["id", "description", "userStories", "acceptanceCriteria", "status"]
+        for field in required_fields:
+            self.assertIn(field, self.template)
+
+    def test_planner_has_constraints_section(self):
+        """Planner template should have constraints for strict JSON output."""
+        self.assertIn("# CONSTRAINTS", self.template)
+        self.assertIn("valid JSON", self.template)
+        self.assertIn("no markdown fences", self.template)
+
+    def test_planner_specifies_user_story_format(self):
+        """Planner template should specify user story format."""
+        self.assertIn("As a", self.template)
+        self.assertIn("I want", self.template)
+        self.assertIn("so that", self.template)
+
+    def test_planner_specifies_minimum_acceptance_criteria(self):
+        """Planner template should specify minimum acceptance criteria requirement."""
+        self.assertIn("minimum 2", self.template.lower())
+
+    def test_planner_has_response_format(self):
+        """Planner template should have response format section."""
+        self.assertIn("# RESPONSE FORMAT", self.template)
+        self.assertIn("raw JSON", self.template)
+
+    def test_planner_render_substitutes_variables(self):
+        """Planner template should correctly substitute variables."""
+        rendered = TemplateManager.render(
+            "planner.txt",
+            user_intent="Build a REST API",
+            memory_map="- .ralph/memory/architecture.md"
+        )
+        self.assertIn("Build a REST API", rendered)
+        self.assertIn("architecture.md", rendered)
+        self.assertNotIn("{{user_intent}}", rendered)
+        self.assertNotIn("{{memory_map}}", rendered)
+
+
 # ==============================================================================
 # HEADLESS/CI MODE TESTS
 # ==============================================================================
