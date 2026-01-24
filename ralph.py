@@ -235,9 +235,8 @@ class Logger(metaclass=_LoggerMeta):
         for pattern in Logger.redact_patterns:
             try:
                 redacted = re.sub(pattern, '[REDACTED]', redacted)
-            except re.error:
-                # Invalid regex pattern, skip it
-                pass
+            except re.error as e:
+                Logger.debug(f"Invalid redact pattern '{pattern}': {e}")
         return redacted
 
     @staticmethod
@@ -569,7 +568,8 @@ class MemoryManager:
                 if not path.read_text(encoding='utf-8').strip():
                     result['empty'].append(str(path.relative_to(CONF.BASE_DIR)))
                     result['valid'] = False
-            except (OSError, UnicodeDecodeError):
+            except (OSError, UnicodeDecodeError) as e:
+                Logger.debug(f"Failed to read memory file {path}: {type(e).__name__}: {e}")
                 result['corrupted'].append(str(path.relative_to(CONF.BASE_DIR)))
                 result['valid'] = False
         return result
@@ -710,7 +710,8 @@ class MemoryManager:
         for p in filtered_files:
             try:
                 output.append(f"- {p.relative_to(CONF.BASE_DIR)}")
-            except ValueError:
+            except ValueError as e:
+                Logger.debug(f"Path {p} not relative to {CONF.BASE_DIR}: {e}")
                 continue
         if output:
             return "\n".join(output)
@@ -2118,8 +2119,8 @@ def get_version() -> str:
                     match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
                     if match:
                         return match.group(1)
-    except (OSError, UnicodeDecodeError):
-        pass  # Fall back to "unknown" if version file cannot be read
+    except (OSError, UnicodeDecodeError) as e:
+        Logger.debug(f"Failed to read version from pyproject.toml: {type(e).__name__}: {e}")
     return "unknown"
 
 def main() -> None:
