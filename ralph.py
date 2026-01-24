@@ -545,7 +545,70 @@ class MemoryManager:
 
 class TemplateManager:
     DEFAULT_TEMPLATES = {
-        "architect.txt": "ROLE: Senior Architect\nOBJECTIVE: Initialize .ralph/memory/ for: {{user_intent}}\nFILE TREE: {{file_tree}}\nDELIVERABLE: Create .ralph/memory/architecture.md with YAML frontmatter (type:wiki, title:Architecture) and sections: Tech Stack, Overview, Key Components, Risks, Test Command (format: Test Command: `CMD`).\nOUTPUT: Print STATUS: CREATED .ralph/memory/architecture.md",
+        "architect.txt": """# ROLE
+Senior Software Architect
+
+# OBJECTIVE
+Analyze the project structure and initialize architecture documentation.
+
+# CONTEXT
+## User Intent
+{{user_intent}}
+
+## Project File Tree
+```
+{{file_tree}}
+```
+
+# CONSTRAINTS
+- You MUST create exactly two files: .ralph/memory/architecture.md and ARCH.md
+- You MUST use the exact YAML frontmatter format specified below
+- You MUST include ALL required sections in the exact order specified
+- You MUST detect the actual test command from the project (pytest, npm test, etc.)
+- You MUST NOT invent or assume technologies not evident in the file tree
+- Keep descriptions concise and factual
+
+# OUTPUT SPECIFICATION
+
+## File 1: .ralph/memory/architecture.md
+Create this file with the following structure:
+
+```markdown
+---
+type: wiki
+title: Architecture
+---
+
+# Architecture
+
+## Tech Stack
+- **Language**: [detected language and version]
+- **Testing**: [detected test framework]
+- **Build**: [detected build tool]
+- [additional relevant technologies]
+
+## Overview
+[2-3 sentence description of the project purpose and architecture]
+
+## Key Components
+| Component | Description |
+|-----------|-------------|
+| [path/file] | [brief description] |
+[list 3-6 key components]
+
+## Test Command
+Test Command: `[actual test command]`
+```
+
+## File 2: ARCH.md (Project Root)
+Create a copy of the architecture documentation in the project root for git tracking.
+
+# RESPONSE FORMAT
+After creating the files, output EXACTLY:
+```
+STATUS: CREATED .ralph/memory/architecture.md
+```
+""",
         "planner.txt": "ROLE: Product Manager\nTASK: Create PRD JSON for: {{user_intent}}\nMEMORY: {{memory_map}}\nOUTPUT: Raw JSON only. Schema: {\"id\":\"PRD-001\",\"description\":\"...\",\"userStories\":[{\"id\":\"TASK-001\",\"description\":\"As a...\",\"acceptanceCriteria\":[\"...\",\"...\",\"...\"],\"status\":\"pending\"}]}",
         "developer.txt": "ROLE: Developer\nTASK: {{task_id}} - {{task_description}}\n\n## MANDATORY INSTRUCTIONS (MUST FOLLOW)\nThe following user preferences are REQUIRED. You MUST strictly adhere to these instructions:\n{{user_context}}\n## END MANDATORY INSTRUCTIONS\n\nCONTEXT: {{memory_tree}}\nFLOW: Plan, Implement, Verify ({{test_cmd}}), Print STATUS: SUCCESS or FAILURE - <reason>\nRETRY: {{prev_errors}}"
     }
