@@ -1747,7 +1747,68 @@ Provide your response in the following format:
 [Your enhanced, refined version of the user's intent goes here. This should be a clear, well-structured description that can be directly passed to the architect phase.]
 </ENHANCED_INTENT>
 
-IMPORTANT: Output ONLY the enhanced intent within the tags. Do not include explanations, reasoning, or any other text outside the tags."""
+IMPORTANT: Output ONLY the enhanced intent within the tags. Do not include explanations, reasoning, or any other text outside the tags.""",
+        "revise_prd.txt": """# ROLE
+PRD Quality Reviewer and Reviser
+
+# OBJECTIVE
+Review and improve the provided Product Requirements Document (PRD) for clarity, completeness, and quality while preserving the original intent.
+
+# ORIGINAL PRD
+<ORIGINAL_PRD>
+{{original_prd}}
+</ORIGINAL_PRD>
+
+# REVIEW GUIDELINES
+
+Your task is to review and improve the PRD by:
+
+1. **Clarity Enhancement**: Ensure each user story has clear, unambiguous descriptions
+2. **Acceptance Criteria Quality**: Verify acceptance criteria are specific, measurable, and testable
+3. **Completeness Check**: Identify any missing edge cases or error handling scenarios
+4. **Consistency**: Ensure consistent terminology and formatting across all stories
+5. **Technical Accuracy**: Verify technical requirements are correctly specified
+6. **JSON Structure**: Ensure the PRD is valid JSON with correct structure
+
+# CONSTRAINTS
+
+- PRESERVE the original intent and scope of each user story
+- DO NOT add new user stories or major features not implied in the original
+- DO NOT remove any user stories from the original PRD
+- KEEP the same task IDs and overall structure
+- MAINTAIN all existing fields and their purposes
+- FIX any JSON formatting issues if present
+
+# REVISION CATEGORIES
+
+When reviewing, consider these improvement categories:
+- Grammar and spelling corrections
+- Clarification of vague requirements
+- Addition of missing edge cases to acceptance criteria
+- Improvement of testability for acceptance criteria
+- Consistency in terminology and formatting
+
+# OUTPUT FORMAT
+
+Provide your response in the following format:
+
+<REVISED_PRD>
+{
+  "userStories": [
+    // Your revised user stories array with the same structure as input
+  ]
+}
+</REVISED_PRD>
+
+<REVISION_SUMMARY>
+[Brief summary of changes made. If no changes were needed, state "No revisions needed - PRD already meets quality standards."]
+</REVISION_SUMMARY>
+
+IMPORTANT:
+- Output ONLY valid JSON within the <REVISED_PRD> tags
+- The JSON must have the same structure as the input PRD
+- If the original PRD has invalid JSON, attempt to fix the formatting issues
+- If the PRD is already optimal, output it unchanged with a note in the summary"""
     }
 
     @staticmethod
@@ -1796,7 +1857,7 @@ class RalphOrchestrator:
                  pre: Optional[List[str]] = None, post: Optional[List[str]] = None,
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
-                 label: Optional[List[str]] = None) -> None:
+                 label: Optional[List[str]] = None, revise_prd: bool = False) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -1862,6 +1923,7 @@ class RalphOrchestrator:
         self._schema_path = schema
         self._min_criteria = min_criteria
         self._labels = label or []
+        self._revise_prd = revise_prd
         # Initialize PRD manager for consolidated file operations
         self._prd = PRDManager(CONF.PRD_FILE)
 
@@ -2208,6 +2270,110 @@ class RalphOrchestrator:
             data["labels"] = labels_dict
         return data
 
+    def _revise_prd_impl(self, original_prd: Dict[str, Any]) -> Dict[str, Any]:
+        """Revise PRD through the revision agent for quality improvements.
+
+        Args:
+            original_prd: The original PRD data to revise
+
+        Returns:
+            Revised PRD data, or original PRD on failure
+
+        Notes:
+            - If revision fails or times out, falls back to original PRD with warning
+            - If revised PRD fails schema validation, falls back to original PRD
+            - Logs when no revision was needed (PRD already optimal)
+        """
+        Logger.info("\n🔧 Revising PRD...", "CYAN")
+        self.hooks.emit(Event(EventType.PRD_REVISE_START, phase="planner"))
+
+        # Convert PRD to JSON string for the prompt
+        original_prd_json = json.dumps(original_prd, indent=2)
+
+        prompt = TemplateManager.render(
+            "revise_prd.txt",
+            original_prd=original_prd_json
+        )
+
+        success, stdout, error = self.agent.run(prompt, "REVISE_PRD")
+
+        if not success:
+            error_msg = error.message if error else "Unknown error"
+            Logger.warning(f"PRD revision failed: {error_msg}")
+            Logger.warning("Falling back to original PRD.")
+            self.hooks.emit(Event(EventType.PRD_REVISE_FAILURE, phase="planner",
+                                  metadata={"reason": "agent_failure", "error": error_msg}))
+            return original_prd
+
+        # Parse the revised PRD from response
+        revised_prd, revision_summary = self._parse_revised_prd(stdout, original_prd)
+
+        if revised_prd is None:
+            Logger.warning("Could not parse revised PRD from response.")
+            Logger.warning("Falling back to original PRD.")
+            self.hooks.emit(Event(EventType.PRD_REVISE_FAILURE, phase="planner",
+                                  metadata={"reason": "parse_failure"}))
+            return original_prd
+
+        # Validate revised PRD against schema if specified
+        if self._schema_path:
+            schema_valid, schema_error = self._validate_prd_schema(revised_prd)
+            if not schema_valid:
+                Logger.warning(f"Revised PRD failed schema validation: {schema_error}")
+                Logger.warning("Falling back to original PRD.")
+                self.hooks.emit(Event(EventType.PRD_REVISE_FAILURE, phase="planner",
+                                      metadata={"reason": "schema_validation_failed", "error": schema_error}))
+                return original_prd
+
+        # Check if no revision was needed
+        if revision_summary and "no revision" in revision_summary.lower():
+            Logger.info("✅ PRD already optimal, no revision needed.", "GREEN")
+        else:
+            Logger.debug(f"Revision summary: {revision_summary}", "CYAN")
+            Logger.info("✅ PRD revised.", "GREEN")
+
+        self.hooks.emit(Event(EventType.PRD_REVISE_SUCCESS, phase="planner",
+                              metadata={"summary": revision_summary or ""}))
+        return revised_prd
+
+    def _parse_revised_prd(self, response: str, fallback: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Parse the revised PRD from the agent response.
+
+        Args:
+            response: The raw response from the revision agent
+            fallback: The fallback PRD data if parsing fails
+
+        Returns:
+            Tuple of (revised_prd_data, revision_summary). revised_prd_data is None if parsing fails.
+        """
+        import re
+
+        # Extract content between <REVISED_PRD> tags
+        prd_pattern = r'<REVISED_PRD>\s*(.*?)\s*</REVISED_PRD>'
+        prd_match = re.search(prd_pattern, response, re.DOTALL)
+
+        # Extract revision summary
+        summary_pattern = r'<REVISION_SUMMARY>\s*(.*?)\s*</REVISION_SUMMARY>'
+        summary_match = re.search(summary_pattern, response, re.DOTALL)
+        revision_summary = summary_match.group(1).strip() if summary_match else None
+
+        if not prd_match:
+            Logger.warning("Could not find <REVISED_PRD> tags in response.")
+            return None, revision_summary
+
+        prd_text = prd_match.group(1).strip()
+
+        try:
+            revised_prd = JsonUtils.parse(prd_text)
+            # Validate basic structure
+            if "userStories" not in revised_prd:
+                Logger.warning("Revised PRD missing 'userStories' key.")
+                return None, revision_summary
+            return revised_prd, revision_summary
+        except json.JSONDecodeError as e:
+            Logger.warning(f"Invalid JSON in revised PRD: {e}")
+            return None, revision_summary
+
     def run_planner(self, user_intent: str) -> None:
         """
         Run the planner phase to create a Product Requirements Document.
@@ -2219,6 +2385,7 @@ class RalphOrchestrator:
         - --schema: Validate PRD against a JSON schema file
         - --min-criteria: Ensure each story has at least N acceptance criteria
         - --label: Add custom labels to the PRD
+        - --revise-prd: Pass PRD through revision agent before saving
 
         Args:
             user_intent: Description of what the user wants to build
@@ -2269,6 +2436,18 @@ class RalphOrchestrator:
 
                 # Apply labels if --label is specified
                 data = self._apply_labels(data)
+
+                # Revise PRD if --revise-prd is specified
+                if self._revise_prd:
+                    data = self._revise_prd_impl(data)
+                    # Re-validate against schema after revision
+                    if self._schema_path:
+                        schema_valid, schema_error = self._validate_prd_schema(data)
+                        if not schema_valid:
+                            Logger.warning(f"Revised PRD failed schema validation: {schema_error}")
+                            # This shouldn't happen as _revise_prd_impl already validates,
+                            # but we check again for safety
+                            continue
 
                 self._prd.save(data)
                 Logger.info(f"✅ PRD Created ({len(data['userStories'])} stories).", "GREEN")
@@ -3020,6 +3199,7 @@ def main() -> None:
     parser.add_argument("--schema", type=str, metavar="FILE", help="Validate generated PRD against a JSON schema file")
     parser.add_argument("--min-criteria", type=int, metavar="N", help="Require at least N acceptance criteria per user story")
     parser.add_argument("--label", nargs="+", metavar="KEY=VAL", help="Add custom labels to PRD (format: key=value or just key)")
+    parser.add_argument("--revise-prd", action="store_true", help="Pass PRD through revision agent for quality improvements before planner phase")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -3106,7 +3286,8 @@ def main() -> None:
         plugin=args.plugin,
         schema=args.schema,
         min_criteria=args.min_criteria,
-        label=args.label
+        label=args.label,
+        revise_prd=args.revise_prd
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

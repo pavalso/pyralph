@@ -1081,9 +1081,8 @@ class TestEvent(unittest.TestCase):
     def test_event_types_exist(self):
         for name in self.EVENTS:
             self.assertTrue(hasattr(EventType, name))
-        # 20 original + 11 IssueWatcher events
-        # 20 original + 11 IssueWatcher events + 3 Intent Enhancement events = 34
-        self.assertEqual(len(EventType), 34)
+        # 20 original + 11 IssueWatcher events + 3 Intent Enhancement events + 3 PRD Revision events = 37
+        self.assertEqual(len(EventType), 37)
 
     def test_event_creation_serialization(self):
         event = Event(EventType.TASK_SUCCESS, phase="execute", task_id="T-001", metadata={"k": "v"})
@@ -2247,6 +2246,251 @@ class TestIntentEnhanceEventTypes(unittest.TestCase):
             "INTENT_ENHANCE_START",
             "INTENT_ENHANCE_SUCCESS",
             "INTENT_ENHANCE_FAILURE"
+        ]
+        for event_name in expected_events:
+            self.assertTrue(
+                hasattr(EventType, event_name),
+                f"EventType.{event_name} should exist"
+            )
+
+
+# ==============================================================================
+# REVISE PRD TESTS
+# ==============================================================================
+
+
+class TestRevisePrdCLI(unittest.TestCase):
+    """Tests for --revise-prd CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("--revise-prd", action="store_true")
+
+    def test_revise_prd_flag_default(self):
+        args = self.parser.parse_args([])
+        self.assertFalse(args.revise_prd)
+
+    def test_revise_prd_flag_enabled(self):
+        args = self.parser.parse_args(["--revise-prd"])
+        self.assertTrue(args.revise_prd)
+
+
+class TestRevisePrdCLIPassthrough(unittest.TestCase):
+    """Tests for --revise-prd flag passed to orchestrator."""
+
+    def test_revise_prd_passed(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--revise-prd']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('revise_prd'))
+
+
+class TestRevisePrdOrchestrator(TempConfigTestCase):
+    """Tests for PRD revision in RalphOrchestrator."""
+
+    def test_orchestrator_stores_revise_prd_flag(self):
+        orch = self.create_mock_orchestrator(revise_prd=True)
+        self.assertTrue(orch._revise_prd)
+
+    def test_orchestrator_defaults_to_no_revision(self):
+        orch = self.create_mock_orchestrator()
+        self.assertFalse(orch._revise_prd)
+
+
+class TestRevisePrdMethod(TempConfigTestCase):
+    """Tests for _revise_prd_impl method."""
+
+    def test_success_returns_revised_prd(self):
+        mock_agent = self.create_mock_agent()
+        revised_prd = {"userStories": [{"id": "TASK-001", "description": "Revised"}]}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(revised_prd)}</REVISED_PRD><REVISION_SUMMARY>Minor improvements</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            result = orch._revise_prd_impl({"userStories": []})
+        self.assertEqual(result["userStories"][0]["id"], "TASK-001")
+
+    def test_failure_falls_back_to_original(self):
+        mock_agent = self.create_mock_agent()
+        error = AgentError("TestError", "test message", "", "", "", "")
+        mock_agent.run.return_value = (False, "", error)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            result = orch._revise_prd_impl(original_prd)
+        self.assertEqual(result, original_prd)
+
+    def test_invalid_json_falls_back_to_original(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "<REVISED_PRD>invalid json</REVISED_PRD>", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            result = orch._revise_prd_impl(original_prd)
+        self.assertEqual(result, original_prd)
+
+    def test_missing_user_stories_falls_back_to_original(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<REVISED_PRD>{"invalid": "prd"}</REVISED_PRD>', None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            result = orch._revise_prd_impl(original_prd)
+        self.assertEqual(result, original_prd)
+
+    def test_no_revision_needed_logs_message(self):
+        mock_agent = self.create_mock_agent()
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(original_prd)}</REVISED_PRD><REVISION_SUMMARY>No revision needed - PRD already optimal</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        with patch('ralph.Logger.info') as mock_info:
+            result = orch._revise_prd_impl(original_prd)
+        # Check that the "already optimal" message was logged
+        info_calls = [str(c) for c in mock_info.call_args_list]
+        self.assertTrue(any('optimal' in str(c).lower() for c in info_calls))
+
+
+class TestParseRevisedPrd(TempConfigTestCase):
+    """Tests for _parse_revised_prd method."""
+
+    def test_parses_valid_prd(self):
+        orch = self.create_mock_orchestrator()
+        prd = {"userStories": [{"id": "TASK-001"}]}
+        response = f'<REVISED_PRD>{json.dumps(prd)}</REVISED_PRD><REVISION_SUMMARY>Changes made</REVISION_SUMMARY>'
+        with patch('ralph.Logger.warning'):
+            result, summary = orch._parse_revised_prd(response, {})
+        self.assertIsNotNone(result)
+        self.assertEqual(result["userStories"][0]["id"], "TASK-001")
+        self.assertEqual(summary, "Changes made")
+
+    def test_returns_none_for_missing_tags(self):
+        orch = self.create_mock_orchestrator()
+        response = 'No tags here'
+        with patch('ralph.Logger.warning'):
+            result, summary = orch._parse_revised_prd(response, {})
+        self.assertIsNone(result)
+
+    def test_returns_none_for_invalid_json(self):
+        orch = self.create_mock_orchestrator()
+        response = '<REVISED_PRD>not valid json</REVISED_PRD>'
+        with patch('ralph.Logger.warning'):
+            result, summary = orch._parse_revised_prd(response, {})
+        self.assertIsNone(result)
+
+
+class TestRevisePrdSchemaValidation(TempConfigTestCase):
+    """Tests for schema validation of revised PRD."""
+
+    def setUp(self):
+        super().setUp()
+        # Create a simple schema file
+        self.schema_file = self.temp_path / "schema.json"
+        schema = {
+            "type": "object",
+            "required": ["userStories"],
+            "properties": {
+                "userStories": {"type": "array"}
+            }
+        }
+        self.schema_file.write_text(json.dumps(schema), encoding='utf-8')
+
+    def test_revised_prd_validated_against_schema(self):
+        mock_agent = self.create_mock_agent()
+        # Return a PRD that doesn't have userStories
+        invalid_prd = {"invalid": "structure"}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(invalid_prd)}</REVISED_PRD><REVISION_SUMMARY>Done</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent,
+            revise_prd=True,
+            schema=str(self.schema_file)
+        )
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            # The method checks for userStories key first, so it will fall back
+            result = orch._revise_prd_impl(original_prd)
+        # Should fall back to original since revised PRD is invalid
+        self.assertEqual(result, original_prd)
+
+
+class TestRevisePrdEvents(TempConfigTestCase):
+    """Tests for PRD revision events."""
+
+    def test_emits_start_event(self):
+        mock_agent = self.create_mock_agent()
+        prd = {"userStories": []}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(prd)}</REVISED_PRD><REVISION_SUMMARY>Done</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            orch._revise_prd_impl(prd)
+        self.assertIn(EventType.PRD_REVISE_START, events)
+
+    def test_emits_success_event(self):
+        mock_agent = self.create_mock_agent()
+        prd = {"userStories": []}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(prd)}</REVISED_PRD><REVISION_SUMMARY>Done</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            orch._revise_prd_impl(prd)
+        self.assertIn(EventType.PRD_REVISE_SUCCESS, events)
+
+    def test_emits_failure_event_on_agent_failure(self):
+        mock_agent = self.create_mock_agent()
+        error = AgentError("TestError", "test message", "", "", "", "")
+        mock_agent.run.return_value = (False, "", error)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            orch._revise_prd_impl({"userStories": []})
+        self.assertIn(EventType.PRD_REVISE_FAILURE, events)
+
+
+class TestRevisePrdTemplate(unittest.TestCase):
+    """Tests for revise_prd.txt template existence."""
+
+    def test_template_exists_in_defaults(self):
+        from ralph import TemplateManager
+        self.assertIn("revise_prd.txt", TemplateManager.DEFAULT_TEMPLATES)
+
+    def test_template_has_required_placeholders(self):
+        from ralph import TemplateManager
+        template = TemplateManager.DEFAULT_TEMPLATES["revise_prd.txt"]
+        self.assertIn("{{original_prd}}", template)
+
+
+class TestPrdReviseEventTypes(unittest.TestCase):
+    """Tests for PRD revision event type existence."""
+
+    def test_prd_revise_event_types_exist(self):
+        expected_events = [
+            "PRD_REVISE_START",
+            "PRD_REVISE_SUCCESS",
+            "PRD_REVISE_FAILURE"
         ]
         for event_name in expected_events:
             self.assertTrue(

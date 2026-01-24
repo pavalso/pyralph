@@ -76,6 +76,9 @@ class EventType(Enum):
     # PRD events
     PRD_CREATED = auto()
     PRD_ARCHIVED = auto()
+    PRD_REVISE_START = auto()
+    PRD_REVISE_SUCCESS = auto()
+    PRD_REVISE_FAILURE = auto()
 
     # Error events
     ERROR = auto()
