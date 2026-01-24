@@ -3479,6 +3479,7 @@ def main() -> None:
     parser.add_argument("--intent", type=str, metavar="TEXT", help="Provide intent inline (what to build)")
     parser.add_argument("--intent-file", type=str, metavar="FILE", help="Load intent from a file")
     parser.add_argument("--enhance-intent", action="store_true", help="Process intent through enhancement agent before architect phase")
+    parser.add_argument("--no-enhance-intent", action="store_true", help="Disable intent enhancement (overrides --enhance-all)")
     parser.add_argument("--enhance-intent-strict", action="store_true", help="Exit on enhancement failure instead of falling back to original intent")
     parser.add_argument("--prompt-file", type=str, metavar="FILE", help="Override prompt.md path for user context")
     # Architect control flags for context generation
@@ -3532,9 +3533,13 @@ def main() -> None:
     parser.add_argument("--min-criteria", type=int, metavar="N", help="Require at least N acceptance criteria per user story")
     parser.add_argument("--label", nargs="+", metavar="KEY=VAL", help="Add custom labels to PRD (format: key=value or just key)")
     parser.add_argument("--revise-prd", action="store_true", help="Pass PRD through revision agent for quality improvements before planner phase")
+    parser.add_argument("--no-revise-prd", action="store_true", help="Disable PRD revision (overrides --enhance-all)")
     # QA review flags for automated code quality review
     parser.add_argument("--qa-review", action="store_true", help="Enable QA agent to review implemented code for quality issues after each task")
+    parser.add_argument("--no-qa-review", action="store_true", help="Disable QA review (overrides --enhance-all)")
     parser.add_argument("--qa-strict", action="store_true", help="Fail tasks when QA review finds critical issues (requires --qa-review)")
+    # Enhancement combination flag
+    parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd, --qa-review). Individual --no-* flags can override specific features.")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -3580,6 +3585,43 @@ def main() -> None:
         Logger.error("Cannot use both --intent and --intent-file together.")
         sys.exit(1)
 
+    # Handle --enhance-all flag: apply enhancement defaults with explicit overrides
+    # --enhance-all enables: --enhance-intent, --revise-prd, --qa-review
+    # Individual --no-* flags can override specific features
+    enhance_all = args.enhance_all
+
+    # Calculate effective enhancement flag values
+    # Explicit positive flags or --enhance-all enable the feature
+    # Explicit negative flags disable the feature (override --enhance-all)
+    enhance_intent = args.enhance_intent or (enhance_all and not args.no_enhance_intent)
+    revise_prd = args.revise_prd or (enhance_all and not args.no_revise_prd)
+    qa_review = args.qa_review or (enhance_all and not args.no_qa_review)
+
+    # Log which enhancement features are actually enabled when --enhance-all is used
+    if enhance_all:
+        enabled_features = []
+        disabled_features = []
+
+        if enhance_intent:
+            enabled_features.append("intent enhancement")
+        else:
+            disabled_features.append("intent enhancement")
+
+        if revise_prd:
+            enabled_features.append("PRD revision")
+        else:
+            disabled_features.append("PRD revision")
+
+        if qa_review:
+            enabled_features.append("QA review")
+        else:
+            disabled_features.append("QA review")
+
+        if enabled_features:
+            Logger.info(f"Enhancement features enabled: {', '.join(enabled_features)}")
+        if disabled_features:
+            Logger.info(f"Enhancement features disabled by explicit flags: {', '.join(disabled_features)}")
+
     RalphOrchestrator(
         agent_name=args.agent,
         enable_hooks=enable_hooks,
@@ -3587,7 +3629,7 @@ def main() -> None:
         intent=args.intent,
         intent_file=args.intent_file,
         prompt_file=args.prompt_file,
-        enhance_intent=args.enhance_intent,
+        enhance_intent=enhance_intent,
         enhance_intent_strict=args.enhance_intent_strict,
         tree_depth=args.tree_depth,
         tree_ignore=args.tree_ignore,
@@ -3622,8 +3664,8 @@ def main() -> None:
         schema=args.schema,
         min_criteria=args.min_criteria,
         label=args.label,
-        revise_prd=args.revise_prd,
-        qa_review=args.qa_review,
+        revise_prd=revise_prd,
+        qa_review=qa_review,
         qa_strict=args.qa_strict
     ).start(phase=args.phase, accept_all=args.accept_all)
 

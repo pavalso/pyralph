@@ -2746,5 +2746,154 @@ class TestQAReviewEventTypes(unittest.TestCase):
             )
 
 
+# ==============================================================================
+# ENHANCE-ALL TESTS
+# ==============================================================================
+
+
+class TestEnhanceAllCLI(unittest.TestCase):
+    """Tests for --enhance-all CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("--enhance-all", action="store_true")
+        self.parser.add_argument("--enhance-intent", action="store_true")
+        self.parser.add_argument("--no-enhance-intent", action="store_true")
+        self.parser.add_argument("--revise-prd", action="store_true")
+        self.parser.add_argument("--no-revise-prd", action="store_true")
+        self.parser.add_argument("--qa-review", action="store_true")
+        self.parser.add_argument("--no-qa-review", action="store_true")
+
+    def test_enhance_all_flag_default(self):
+        args = self.parser.parse_args([])
+        self.assertFalse(args.enhance_all)
+
+    def test_enhance_all_flag_enabled(self):
+        args = self.parser.parse_args(["--enhance-all"])
+        self.assertTrue(args.enhance_all)
+
+    def test_no_enhance_intent_flag(self):
+        args = self.parser.parse_args(["--no-enhance-intent"])
+        self.assertTrue(args.no_enhance_intent)
+
+    def test_no_revise_prd_flag(self):
+        args = self.parser.parse_args(["--no-revise-prd"])
+        self.assertTrue(args.no_revise_prd)
+
+    def test_no_qa_review_flag(self):
+        args = self.parser.parse_args(["--no-qa-review"])
+        self.assertTrue(args.no_qa_review)
+
+    def test_enhance_all_with_override_flags(self):
+        args = self.parser.parse_args(["--enhance-all", "--no-qa-review"])
+        self.assertTrue(args.enhance_all)
+        self.assertTrue(args.no_qa_review)
+
+
+class TestEnhanceAllCLIPassthrough(unittest.TestCase):
+    """Tests for --enhance-all flags passed to orchestrator."""
+
+    def test_enhance_all_enables_all_features(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--enhance-all']):
+                with patch('ralph.Logger.info'):
+                    main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('enhance_intent'))
+            self.assertTrue(call_kwargs.get('revise_prd'))
+            self.assertTrue(call_kwargs.get('qa_review'))
+
+    def test_enhance_all_with_no_enhance_intent_override(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--enhance-all', '--no-enhance-intent']):
+                with patch('ralph.Logger.info'):
+                    main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertFalse(call_kwargs.get('enhance_intent'))
+            self.assertTrue(call_kwargs.get('revise_prd'))
+            self.assertTrue(call_kwargs.get('qa_review'))
+
+    def test_enhance_all_with_no_revise_prd_override(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--enhance-all', '--no-revise-prd']):
+                with patch('ralph.Logger.info'):
+                    main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('enhance_intent'))
+            self.assertFalse(call_kwargs.get('revise_prd'))
+            self.assertTrue(call_kwargs.get('qa_review'))
+
+    def test_enhance_all_with_no_qa_review_override(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--enhance-all', '--no-qa-review']):
+                with patch('ralph.Logger.info'):
+                    main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('enhance_intent'))
+            self.assertTrue(call_kwargs.get('revise_prd'))
+            self.assertFalse(call_kwargs.get('qa_review'))
+
+    def test_enhance_all_with_multiple_overrides(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--enhance-all', '--no-enhance-intent', '--no-qa-review']):
+                with patch('ralph.Logger.info'):
+                    main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertFalse(call_kwargs.get('enhance_intent'))
+            self.assertTrue(call_kwargs.get('revise_prd'))
+            self.assertFalse(call_kwargs.get('qa_review'))
+
+    def test_explicit_flags_work_without_enhance_all(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--enhance-intent', '--qa-review']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('enhance_intent'))
+            self.assertFalse(call_kwargs.get('revise_prd'))
+            self.assertTrue(call_kwargs.get('qa_review'))
+
+    def test_explicit_positive_flag_overrides_no_flag(self):
+        """Explicit positive flags should work even when --no-* flags are specified."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--enhance-intent', '--no-enhance-intent']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            # Explicit positive flag should win since --no-* is for --enhance-all overrides
+            self.assertTrue(call_kwargs.get('enhance_intent'))
+
+
+class TestEnhanceAllLogging(unittest.TestCase):
+    """Tests for --enhance-all logging of enabled features."""
+
+    def test_logs_enabled_features_when_all_enabled(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('ralph.Logger.info') as mock_log:
+                with patch('sys.argv', ['ralph', '--enhance-all']):
+                    main()
+            # Check that enabled features are logged
+            log_calls = [str(call) for call in mock_log.call_args_list]
+            enabled_log = [c for c in log_calls if 'enabled' in c.lower()]
+            self.assertTrue(len(enabled_log) > 0)
+
+    def test_logs_disabled_features_when_override_used(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('ralph.Logger.info') as mock_log:
+                with patch('sys.argv', ['ralph', '--enhance-all', '--no-qa-review']):
+                    main()
+            # Check that disabled features are logged
+            log_calls = [str(call) for call in mock_log.call_args_list]
+            disabled_log = [c for c in log_calls if 'disabled' in c.lower()]
+            self.assertTrue(len(disabled_log) > 0)
+
+
 if __name__ == '__main__':
     unittest.main()
