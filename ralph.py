@@ -1952,6 +1952,41 @@ Provide your review in the following format:
             template = template.replace("{{" + key + "}}", str(value))
         return template
 
+    @staticmethod
+    def delete(template_name: str) -> None:
+        """Delete a template file from the templates directory.
+
+        Args:
+            template_name: Name of the template to delete (with or without extension)
+
+        Raises:
+            ValueError: If template_name is empty or invalid
+            FileNotFoundError: If templates directory doesn't exist or template not found
+            PermissionError: If permission denied when deleting
+        """
+        if not template_name or not template_name.strip():
+            raise ValueError("Invalid template name: template name cannot be empty")
+
+        template_name = template_name.strip()
+
+        if not CONF.TEMPLATES_DIR.exists():
+            raise FileNotFoundError("Templates directory not found.")
+
+        # Try exact match first
+        path = CONF.TEMPLATES_DIR / template_name
+        if path.exists() and path.is_file():
+            path.unlink()
+            return
+
+        # Try with .txt extension if no extension provided
+        if not Path(template_name).suffix:
+            path_with_ext = CONF.TEMPLATES_DIR / f"{template_name}.txt"
+            if path_with_ext.exists() and path_with_ext.is_file():
+                path_with_ext.unlink()
+                return
+
+        raise FileNotFoundError(f"Template {template_name} not found.")
+
 
 # ==============================================================================
 # ORCHESTRATOR
@@ -3540,6 +3575,8 @@ def main() -> None:
     parser.add_argument("--qa-strict", action="store_true", help="Fail tasks when QA review finds critical issues (requires --qa-review)")
     # Enhancement combination flag
     parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd, --qa-review). Individual --no-* flags can override specific features.")
+    # Template management flags
+    parser.add_argument("--template-delete", type=str, metavar="NAME", help="Delete a template by name from .ralph/templates/ directory")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -3584,6 +3621,22 @@ def main() -> None:
     if args.intent and args.intent_file:
         Logger.error("Cannot use both --intent and --intent-file together.")
         sys.exit(1)
+
+    # Handle --template-delete flag: delete template and exit
+    if args.template_delete is not None:
+        try:
+            TemplateManager.delete(args.template_delete)
+            Logger.info(f"Template {args.template_delete} deleted successfully.")
+            sys.exit(0)
+        except ValueError as e:
+            Logger.error(str(e))
+            sys.exit(1)
+        except FileNotFoundError as e:
+            Logger.error(str(e))
+            sys.exit(1)
+        except PermissionError as e:
+            Logger.error(f"Permission denied: {e}")
+            sys.exit(1)
 
     # Handle --enhance-all flag: apply enhancement defaults with explicit overrides
     # --enhance-all enables: --enhance-intent, --revise-prd, --qa-review
