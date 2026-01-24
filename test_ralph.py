@@ -2900,6 +2900,30 @@ class TestQAReviewMethod(TempConfigTestCase):
         self.assertTrue(passed)  # Continues despite parse failure
         self.assertIsNone(findings)
 
+    def test_continues_on_agent_exception(self):
+        """Test that QA review gracefully handles agent exceptions."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.side_effect = Exception("Unexpected agent crash")
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+                passed, findings = orch._run_qa_review(task)
+        self.assertTrue(passed)  # Continues despite exception
+        self.assertIsNone(findings)
+
+    def test_skips_when_unable_to_detect_changes(self):
+        """Test that QA review skips when unable to detect code changes."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="(Unable to detect code changes)"):
+            with patch('ralph.Logger.info'):
+                passed, findings = orch._run_qa_review(task)
+        self.assertTrue(passed)
+        self.assertIsNone(findings)
+        mock_agent.run.assert_not_called()
+
 
 class TestParseQAFindings(TempConfigTestCase):
     """Tests for _parse_qa_findings method."""
@@ -2973,6 +2997,93 @@ class TestQAReviewEventTypes(unittest.TestCase):
                 hasattr(EventType, event_name),
                 f"EventType.{event_name} should exist"
             )
+
+
+class TestQAReviewEvents(TempConfigTestCase):
+    """Tests for QA review event emissions."""
+
+    def test_emits_start_event(self):
+        """Test that QA review emits start event."""
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{"summary": "PASS", "critical_issues": [], "warnings": [], "suggestions": [], "passed_checks": []}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                orch._run_qa_review(task)
+        self.assertIn(EventType.QA_REVIEW_START, events)
+
+    def test_emits_success_event(self):
+        """Test that QA review emits success event on pass."""
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{"summary": "PASS", "critical_issues": [], "warnings": [], "suggestions": [], "passed_checks": []}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                orch._run_qa_review(task)
+        self.assertIn(EventType.QA_REVIEW_SUCCESS, events)
+
+    def test_emits_skipped_event_on_no_changes(self):
+        """Test that QA review emits skipped event when no code changes."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="(No code changes detected)"):
+            with patch('ralph.Logger.info'):
+                orch._run_qa_review(task)
+        self.assertIn(EventType.QA_REVIEW_SKIPPED, events)
+
+    def test_emits_failure_event_on_agent_failure(self):
+        """Test that QA review emits failure event when agent fails."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (False, "", AgentError("TestError", "test", "", "", "", ""))
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+                orch._run_qa_review(task)
+        self.assertIn(EventType.QA_REVIEW_FAILURE, events)
+
+    def test_emits_failure_event_on_parse_failure(self):
+        """Test that QA review emits failure event when parsing fails."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "Invalid response", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.warning'), patch('ralph.Logger.debug'):
+                orch._run_qa_review(task)
+        self.assertIn(EventType.QA_REVIEW_FAILURE, events)
+
+    def test_emits_failure_event_on_agent_exception(self):
+        """Test that QA review emits failure event when agent raises exception."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.side_effect = Exception("Unexpected crash")
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+                orch._run_qa_review(task)
+        self.assertIn(EventType.QA_REVIEW_FAILURE, events)
 
 
 # ==============================================================================
