@@ -1630,10 +1630,7 @@ def main() -> None:
     parser.add_argument("--accept-all", "-y", action="store_true", help="Skip prompts")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v, -vv, -vvv)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non-essential output")
-    # Color options (mutually exclusive)
-    color_group = parser.add_mutually_exclusive_group()
-    color_group.add_argument("--no-color", action="store_true", help="Disable colored output")
-    color_group.add_argument("--color", action="store_true", help="Force colored output")
+    parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     parser.add_argument("--no-emoji", action="store_true", help="Replace emojis with text equivalents")
     parser.add_argument("--no-hooks", action="store_true", help="Disable hook execution")
     parser.add_argument("--hooks", nargs="+", metavar="NAME", help="Enable only specified hooks by name")
@@ -1706,12 +1703,9 @@ def main() -> None:
     Logger.set_quiet(args.quiet)
     Logger.set_no_emoji(args.no_emoji or ci_mode)
     Logger.set_non_interactive(non_interactive)
-    # Handle color: --no-color disables, --color forces enable, --ci disables (default: auto/enabled)
+    # Handle color: --no-color disables, --ci disables (default: colors enabled)
     if args.no_color or ci_mode:
         Logger.set_no_color(True)
-    elif args.color:
-        Logger.set_no_color(False)
-    # else: leave default (colors enabled)
     # Configure I/O and output format settings
     if args.log_file:
         Logger.set_log_file(args.log_file)

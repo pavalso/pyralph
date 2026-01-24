@@ -690,9 +690,7 @@ class TestCliArguments(unittest.TestCase):
         self.parser.add_argument("--accept-all", "-y", action="store_true")
         self.parser.add_argument("-v", "--verbose", action="count", default=0)
         self.parser.add_argument("--quiet", "-q", action="store_true")
-        color = self.parser.add_mutually_exclusive_group()
-        color.add_argument("--no-color", action="store_true")
-        color.add_argument("--color", action="store_true")
+        self.parser.add_argument("--no-color", action="store_true")
         self.parser.add_argument("--no-emoji", action="store_true")
         self.parser.add_argument("--agent", choices=list_agents(), default=list_agents()[0])
         self.parser.add_argument("--no-hooks", action="store_true")
@@ -752,10 +750,6 @@ class TestCliArguments(unittest.TestCase):
         self.assertEqual(args.test_cmd, "npm test")
         self.assertEqual(args.only, ["T-1", "T-2"])
         self.assertEqual(args.retries, 3)
-
-    def test_color_mutual_exclusion(self):
-        with self.assertRaises(SystemExit):
-            self.parser.parse_args(["--color", "--no-color"])
 
     def test_get_version_and_list_agents(self):
         self.assertIsInstance(get_version(), str)
