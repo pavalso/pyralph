@@ -1356,7 +1356,7 @@ class RalphOrchestrator:
 
     def _archive_prd(self) -> None:
         if not CONF.PRD_FILE.exists(): return
-        # Respect --archive flag (default: True)
+        # Respect --no-archive flag (archive is default behavior)
         if not self._archive:
             Logger.debug("Skipping PRD archival (--no-archive)")
             return
@@ -1670,10 +1670,8 @@ def main() -> None:
     # PRD output flags
     parser.add_argument("--print-prd", action="store_true", help="Print PRD contents and exit without executing")
     parser.add_argument("--prd-out", type=str, metavar="FILE", help="Export PRD to specified file")
-    # Archive control flags (mutually exclusive)
-    archive_group = parser.add_mutually_exclusive_group()
-    archive_group.add_argument("--archive", action="store_true", dest="archive_enabled", default=True, help="Archive PRD after execution (default)")
-    archive_group.add_argument("--no-archive", action="store_false", dest="archive_enabled", help="Skip PRD archival after execution")
+    # Archive control flag
+    parser.add_argument("--no-archive", action="store_false", dest="archive_enabled", default=True, help="Skip PRD archival after execution")
     # Headless operation flags for CI/CD pipelines
     parser.add_argument("--non-interactive", action="store_true", help="Disable all interactive prompts (fails if input required)")
     parser.add_argument("--ci", action="store_true", help="CI mode: enables --non-interactive --no-color --no-emoji --json")
