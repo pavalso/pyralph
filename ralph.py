@@ -583,8 +583,7 @@ class RalphOrchestrator:
                  test_cmd: Optional[str] = None, skip_verify: bool = False, retries: Optional[int] = None,
                  timeout: Optional[int] = None, only: Optional[List[str]] = None, except_tasks: Optional[List[str]] = None,
                  resume: Optional[str] = None, include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
-                 context_limit: Optional[int] = None, write_allow: Optional[List[str]] = None,
-                 write_deny: Optional[List[str]] = None, dry_run: bool = False,
+                 context_limit: Optional[int] = None,
                  model: Optional[str] = None, temperature: Optional[float] = None,
                  max_tokens: Optional[int] = None, seed: Optional[int] = None,
                  log_file: Optional[str] = None, log_level: Optional[str] = None,
@@ -635,10 +634,6 @@ class RalphOrchestrator:
         self._include_patterns = include
         self._exclude_patterns = exclude
         self._context_limit = context_limit
-        # Store safety and isolation control flags
-        self._write_allow = write_allow
-        self._write_deny = write_deny
-        self._dry_run = dry_run
         # Store I/O, logging and output flags
         self._log_file = log_file
         self._log_level = log_level
@@ -1669,10 +1664,6 @@ def main() -> None:
     parser.add_argument("--include", nargs="+", metavar="PATTERN", help="Include only files matching these glob patterns in context")
     parser.add_argument("--exclude", nargs="+", metavar="PATTERN", help="Exclude files matching these glob patterns from context")
     parser.add_argument("--context-limit", type=int, metavar="N", help="Limit maximum number of context files considered")
-    # Safety and isolation control flags
-    parser.add_argument("--write-allow", nargs="+", metavar="PATTERN", help="Allow writes only to paths matching these glob patterns")
-    parser.add_argument("--write-deny", nargs="+", metavar="PATTERN", help="Deny writes to paths matching these glob patterns")
-    parser.add_argument("--dry-run", action="store_true", help="Simulate file writes without actually writing")
     # Model and prompting flags for LLM customization
     parser.add_argument("--model", type=str, metavar="MODEL", help="Model identifier for LLM requests (e.g., claude-3-opus)")
     parser.add_argument("--temperature", type=float, metavar="TEMP", help="Sampling temperature (0.0-1.0) for response generation")
@@ -1781,9 +1772,6 @@ def main() -> None:
         include=args.include,
         exclude=args.exclude,
         context_limit=args.context_limit,
-        write_allow=args.write_allow,
-        write_deny=args.write_deny,
-        dry_run=args.dry_run,
         model=args.model,
         temperature=args.temperature,
         max_tokens=args.max_tokens,

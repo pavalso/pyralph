@@ -531,9 +531,6 @@ class TestOrchestratorFlags(TempConfigTestCase):
         ('prompt_file', '_prompt_file_override', "/prompt", None),
         ('include', '_include_patterns', ["arch"], None),
         ('exclude', '_exclude_patterns', ["tasks"], None),
-        ('write_allow', '_write_allow', ["*.py"], None),
-        ('write_deny', '_write_deny', ["*.pyc"], None),
-        ('dry_run', '_dry_run', True, False),
         ('non_interactive', '_non_interactive', True, False),
         ('ci', '_ci', True, False),
         ('status_check', '_status_check', True, False),
@@ -556,7 +553,7 @@ class TestOrchestratorFlags(TempConfigTestCase):
     def test_flag_defaults(self):
         orch = self.create_mock_orchestrator()
         for kwarg, attr, value, default in self.FLAG_CASES:
-            if default is not None or attr in ('_tree_depth', '_skip_verify', '_git_enabled', '_dry_run',
+            if default is not None or attr in ('_tree_depth', '_skip_verify', '_git_enabled',
                                                 '_non_interactive', '_ci', '_status_check', '_labels',
                                                 '_pre_commands', '_post_commands', '_plugin_paths'):
                 with self.subTest(attr=attr):
@@ -717,9 +714,6 @@ class TestCliArguments(unittest.TestCase):
         self.parser.add_argument("--resume", type=str)
         self.parser.add_argument("--include-memory", nargs="+")
         self.parser.add_argument("--exclude-memory", nargs="+")
-        self.parser.add_argument("--write-allow", nargs="+")
-        self.parser.add_argument("--write-deny", nargs="+")
-        self.parser.add_argument("--dry-run", action="store_true")
         self.parser.add_argument("--non-interactive", action="store_true")
         self.parser.add_argument("--ci", action="store_true")
         self.parser.add_argument("--status-check", action="store_true")
@@ -794,7 +788,6 @@ class TestMainCLIPassthrough(unittest.TestCase):
         (['--timeout', '300'], {'timeout': 300}),
         (['--only', 'T-1', 'T-2'], {'only': ['T-1', 'T-2']}),
         (['--resume', 'T-3'], {'resume': 'T-3'}),
-        (['--dry-run'], {'dry_run': True}),
         (['--non-interactive'], {'non_interactive': True}),
         (['--ci'], {'ci': True}),
         (['--status-check'], {'status_check': True}),
