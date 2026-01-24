@@ -306,14 +306,69 @@ Each task is verified by running the test suite. On success, changes are committ
 ## Project Structure
 
 ```
-your-project/
-└── .ralph/
-    ├── memory/        # Knowledge base (wiki files)
-    ├── archive/       # Completed PRD archives
-    ├── prd.json       # Current project plan
-    ├── progress.txt   # Error state (if failing)
-    └── ralph_log.txt  # Audit trail
+pyralph/
+├── ralph.py              # Main entry point and orchestrator
+├── hooks.py              # Event/hook system for extensibility
+├── agents/               # Agent implementations
+│   ├── __init__.py       # Agent factory and registration
+│   ├── base.py           # Abstract BaseAgent interface
+│   ├── claude.py         # Claude CLI agent implementation
+│   └── copilot.py        # GitHub Copilot CLI agent implementation
+├── prompt.md             # Default user context prompt template
+├── fetch_ready_issues.py # GitHub issue fetcher utility
+├── test_ralph.py         # Comprehensive test suite
+├── pyproject.toml        # Build configuration
+├── ARCH.md               # Architecture decision record
+└── .ralph/               # Runtime state directory
+    ├── memory/           # Knowledge base (wiki files)
+    ├── archive/          # Completed PRD archives
+    ├── hooks/            # Custom hook scripts
+    ├── templates/        # Prompt templates
+    ├── prd.json          # Current project plan
+    ├── progress.txt      # Error state (if failing)
+    └── ralph_log.txt     # Audit trail
 ```
+
+## Architecture
+
+Ralph follows a modular architecture with clear separation of concerns. For detailed technical specifications, see [ARCH.md](ARCH.md).
+
+### Core Components
+
+| Component | Location | Description |
+|-----------|----------|-------------|
+| **RalphOrchestrator** | `ralph.py` | Central coordinator managing the three-phase workflow (Architect → Planner → Execute). Handles CLI argument parsing (~50 parameters), phase transitions, and component integration. |
+| **Agent System** | `agents/` | Pluggable agent backends for LLM interaction. Includes `BaseAgent` abstract class and implementations for Claude CLI and GitHub Copilot CLI. Agents handle prompt execution with configurable timeout, model selection, and error recovery. |
+| **Hook System** | `hooks.py` | Event-driven extensibility layer. Supports Python module hooks and executable hooks with priority ordering, timeout protection, and optional data modification. Subscribes to lifecycle events (phase, task, verification, PRD). |
+| **Logger** | `ralph.py` | Static logging class with CLI-controlled verbosity levels, color output, JSON/NDJSON formats, sensitive data redaction, and both console and file output. |
+| **MemoryManager** | `ralph.py` | Manages the `.ralph/memory/` knowledge base. Handles memory validation, tag-based retrieval, file tree generation, and context injection for prompts. |
+| **Config** | `ralph.py` | Dataclass holding all path constants and default limits (retry count, timeout). Ensures required directories exist on startup. |
+
+### Agent Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     RalphOrchestrator                       │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │                      BaseAgent                          ││
+│  │  - timeout, model, temperature, seed, max_tokens        ││
+│  │  - run(prompt) -> (exit_code, stdout, stderr)           ││
+│  │  - check_dependencies() -> bool                         ││
+│  └─────────────────────────────────────────────────────────┘│
+│           ▲                           ▲                     │
+│           │                           │                     │
+│  ┌────────┴────────┐        ┌────────┴────────┐            │
+│  │   ClaudeAgent   │        │   GithubAgent   │            │
+│  │  (claude CLI)   │        │ (copilot CLI)   │            │
+│  └─────────────────┘        └─────────────────┘            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+1. **Architect Phase**: Scans codebase → Generates memory files → Builds project context
+2. **Planner Phase**: Reads memory + intent → Generates PRD with user stories → Validates acceptance criteria
+3. **Execute Phase**: Iterates tasks → Runs agent → Verifies via tests → Commits on success or retries on failure
 
 ## Knowledge Injection
 
@@ -328,6 +383,298 @@ View recent log entries:
 
 ```bash
 tail -n 50 .ralph/ralph_log.txt
+```
+
+## Advanced Features
+
+### Hook/Event System
+
+Ralph provides an extensible event-driven hook system that lets you subscribe to lifecycle events and execute custom code at key points during execution.
+
+#### Available Event Types
+
+Events are organized by lifecycle phase:
+
+| Category | Events |
+|----------|--------|
+| **Phase** | `PHASE_START`, `PHASE_END` |
+| **Architect** | `ARCHITECT_START`, `ARCHITECT_SUCCESS`, `ARCHITECT_FAILURE` |
+| **Planner** | `PLANNER_START`, `PLANNER_SUCCESS`, `PLANNER_FAILURE` |
+| **Execute** | `EXECUTE_START`, `EXECUTE_END` |
+| **Task** | `TASK_START`, `TASK_SUCCESS`, `TASK_FAILURE`, `TASK_RETRY` |
+| **Verification** | `VERIFICATION_START`, `VERIFICATION_SUCCESS`, `VERIFICATION_FAILURE` |
+| **PRD** | `PRD_CREATED`, `PRD_ARCHIVED` |
+| **Error** | `ERROR` |
+
+#### Event Payload
+
+All events carry the following data:
+
+```python
+event_type: EventType           # The type of event
+timestamp: str                  # ISO format timestamp
+phase: Optional[str]            # Current phase: architect/planner/execute
+task_id: Optional[str]          # Task identifier
+task_description: Optional[str] # Task description
+retry_count: Optional[int]      # Current retry attempt
+max_retries: Optional[int]      # Maximum retries allowed
+error: Optional[Any]            # Error object if applicable
+verification_command: Optional[str]    # Test command
+verification_exit_code: Optional[int]  # Exit code from verification
+prd_path: Optional[str]         # Path to PRD file
+metadata: Dict[str, Any]        # Custom metadata
+```
+
+#### Creating Python Module Hooks
+
+Create a Python file in `.ralph/hooks/`:
+
+```python
+# .ralph/hooks/my_hook.py
+
+EVENTS = ["TASK_SUCCESS", "TASK_FAILURE"]  # Required: events to subscribe to
+PRIORITY = 50                               # Optional: lower = earlier (default: 100)
+TIMEOUT = 10.0                              # Optional: max seconds (default: 5.0)
+MODIFIES_DATA = False                       # Optional: can modify events (default: False)
+
+def on_event(event):
+    """Handle task completion events."""
+    print(f"Task {event.task_id}: {event.event_type.name}")
+    if event.error:
+        print(f"  Error: {event.error}")
+```
+
+Hooks are auto-discovered from `.ralph/hooks/` on startup.
+
+#### Creating Executable Hooks
+
+Create a script with a companion YAML config:
+
+```bash
+# .ralph/hooks/notify.sh
+#!/bin/bash
+EVENT_JSON=$(cat)  # Receive JSON event via stdin
+EVENT_TYPE=$(echo "$EVENT_JSON" | jq -r '.event_type')
+TASK_ID=$(echo "$EVENT_JSON" | jq -r '.task_id')
+
+echo "Task $TASK_ID: $EVENT_TYPE" >&2
+```
+
+```yaml
+# .ralph/hooks/notify.yaml
+events:
+  - TASK_SUCCESS
+  - TASK_FAILURE
+priority: 100
+timeout: 5.0
+```
+
+#### Hook Execution Behavior
+
+- Hooks execute in priority order (lower values first)
+- Each hook runs in an isolated thread with timeout protection
+- Exceptions are caught and logged without halting execution
+- Hooks with `MODIFIES_DATA = True` can transform event data
+
+### Plugin System
+
+Plugins extend Ralph's functionality by registering hooks programmatically.
+
+#### Loading Plugins
+
+```bash
+# Load a single plugin file
+ralph --plugin /path/to/plugin.py
+
+# Load all plugins from a directory
+ralph --plugin /path/to/plugins/
+```
+
+#### Creating a Plugin
+
+```python
+# ~/my_plugins/monitoring.py
+
+EVENTS = ["PHASE_START", "PHASE_END", "TASK_SUCCESS", "TASK_FAILURE"]
+PRIORITY = 50
+TIMEOUT = 10.0
+
+def on_event(event):
+    """Monitor Ralph lifecycle events."""
+    if event.event_type.name == "TASK_SUCCESS":
+        print(f"Task {event.task_id} completed")
+    elif event.event_type.name == "TASK_FAILURE":
+        print(f"Task {event.task_id} failed: {event.error}")
+    elif event.event_type.name == "PHASE_START":
+        print(f"Starting {event.phase} phase")
+```
+
+#### CLI Hook Options
+
+| Flag | Description |
+|------|-------------|
+| `--no-hooks` | Disable all hook execution |
+| `--hooks NAME...` | Enable only specified hooks by name |
+| `--pre CMD...` | Shell command(s) to run before each phase |
+| `--post CMD...` | Shell command(s) to run after each phase |
+| `--plugin PATH...` | Load plugin(s) from file or directory |
+
+### CI/CD Integration
+
+Ralph supports headless operation for continuous integration pipelines.
+
+#### CI Mode
+
+The `--ci` flag enables a bundle of CI-friendly options:
+
+```bash
+ralph --ci --intent-file requirements.txt all
+```
+
+This is equivalent to:
+
+```bash
+ralph --non-interactive --no-color --no-emoji --json
+```
+
+#### Key CI/CD Flags
+
+| Flag | Description |
+|------|-------------|
+| `--ci` | Enable CI mode (non-interactive, no color, JSON output) |
+| `--non-interactive` | Disable all prompts (fails if input required) |
+| `--json` | Output in JSON format for parsing |
+| `--ndjson` | Output in newline-delimited JSON format |
+| `--status-check` | Check PRD status and exit with code |
+
+#### Status Check Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | All tasks complete |
+| 1 | Tasks incomplete |
+| 2 | No PRD found |
+
+#### GitHub Actions Example
+
+```yaml
+name: Ralph CI
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install ralph
+          pip install -r requirements.txt
+
+      - name: Run Ralph
+        run: |
+          ralph --ci --intent-file requirements.txt all
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Check completion status
+        run: ralph --status-check
+```
+
+#### GitLab CI Example
+
+```yaml
+stages:
+  - build
+
+ralph-build:
+  stage: build
+  image: python:3.11
+  script:
+    - pip install ralph
+    - ralph --ci --intent-file requirements.txt all
+    - ralph --status-check
+  variables:
+    ANTHROPIC_API_KEY: $CI_ANTHROPIC_API_KEY
+```
+
+#### Jenkins Pipeline Example
+
+```groovy
+pipeline {
+    agent any
+
+    environment {
+        ANTHROPIC_API_KEY = credentials('anthropic-api-key')
+    }
+
+    stages {
+        stage('Build with Ralph') {
+            steps {
+                sh 'pip install ralph'
+                sh 'ralph --ci --intent-file requirements.txt all'
+            }
+        }
+
+        stage('Verify Completion') {
+            steps {
+                sh 'ralph --status-check'
+            }
+        }
+    }
+}
+```
+
+#### JSON Output Format
+
+When using `--json` or `--ndjson`, Ralph outputs structured data:
+
+```json
+{
+  "event": "TASK_SUCCESS",
+  "task_id": "TASK-001",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "phase": "execute",
+  "verification_exit_code": 0
+}
+```
+
+Use `--ndjson` for streaming output where each event is a separate JSON line, making it easy to parse with tools like `jq`:
+
+```bash
+ralph --ci --ndjson all | jq 'select(.event == "TASK_FAILURE")'
+```
+
+#### Combining with Hooks for CI Notifications
+
+```python
+# .ralph/hooks/ci_notify.py
+
+EVENTS = ["TASK_FAILURE", "PLANNER_SUCCESS", "EXECUTE_END"]
+
+def on_event(event):
+    """Send notifications in CI environment."""
+    import os
+    import requests
+
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        return
+
+    if event.event_type.name == "TASK_FAILURE":
+        requests.post(webhook_url, json={
+            "text": f"Task {event.task_id} failed: {event.error}"
+        })
+    elif event.event_type.name == "EXECUTE_END":
+        requests.post(webhook_url, json={
+            "text": "Ralph execution completed"
+        })
 ```
 
 ## License
