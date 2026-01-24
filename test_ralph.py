@@ -534,8 +534,6 @@ class TestOrchestratorFlags(TempConfigTestCase):
         ('non_interactive', '_non_interactive', True, False),
         ('ci', '_ci', True, False),
         ('status_check', '_status_check', True, False),
-        ('concurrency', '_concurrency', 4, None),
-        ('rate_limit', '_rate_limit', 1.0, None),
         ('pre', '_pre_commands', ["echo"], []),
         ('post', '_post_commands', ["done"], []),
         ('plugin', '_plugin_paths', ["/p.py"], []),
@@ -1072,27 +1070,6 @@ class TestHeadlessMode(TempConfigTestCase):
     def test_status_check_flag(self):
         orch = self.create_mock_orchestrator(status_check=True)
         self.assertTrue(orch._status_check)
-
-
-# ==============================================================================
-# PERFORMANCE FLAGS TESTS
-# ==============================================================================
-
-
-class TestPerformanceFlags(TempConfigTestCase):
-    """Tests for performance flags."""
-
-    def test_concurrency_flag(self):
-        orch = self.create_mock_orchestrator(concurrency=4)
-        self.assertEqual(orch._concurrency, 4)
-
-    def test_rate_limit_flag(self):
-        orch = self.create_mock_orchestrator(rate_limit=1.5)
-        self.assertEqual(orch._rate_limit, 1.5)
-
-    def test_backoff_flag(self):
-        orch = self.create_mock_orchestrator(backoff=2.0)
-        self.assertEqual(orch._backoff, 2.0)
 
 
 # ==============================================================================

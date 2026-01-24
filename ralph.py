@@ -590,8 +590,6 @@ class RalphOrchestrator:
                  json_output: bool = False, ndjson_output: bool = False,
                  print_prd: bool = False, prd_out: Optional[str] = None, archive: bool = True,
                  non_interactive: bool = False, ci: bool = False, status_check: bool = False,
-                 concurrency: Optional[int] = None, rate_limit: Optional[float] = None,
-                 backoff: Optional[float] = None,
                  pre: Optional[List[str]] = None, post: Optional[List[str]] = None,
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
@@ -646,10 +644,6 @@ class RalphOrchestrator:
         self._non_interactive = non_interactive
         self._ci = ci
         self._status_check = status_check
-        # Store performance and determinism flags
-        self._concurrency = concurrency
-        self._rate_limit = rate_limit
-        self._backoff = backoff
         # Store extensibility and hook flags
         self._pre_commands = pre or []
         self._post_commands = post or []
@@ -1687,10 +1681,6 @@ def main() -> None:
     parser.add_argument("--non-interactive", action="store_true", help="Disable all interactive prompts (fails if input required)")
     parser.add_argument("--ci", action="store_true", help="CI mode: enables --non-interactive --no-color --no-emoji --json")
     parser.add_argument("--status-check", action="store_true", help="Check PRD status and exit with code (0=complete, 1=incomplete, 2=no PRD)")
-    # Performance and determinism flags for parallelization and API throttling
-    parser.add_argument("--concurrency", type=int, metavar="N", help="Maximum number of parallel tasks (default: 1, sequential)")
-    parser.add_argument("--rate-limit", type=float, metavar="RPS", help="Maximum API requests per second (default: unlimited)")
-    parser.add_argument("--backoff", type=float, metavar="SECS", help="Base backoff time in seconds for retries (default: 1.0)")
     # Extensibility and hook flags for custom commands and validators
     parser.add_argument("--pre", nargs="+", metavar="CMD", help="Shell command(s) to run before each phase (aborts on failure)")
     parser.add_argument("--post", nargs="+", metavar="CMD", help="Shell command(s) to run after each phase (receives RALPH_PHASE, RALPH_SUCCESS env vars)")
@@ -1786,9 +1776,6 @@ def main() -> None:
         non_interactive=non_interactive,
         ci=ci_mode,
         status_check=args.status_check,
-        concurrency=args.concurrency,
-        rate_limit=args.rate_limit,
-        backoff=args.backoff,
         pre=args.pre,
         post=args.post,
         plugin=args.plugin,
