@@ -711,7 +711,8 @@ class GitHubPoller:
     @property
     def is_running(self) -> bool:
         """Check if the poller is currently running."""
-        return self._running
+        with self._lock:
+            return self._running
 
     @property
     def seen_issues(self) -> Set[int]:
@@ -725,14 +726,14 @@ class GitHubPoller:
         Returns:
             True if the poller was started, False if already running.
         """
-        if self._running:
-            return False
-
-        self._stop_event.clear()
-        self._running = True
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
-        self._thread.start()
-        return True
+        with self._lock:
+            if self._running:
+                return False
+            self._stop_event.clear()
+            self._running = True
+            self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+            self._thread.start()
+            return True
 
     def stop(self, timeout: Optional[float] = None) -> bool:
         """Stop the polling loop.
@@ -744,13 +745,17 @@ class GitHubPoller:
         Returns:
             True if the poller was stopped, False if not running.
         """
-        if not self._running:
-            return False
+        with self._lock:
+            if not self._running:
+                return False
+            self._stop_event.set()
+            thread = self._thread
 
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-        self._running = False
+        if thread is not None:
+            thread.join(timeout=timeout)
+
+        with self._lock:
+            self._running = False
         return True
 
     def poll_once(self) -> List[Issue]:
