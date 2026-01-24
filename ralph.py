@@ -780,7 +780,7 @@ class TemplateManager:
 Senior Software Architect
 
 # OBJECTIVE
-Analyze the project structure and initialize architecture documentation.
+Analyze the project structure and initialize comprehensive architecture documentation following software engineering best practices.
 
 # CONTEXT
 
@@ -794,12 +794,71 @@ Analyze the project structure and initialize architecture documentation.
 {{file_tree}}
 </FILE_TREE>
 
+# ANALYSIS REQUIREMENTS
+
+## 1. SOLID Principles Analysis
+When analyzing code structure, evaluate adherence to SOLID principles:
+- **Single Responsibility**: Each module/class should have one reason to change
+- **Open/Closed**: Code should be open for extension, closed for modification
+- **Liskov Substitution**: Subtypes must be substitutable for their base types
+- **Interface Segregation**: Prefer specific interfaces over general-purpose ones
+- **Dependency Inversion**: Depend on abstractions, not concrete implementations
+
+Document any violations or areas for improvement in the architecture documentation.
+
+## 2. Architectural Patterns Identification
+Identify and document which architectural patterns are present in the codebase:
+- **MVC/MVP/MVVM**: Model-View-Controller and variants
+- **Layered Architecture**: Presentation, business logic, data access layers
+- **Microservices**: Independent, deployable services
+- **Event-Driven**: Pub/sub, message queues, event sourcing
+- **Repository Pattern**: Data access abstraction
+- **Clean Architecture**: Dependency rules, use cases, entities
+- **Hexagonal/Ports & Adapters**: Core domain isolated from external concerns
+
+Note which patterns are used and how consistently they are applied.
+
+## 3. Security Considerations
+Analyze and document security aspects of the architecture:
+- **Authentication/Authorization**: How identity and permissions are handled
+- **Input Validation**: Where and how user input is validated
+- **Data Protection**: Encryption at rest and in transit
+- **Secrets Management**: How API keys, passwords, and tokens are stored
+- **OWASP Top 10**: Potential vulnerabilities (injection, XSS, CSRF, etc.)
+- **Dependency Security**: Third-party package vulnerability risks
+
+Flag any security concerns or gaps that require attention.
+
+## 4. Error Handling and Logging Patterns
+Document the error handling and logging strategies used:
+- **Error Handling Strategy**: Try/catch patterns, error boundaries, fallbacks
+- **Error Propagation**: How errors bubble up through layers
+- **Logging Framework**: What logging library/approach is used
+- **Log Levels**: How different severity levels are applied
+- **Error Reporting**: Integration with monitoring/alerting systems
+- **Graceful Degradation**: How the system handles partial failures
+
+## 5. API Boundaries and Integration Points
+Identify and document all API boundaries and integration points:
+- **External APIs**: Third-party services the codebase integrates with
+- **Internal APIs**: Module boundaries and internal service interfaces
+- **Data Formats**: JSON, XML, Protocol Buffers, etc.
+- **Communication Protocols**: REST, GraphQL, gRPC, WebSocket, etc.
+- **Database Interfaces**: ORM usage, raw queries, connection management
+- **File System Interfaces**: File I/O patterns and locations
+- **Environment Dependencies**: Config files, environment variables, secrets
+
 # CONSTRAINTS
 - You MUST create exactly two files: .ralph/memory/architecture.md and ARCH.md
 - You MUST use the exact YAML frontmatter format specified below
 - You MUST include ALL required sections in the exact order specified
 - You MUST detect the actual test command from the project (pytest, npm test, etc.)
 - You MUST NOT invent or assume technologies not evident in the file tree
+- You MUST apply SOLID principles analysis when evaluating code structure
+- You MUST identify architectural patterns present in the codebase
+- You MUST document security considerations and potential vulnerabilities
+- You MUST document error handling strategies and logging patterns
+- You MUST identify API boundaries and integration points
 - Keep descriptions concise and factual
 
 # OUTPUT SPECIFICATION
@@ -824,11 +883,42 @@ title: Architecture
 ## Overview
 [2-3 sentence description of the project purpose and architecture]
 
+## Architectural Patterns
+[Identify patterns used: MVC, Layered, Microservices, Event-Driven, etc.]
+- **Primary Pattern**: [main architectural pattern]
+- **Supporting Patterns**: [additional patterns used]
+
 ## Key Components
 | Component | Description |
 |-----------|-------------|
 | [path/file] | [brief description] |
 [list 3-6 key components]
+
+## SOLID Principles Assessment
+| Principle | Status | Notes |
+|-----------|--------|-------|
+| Single Responsibility | [Good/Needs Work] | [brief observation] |
+| Open/Closed | [Good/Needs Work] | [brief observation] |
+| Liskov Substitution | [Good/N/A] | [brief observation] |
+| Interface Segregation | [Good/Needs Work] | [brief observation] |
+| Dependency Inversion | [Good/Needs Work] | [brief observation] |
+
+## API Boundaries & Integration Points
+- **External Integrations**: [list external APIs/services]
+- **Internal Interfaces**: [key module boundaries]
+- **Data Formats**: [JSON, XML, etc.]
+- **Protocols**: [REST, GraphQL, gRPC, etc.]
+
+## Error Handling & Logging
+- **Error Strategy**: [how errors are handled]
+- **Logging Approach**: [logging framework and patterns]
+- **Log Levels**: [how levels are used]
+
+## Security Considerations
+- **Authentication**: [method used or N/A]
+- **Input Validation**: [where/how validated]
+- **Secrets Management**: [how secrets are handled]
+- **Potential Concerns**: [any security gaps identified]
 
 ## Test Command
 Test Command: `[actual test command]`
