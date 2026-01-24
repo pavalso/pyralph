@@ -16,8 +16,8 @@ from agents.base import AgentError
 from agents.claude import ClaudeAgent
 from agents.copilot import GithubAgent
 from ralph import (
-    Config, CONF, JsonUtils, Logger, MemoryManager, RalphOrchestrator,
-    Shell, TemplateManager, get_version, main,
+    Config, CONF, JsonUtils, Logger, MemoryManager, PromptFormatter,
+    RalphOrchestrator, Shell, TemplateManager, get_version, main,
 )
 from hooks import Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook
 
@@ -1173,6 +1173,158 @@ class TestTemplateManager(unittest.TestCase):
             template = TemplateManager.load(name)
             self.assertIsInstance(template, str)
             self.assertTrue(len(template) > 0)
+
+
+class TestPromptFormatter(unittest.TestCase):
+    """Tests for PromptFormatter utility class (TASK-004)."""
+
+    def test_wrap_with_valid_delimiter(self):
+        """Should wrap content with XML-style delimiters."""
+        content = "Build a REST API"
+        result = PromptFormatter.wrap(content, 'user_intent')
+        self.assertEqual(result, "<USER_INTENT>\nBuild a REST API\n</USER_INTENT>")
+
+    def test_wrap_with_unknown_delimiter(self):
+        """Should return content unchanged for unknown delimiter."""
+        content = "Some content"
+        result = PromptFormatter.wrap(content, 'unknown_key')
+        self.assertEqual(result, content)
+
+    def test_wrap_all_defined_delimiters(self):
+        """All defined delimiters should produce valid XML tags."""
+        for key, (tag, _) in PromptFormatter.DELIMITERS.items():
+            result = PromptFormatter.wrap("test", key)
+            self.assertIn(f"<{tag}>", result)
+            self.assertIn(f"</{tag}>", result)
+
+    def test_format_list_with_items(self):
+        """Should format list with default prefix."""
+        items = ["Item 1", "Item 2", "Item 3"]
+        result = PromptFormatter.format_list(items)
+        self.assertEqual(result, "- Item 1\n- Item 2\n- Item 3")
+
+    def test_format_list_with_custom_prefix(self):
+        """Should format list with custom prefix."""
+        items = ["Step 1", "Step 2"]
+        result = PromptFormatter.format_list(items, prefix="* ")
+        self.assertEqual(result, "* Step 1\n* Step 2")
+
+    def test_format_list_empty(self):
+        """Should return '(none)' for empty list."""
+        result = PromptFormatter.format_list([])
+        self.assertEqual(result, "(none)")
+
+    def test_format_code_block(self):
+        """Should format content as fenced code block."""
+        content = "def hello(): pass"
+        result = PromptFormatter.format_code_block(content, "python")
+        self.assertEqual(result, "```python\ndef hello(): pass\n```")
+
+    def test_format_code_block_no_language(self):
+        """Should format code block without language specifier."""
+        content = "some text"
+        result = PromptFormatter.format_code_block(content)
+        self.assertEqual(result, "```\nsome text\n```")
+
+
+class TestPromptDelimiters(unittest.TestCase):
+    """Tests for consistent delimiter usage in prompt templates (TASK-004)."""
+
+    def test_architect_uses_user_intent_delimiter(self):
+        """Architect template should wrap user_intent in delimiters."""
+        template = TemplateManager.load("architect.txt")
+        self.assertIn("<USER_INTENT>", template)
+        self.assertIn("</USER_INTENT>", template)
+        self.assertIn("{{user_intent}}", template)
+
+    def test_architect_uses_file_tree_delimiter(self):
+        """Architect template should wrap file_tree in delimiters."""
+        template = TemplateManager.load("architect.txt")
+        self.assertIn("<FILE_TREE>", template)
+        self.assertIn("</FILE_TREE>", template)
+        self.assertIn("{{file_tree}}", template)
+
+    def test_planner_uses_user_intent_delimiter(self):
+        """Planner template should wrap user_intent in delimiters."""
+        template = TemplateManager.load("planner.txt")
+        self.assertIn("<USER_INTENT>", template)
+        self.assertIn("</USER_INTENT>", template)
+        self.assertIn("{{user_intent}}", template)
+
+    def test_planner_uses_memory_map_delimiter(self):
+        """Planner template should wrap memory_map in delimiters."""
+        template = TemplateManager.load("planner.txt")
+        self.assertIn("<MEMORY_MAP>", template)
+        self.assertIn("</MEMORY_MAP>", template)
+        self.assertIn("{{memory_map}}", template)
+
+    def test_developer_uses_task_id_delimiter(self):
+        """Developer template should wrap task_id in delimiters."""
+        template = TemplateManager.load("developer.txt")
+        self.assertIn("<TASK_ID>", template)
+        self.assertIn("</TASK_ID>", template)
+        self.assertIn("{{task_id}}", template)
+
+    def test_developer_uses_task_desc_delimiter(self):
+        """Developer template should wrap task_description in delimiters."""
+        template = TemplateManager.load("developer.txt")
+        self.assertIn("<TASK_DESC>", template)
+        self.assertIn("</TASK_DESC>", template)
+        self.assertIn("{{task_description}}", template)
+
+    def test_developer_uses_acceptance_criteria_delimiter(self):
+        """Developer template should wrap acceptance_criteria in delimiters."""
+        template = TemplateManager.load("developer.txt")
+        self.assertIn("<ACCEPTANCE_CRITERIA>", template)
+        self.assertIn("</ACCEPTANCE_CRITERIA>", template)
+        self.assertIn("{{acceptance_criteria}}", template)
+
+    def test_developer_uses_user_context_delimiter(self):
+        """Developer template should wrap user_context in delimiters."""
+        template = TemplateManager.load("developer.txt")
+        self.assertIn("<USER_CONTEXT>", template)
+        self.assertIn("</USER_CONTEXT>", template)
+        self.assertIn("{{user_context}}", template)
+
+    def test_developer_uses_memory_tree_delimiter(self):
+        """Developer template should wrap memory_tree in delimiters."""
+        template = TemplateManager.load("developer.txt")
+        self.assertIn("<MEMORY_TREE>", template)
+        self.assertIn("</MEMORY_TREE>", template)
+        self.assertIn("{{memory_tree}}", template)
+
+    def test_developer_uses_prev_errors_delimiter(self):
+        """Developer template should wrap prev_errors in delimiters."""
+        template = TemplateManager.load("developer.txt")
+        self.assertIn("<PREV_ERRORS>", template)
+        self.assertIn("</PREV_ERRORS>", template)
+        self.assertIn("{{prev_errors}}", template)
+
+    def test_all_templates_have_consistent_section_headers(self):
+        """All templates should use consistent # SECTION header format."""
+        required_sections = ["# ROLE", "# OBJECTIVE", "# CONSTRAINTS"]
+        for name in ["architect.txt", "planner.txt", "developer.txt"]:
+            template = TemplateManager.load(name)
+            for section in required_sections:
+                self.assertIn(section, template, f"{name} missing {section}")
+
+    def test_delimiter_tags_match_formatter_definitions(self):
+        """Delimiter tags in templates should match PromptFormatter definitions."""
+        # Map template variables to their expected delimiter tags
+        expected_mappings = {
+            'user_intent': 'USER_INTENT',
+            'file_tree': 'FILE_TREE',
+            'memory_map': 'MEMORY_MAP',
+            'task_id': 'TASK_ID',
+            'task_description': 'TASK_DESC',
+            'acceptance_criteria': 'ACCEPTANCE_CRITERIA',
+            'user_context': 'USER_CONTEXT',
+            'memory_tree': 'MEMORY_TREE',
+            'prev_errors': 'PREV_ERRORS',
+        }
+        for key, expected_tag in expected_mappings.items():
+            actual_tag, _ = PromptFormatter.DELIMITERS[key]
+            self.assertEqual(actual_tag, expected_tag, f"Mismatch for {key}")
 
 
 class TestPlannerPromptStructure(unittest.TestCase):
