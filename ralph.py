@@ -263,19 +263,19 @@ class Logger(metaclass=_LoggerMeta):
         }
         return json.dumps(data)
 
-    @staticmethod
-    def _strip_emoji(msg: str) -> str:
+    _EMOJI_MAP = {
+        "🤖": "[BOT]", "🕵️": "[ARCH]", "🧠": "[PLAN]", "🚀": "[EXEC]",
+        "✅": "[OK]", "❌": "[FAIL]", "⚠️": "[WARN]", "▶️": "[>]",
+        "🔒": "[VERIFY]", "🛑": "[STOP]", "⏭️": "[SKIP]", "📋": "[LIST]",
+        "📦": "[PKG]", "🎉": "[DONE]", "➡️": "[->]", "⬅️": "[<-]",
+        "ℹ️": "[INFO]", "❓": "[?]",
+    }
+    _EMOJI_PATTERN = re.compile('|'.join(re.escape(e) for e in _EMOJI_MAP.keys()))
+
+    @classmethod
+    def _strip_emoji(cls, msg: str) -> str:
         """Replace emojis with text equivalents."""
-        emoji_map = {
-            "🤖": "[BOT]", "🕵️": "[ARCH]", "🧠": "[PLAN]", "🚀": "[EXEC]",
-            "✅": "[OK]", "❌": "[FAIL]", "⚠️": "[WARN]", "▶️": "[>]",
-            "🔒": "[VERIFY]", "🛑": "[STOP]", "⏭️": "[SKIP]", "📋": "[LIST]",
-            "📦": "[PKG]", "🎉": "[DONE]", "➡️": "[->]", "⬅️": "[<-]",
-            "ℹ️": "[INFO]", "❓": "[?]",
-        }
-        for emoji, text in emoji_map.items():
-            msg = msg.replace(emoji, text)
-        return msg
+        return cls._EMOJI_PATTERN.sub(lambda m: cls._EMOJI_MAP[m.group()], msg)
 
     @staticmethod
     def _print_colored(msg: str, color: str = "RESET", prefix: str = ""):
@@ -1303,9 +1303,8 @@ class RalphOrchestrator:
             "{{TASK_DESCRIPTION}}": task['description'],
             "{{TEST_CMD}}": test_cmd,
         }
-        for placeholder, value in replacements.items():
-            raw_text = raw_text.replace(placeholder, value)
-        return raw_text
+        pattern = re.compile('|'.join(re.escape(k) for k in replacements.keys()))
+        return pattern.sub(lambda m: replacements[m.group()], raw_text)
 
     def _verify_task(self, task: Dict[str, Any], test_cmd: str) -> Tuple[bool, Optional[AgentError]]:
         """Run verification and return (success, error_if_failed)."""

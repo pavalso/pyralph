@@ -209,9 +209,8 @@ def format_issues_as_text(issues: List[Issue]) -> str:
         if issue.body:
             # Show first 100 chars of body
             body_preview = issue.body[:100].replace('\n', ' ')
-            if len(issue.body) > 100:
-                body_preview += "..."
-            lines.append(f"  Body: {body_preview}")
+            ellipsis = "..." if len(issue.body) > 100 else ""
+            lines.append(f"  Body: {body_preview}{ellipsis}")
         lines.append("")
 
     return "\n".join(lines)
