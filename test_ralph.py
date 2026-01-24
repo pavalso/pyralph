@@ -917,6 +917,8 @@ class TestCliArguments(unittest.TestCase):
         self.parser.add_argument("--hooks", nargs="+")
         self.parser.add_argument("--intent", type=str)
         self.parser.add_argument("--intent-file", type=str)
+        self.parser.add_argument("--enhance-intent", action="store_true")
+        self.parser.add_argument("--enhance-intent-strict", action="store_true")
         self.parser.add_argument("--prompt-file", type=str)
         self.parser.add_argument("--tree-depth", type=int, default=2)
         self.parser.add_argument("--tree-ignore", nargs="+")
@@ -1079,8 +1081,8 @@ class TestEvent(unittest.TestCase):
     def test_event_types_exist(self):
         for name in self.EVENTS:
             self.assertTrue(hasattr(EventType, name))
-        # 20 original + 11 IssueWatcher events
-        self.assertEqual(len(EventType), 31)
+        # 20 original + 11 IssueWatcher events + 3 Intent Enhancement events + 3 PRD Revision events = 37
+        self.assertEqual(len(EventType), 37)
 
     def test_event_creation_serialization(self):
         event = Event(EventType.TASK_SUCCESS, phase="execute", task_id="T-001", metadata={"k": "v"})
@@ -1985,6 +1987,511 @@ class TestIssueWatcherHooks(IssueWatcherTestCase):
             "POLL_START", "POLL_SUCCESS", "POLL_ERROR"
         ]
 
+        for event_name in expected_events:
+            self.assertTrue(
+                hasattr(EventType, event_name),
+                f"EventType.{event_name} should exist"
+            )
+
+
+# ==============================================================================
+# INTENT ENHANCEMENT TESTS (TASK-001)
+# ==============================================================================
+
+
+class TestEnhanceIntentCLI(unittest.TestCase):
+    """Tests for --enhance-intent CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("--enhance-intent", action="store_true")
+        self.parser.add_argument("--enhance-intent-strict", action="store_true")
+        self.parser.add_argument("--intent", type=str)
+
+    def test_enhance_intent_flag_default(self):
+        args = self.parser.parse_args([])
+        self.assertFalse(args.enhance_intent)
+        self.assertFalse(args.enhance_intent_strict)
+
+    def test_enhance_intent_flag_enabled(self):
+        args = self.parser.parse_args(["--enhance-intent"])
+        self.assertTrue(args.enhance_intent)
+
+    def test_enhance_intent_strict_flag(self):
+        args = self.parser.parse_args(["--enhance-intent", "--enhance-intent-strict"])
+        self.assertTrue(args.enhance_intent)
+        self.assertTrue(args.enhance_intent_strict)
+
+    def test_combined_flags(self):
+        args = self.parser.parse_args(["--enhance-intent", "--intent", "test"])
+        self.assertTrue(args.enhance_intent)
+        self.assertEqual(args.intent, "test")
+
+
+class TestEnhanceIntentCLIPassthrough(unittest.TestCase):
+    """Tests for --enhance-intent flags passed to orchestrator."""
+
+    def test_enhance_intent_passed(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--enhance-intent']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('enhance_intent'))
+
+    def test_enhance_intent_strict_passed(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--enhance-intent', '--enhance-intent-strict']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('enhance_intent'))
+            self.assertTrue(call_kwargs.get('enhance_intent_strict'))
+
+
+class TestEnhanceIntentOrchestrator(TempConfigTestCase):
+    """Tests for intent enhancement in RalphOrchestrator."""
+
+    def test_orchestrator_stores_enhance_intent_flag(self):
+        orch = self.create_mock_orchestrator(enhance_intent=True)
+        self.assertTrue(orch._enhance_intent)
+
+    def test_orchestrator_stores_enhance_intent_strict_flag(self):
+        orch = self.create_mock_orchestrator(enhance_intent=True, enhance_intent_strict=True)
+        self.assertTrue(orch._enhance_intent)
+        self.assertTrue(orch._enhance_intent_strict)
+
+    def test_orchestrator_defaults_to_no_enhancement(self):
+        orch = self.create_mock_orchestrator()
+        self.assertFalse(orch._enhance_intent)
+        self.assertFalse(orch._enhance_intent_strict)
+
+
+class TestEnhanceIntentMethod(TempConfigTestCase):
+    """Tests for _enhance_intent_impl method."""
+
+    def test_empty_intent_exits(self):
+        orch = self.create_mock_orchestrator(enhance_intent=True)
+        with patch('ralph.Logger.error'):
+            with self.assertRaises(SystemExit) as cm:
+                orch._enhance_intent_impl("")
+            self.assertEqual(cm.exception.code, 1)
+
+    def test_whitespace_intent_exits(self):
+        orch = self.create_mock_orchestrator(enhance_intent=True)
+        with patch('ralph.Logger.error'):
+            with self.assertRaises(SystemExit) as cm:
+                orch._enhance_intent_impl("   ")
+            self.assertEqual(cm.exception.code, 1)
+
+    def test_success_returns_enhanced_intent(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "<ENHANCED_INTENT>Enhanced version</ENHANCED_INTENT>", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            result = orch._enhance_intent_impl("original")
+        self.assertEqual(result, "Enhanced version")
+
+    def test_failure_falls_back_to_original(self):
+        mock_agent = self.create_mock_agent()
+        from agents.base import AgentError
+        error = AgentError("TestError", "test message", "", "", "", "")
+        mock_agent.run.return_value = (False, "", error)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            result = orch._enhance_intent_impl("original")
+        self.assertEqual(result, "original")
+
+    def test_failure_strict_mode_exits(self):
+        mock_agent = self.create_mock_agent()
+        from agents.base import AgentError
+        error = AgentError("TestError", "test message", "", "", "", "")
+        mock_agent.run.return_value = (False, "", error)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True, enhance_intent_strict=True)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'), patch('ralph.Logger.error'):
+            with self.assertRaises(SystemExit) as cm:
+                orch._enhance_intent_impl("original")
+            self.assertEqual(cm.exception.code, 1)
+
+    def test_empty_response_falls_back(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "<ENHANCED_INTENT>   </ENHANCED_INTENT>", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            result = orch._enhance_intent_impl("original")
+        self.assertEqual(result, "original")
+
+    def test_empty_response_strict_mode_exits(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "<ENHANCED_INTENT>   </ENHANCED_INTENT>", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True, enhance_intent_strict=True)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'), patch('ralph.Logger.error'):
+            with self.assertRaises(SystemExit) as cm:
+                orch._enhance_intent_impl("original")
+            self.assertEqual(cm.exception.code, 1)
+
+
+class TestParseEnhancedIntent(TempConfigTestCase):
+    """Tests for _parse_enhanced_intent method."""
+
+    def test_parses_tagged_response(self):
+        orch = self.create_mock_orchestrator()
+        result = orch._parse_enhanced_intent(
+            "Some text\n<ENHANCED_INTENT>The enhanced content</ENHANCED_INTENT>\nMore text",
+            "fallback"
+        )
+        self.assertEqual(result, "The enhanced content")
+
+    def test_parses_multiline_response(self):
+        orch = self.create_mock_orchestrator()
+        result = orch._parse_enhanced_intent(
+            "<ENHANCED_INTENT>\nLine 1\nLine 2\nLine 3\n</ENHANCED_INTENT>",
+            "fallback"
+        )
+        self.assertEqual(result, "Line 1\nLine 2\nLine 3")
+
+    def test_falls_back_on_missing_tags(self):
+        orch = self.create_mock_orchestrator()
+        with patch('ralph.Logger.warning'):
+            result = orch._parse_enhanced_intent("No tags here", "fallback")
+        self.assertEqual(result, "fallback")
+
+    def test_strips_whitespace(self):
+        orch = self.create_mock_orchestrator()
+        result = orch._parse_enhanced_intent(
+            "<ENHANCED_INTENT>  content with spaces  </ENHANCED_INTENT>",
+            "fallback"
+        )
+        self.assertEqual(result, "content with spaces")
+
+
+class TestGetAndEnhanceIntent(TempConfigTestCase):
+    """Tests for _get_and_enhance_intent method."""
+
+    def test_without_enhance_flag_returns_original(self):
+        orch = self.create_mock_orchestrator(intent="original intent", enhance_intent=False)
+        with patch('ralph.Logger.info'):
+            result = orch._get_and_enhance_intent()
+        self.assertEqual(result, "original intent")
+
+    def test_with_enhance_flag_calls_enhancement(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "<ENHANCED_INTENT>enhanced</ENHANCED_INTENT>", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, intent="original", enhance_intent=True)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            result = orch._get_and_enhance_intent()
+        self.assertEqual(result, "enhanced")
+
+    def test_uses_provided_intent(self):
+        orch = self.create_mock_orchestrator(enhance_intent=False)
+        with patch('ralph.Logger.info'):
+            result = orch._get_and_enhance_intent("passed intent")
+        self.assertEqual(result, "passed intent")
+
+
+class TestEnhanceIntentEvents(TempConfigTestCase):
+    """Tests for intent enhancement event emission."""
+
+    def test_emits_start_event(self):
+        events = []
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "<ENHANCED_INTENT>enhanced</ENHANCED_INTENT>", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
+        orch.hooks.register_hook("capture", lambda e: events.append(e.event_type), ["INTENT_ENHANCE_START"])
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            orch._enhance_intent_impl("original")
+        self.assertIn(EventType.INTENT_ENHANCE_START, events)
+
+    def test_emits_success_event(self):
+        events = []
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "<ENHANCED_INTENT>enhanced</ENHANCED_INTENT>", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
+        orch.hooks.register_hook("capture", lambda e: events.append(e.event_type), ["INTENT_ENHANCE_SUCCESS"])
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            orch._enhance_intent_impl("original")
+        self.assertIn(EventType.INTENT_ENHANCE_SUCCESS, events)
+
+    def test_emits_failure_event_on_agent_error(self):
+        events = []
+        mock_agent = self.create_mock_agent()
+        from agents.base import AgentError
+        error = AgentError("TestError", "test message", "", "", "", "")
+        mock_agent.run.return_value = (False, "", error)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
+        orch.hooks.register_hook("capture", lambda e: events.append(e.event_type), ["INTENT_ENHANCE_FAILURE"])
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            orch._enhance_intent_impl("original")
+        self.assertIn(EventType.INTENT_ENHANCE_FAILURE, events)
+
+
+class TestEnhanceIntentTemplate(unittest.TestCase):
+    """Tests for enhance_intent.txt template."""
+
+    def test_template_exists(self):
+        self.assertIn("enhance_intent.txt", TemplateManager.DEFAULT_TEMPLATES)
+
+    def test_template_renders_intent(self):
+        template = TemplateManager.render("enhance_intent.txt", original_intent="Build a web app")
+        self.assertIn("Build a web app", template)
+        self.assertIn("ORIGINAL_INTENT", template)
+        self.assertIn("ENHANCED_INTENT", template)
+
+
+class TestIntentEnhanceEventTypes(unittest.TestCase):
+    """Tests for intent enhancement event types."""
+
+    def test_intent_enhance_event_types_exist(self):
+        expected_events = [
+            "INTENT_ENHANCE_START",
+            "INTENT_ENHANCE_SUCCESS",
+            "INTENT_ENHANCE_FAILURE"
+        ]
+        for event_name in expected_events:
+            self.assertTrue(
+                hasattr(EventType, event_name),
+                f"EventType.{event_name} should exist"
+            )
+
+
+# ==============================================================================
+# REVISE PRD TESTS
+# ==============================================================================
+
+
+class TestRevisePrdCLI(unittest.TestCase):
+    """Tests for --revise-prd CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("--revise-prd", action="store_true")
+
+    def test_revise_prd_flag_default(self):
+        args = self.parser.parse_args([])
+        self.assertFalse(args.revise_prd)
+
+    def test_revise_prd_flag_enabled(self):
+        args = self.parser.parse_args(["--revise-prd"])
+        self.assertTrue(args.revise_prd)
+
+
+class TestRevisePrdCLIPassthrough(unittest.TestCase):
+    """Tests for --revise-prd flag passed to orchestrator."""
+
+    def test_revise_prd_passed(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--revise-prd']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('revise_prd'))
+
+
+class TestRevisePrdOrchestrator(TempConfigTestCase):
+    """Tests for PRD revision in RalphOrchestrator."""
+
+    def test_orchestrator_stores_revise_prd_flag(self):
+        orch = self.create_mock_orchestrator(revise_prd=True)
+        self.assertTrue(orch._revise_prd)
+
+    def test_orchestrator_defaults_to_no_revision(self):
+        orch = self.create_mock_orchestrator()
+        self.assertFalse(orch._revise_prd)
+
+
+class TestRevisePrdMethod(TempConfigTestCase):
+    """Tests for _revise_prd_impl method."""
+
+    def test_success_returns_revised_prd(self):
+        mock_agent = self.create_mock_agent()
+        revised_prd = {"userStories": [{"id": "TASK-001", "description": "Revised"}]}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(revised_prd)}</REVISED_PRD><REVISION_SUMMARY>Minor improvements</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            result = orch._revise_prd_impl({"userStories": []})
+        self.assertEqual(result["userStories"][0]["id"], "TASK-001")
+
+    def test_failure_falls_back_to_original(self):
+        mock_agent = self.create_mock_agent()
+        error = AgentError("TestError", "test message", "", "", "", "")
+        mock_agent.run.return_value = (False, "", error)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            result = orch._revise_prd_impl(original_prd)
+        self.assertEqual(result, original_prd)
+
+    def test_invalid_json_falls_back_to_original(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "<REVISED_PRD>invalid json</REVISED_PRD>", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            result = orch._revise_prd_impl(original_prd)
+        self.assertEqual(result, original_prd)
+
+    def test_missing_user_stories_falls_back_to_original(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<REVISED_PRD>{"invalid": "prd"}</REVISED_PRD>', None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            result = orch._revise_prd_impl(original_prd)
+        self.assertEqual(result, original_prd)
+
+    def test_no_revision_needed_logs_message(self):
+        mock_agent = self.create_mock_agent()
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(original_prd)}</REVISED_PRD><REVISION_SUMMARY>No revision needed - PRD already optimal</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        with patch('ralph.Logger.info') as mock_info:
+            result = orch._revise_prd_impl(original_prd)
+        # Check that the "already optimal" message was logged
+        info_calls = [str(c) for c in mock_info.call_args_list]
+        self.assertTrue(any('optimal' in str(c).lower() for c in info_calls))
+
+
+class TestParseRevisedPrd(TempConfigTestCase):
+    """Tests for _parse_revised_prd method."""
+
+    def test_parses_valid_prd(self):
+        orch = self.create_mock_orchestrator()
+        prd = {"userStories": [{"id": "TASK-001"}]}
+        response = f'<REVISED_PRD>{json.dumps(prd)}</REVISED_PRD><REVISION_SUMMARY>Changes made</REVISION_SUMMARY>'
+        with patch('ralph.Logger.warning'):
+            result, summary = orch._parse_revised_prd(response, {})
+        self.assertIsNotNone(result)
+        self.assertEqual(result["userStories"][0]["id"], "TASK-001")
+        self.assertEqual(summary, "Changes made")
+
+    def test_returns_none_for_missing_tags(self):
+        orch = self.create_mock_orchestrator()
+        response = 'No tags here'
+        with patch('ralph.Logger.warning'):
+            result, summary = orch._parse_revised_prd(response, {})
+        self.assertIsNone(result)
+
+    def test_returns_none_for_invalid_json(self):
+        orch = self.create_mock_orchestrator()
+        response = '<REVISED_PRD>not valid json</REVISED_PRD>'
+        with patch('ralph.Logger.warning'):
+            result, summary = orch._parse_revised_prd(response, {})
+        self.assertIsNone(result)
+
+
+class TestRevisePrdSchemaValidation(TempConfigTestCase):
+    """Tests for schema validation of revised PRD."""
+
+    def setUp(self):
+        super().setUp()
+        # Create a simple schema file
+        self.schema_file = self.temp_path / "schema.json"
+        schema = {
+            "type": "object",
+            "required": ["userStories"],
+            "properties": {
+                "userStories": {"type": "array"}
+            }
+        }
+        self.schema_file.write_text(json.dumps(schema), encoding='utf-8')
+
+    def test_revised_prd_validated_against_schema(self):
+        mock_agent = self.create_mock_agent()
+        # Return a PRD that doesn't have userStories
+        invalid_prd = {"invalid": "structure"}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(invalid_prd)}</REVISED_PRD><REVISION_SUMMARY>Done</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent,
+            revise_prd=True,
+            schema=str(self.schema_file)
+        )
+        original_prd = {"userStories": [{"id": "TASK-001"}]}
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            # The method checks for userStories key first, so it will fall back
+            result = orch._revise_prd_impl(original_prd)
+        # Should fall back to original since revised PRD is invalid
+        self.assertEqual(result, original_prd)
+
+
+class TestRevisePrdEvents(TempConfigTestCase):
+    """Tests for PRD revision events."""
+
+    def test_emits_start_event(self):
+        mock_agent = self.create_mock_agent()
+        prd = {"userStories": []}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(prd)}</REVISED_PRD><REVISION_SUMMARY>Done</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            orch._revise_prd_impl(prd)
+        self.assertIn(EventType.PRD_REVISE_START, events)
+
+    def test_emits_success_event(self):
+        mock_agent = self.create_mock_agent()
+        prd = {"userStories": []}
+        mock_agent.run.return_value = (
+            True,
+            f'<REVISED_PRD>{json.dumps(prd)}</REVISED_PRD><REVISION_SUMMARY>Done</REVISION_SUMMARY>',
+            None
+        )
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+            orch._revise_prd_impl(prd)
+        self.assertIn(EventType.PRD_REVISE_SUCCESS, events)
+
+    def test_emits_failure_event_on_agent_failure(self):
+        mock_agent = self.create_mock_agent()
+        error = AgentError("TestError", "test message", "", "", "", "")
+        mock_agent.run.return_value = (False, "", error)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+            orch._revise_prd_impl({"userStories": []})
+        self.assertIn(EventType.PRD_REVISE_FAILURE, events)
+
+
+class TestRevisePrdTemplate(unittest.TestCase):
+    """Tests for revise_prd.txt template existence."""
+
+    def test_template_exists_in_defaults(self):
+        from ralph import TemplateManager
+        self.assertIn("revise_prd.txt", TemplateManager.DEFAULT_TEMPLATES)
+
+    def test_template_has_required_placeholders(self):
+        from ralph import TemplateManager
+        template = TemplateManager.DEFAULT_TEMPLATES["revise_prd.txt"]
+        self.assertIn("{{original_prd}}", template)
+
+
+class TestPrdReviseEventTypes(unittest.TestCase):
+    """Tests for PRD revision event type existence."""
+
+    def test_prd_revise_event_types_exist(self):
+        expected_events = [
+            "PRD_REVISE_START",
+            "PRD_REVISE_SUCCESS",
+            "PRD_REVISE_FAILURE"
+        ]
         for event_name in expected_events:
             self.assertTrue(
                 hasattr(EventType, event_name),

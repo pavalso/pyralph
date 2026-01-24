@@ -1709,7 +1709,106 @@ Include a clear explanation of:
 - You MUST implement proper error handling with appropriate logging
 - You MUST follow existing project conventions detected from the codebase
 - You MUST write self-documenting code with meaningful names
-- You MUST consider performance implications for loops, I/O, and data structures"""
+- You MUST consider performance implications for loops, I/O, and data structures""",
+        "enhance_intent.txt": """# ROLE
+Intent Enhancement Specialist
+
+# OBJECTIVE
+Refine and clarify the user's initial intent to create a more precise, actionable, and well-structured description of what they want to build.
+
+# ORIGINAL USER INTENT
+<ORIGINAL_INTENT>
+{{original_intent}}
+</ORIGINAL_INTENT>
+
+# ENHANCEMENT GUIDELINES
+
+Your task is to enhance the user's intent by:
+
+1. **Clarifying Ambiguities**: Identify and resolve any vague or ambiguous parts of the intent
+2. **Adding Specificity**: Add concrete details where the intent is too general
+3. **Structuring Requirements**: Organize the intent into clear, logical components
+4. **Identifying Implicit Needs**: Surface any implicit requirements that are essential but not explicitly stated
+5. **Technical Translation**: Translate user-facing language into technical requirements where appropriate
+
+# CONSTRAINTS
+
+- PRESERVE the user's core intent - do not change what they fundamentally want to build
+- DO NOT add features or requirements the user did not mention or imply
+- KEEP the enhanced intent concise and focused
+- AVOID over-engineering or adding unnecessary complexity
+- MAINTAIN the user's tone and terminology where possible
+
+# OUTPUT FORMAT
+
+Provide your response in the following format:
+
+<ENHANCED_INTENT>
+[Your enhanced, refined version of the user's intent goes here. This should be a clear, well-structured description that can be directly passed to the architect phase.]
+</ENHANCED_INTENT>
+
+IMPORTANT: Output ONLY the enhanced intent within the tags. Do not include explanations, reasoning, or any other text outside the tags.""",
+        "revise_prd.txt": """# ROLE
+PRD Quality Reviewer and Reviser
+
+# OBJECTIVE
+Review and improve the provided Product Requirements Document (PRD) for clarity, completeness, and quality while preserving the original intent.
+
+# ORIGINAL PRD
+<ORIGINAL_PRD>
+{{original_prd}}
+</ORIGINAL_PRD>
+
+# REVIEW GUIDELINES
+
+Your task is to review and improve the PRD by:
+
+1. **Clarity Enhancement**: Ensure each user story has clear, unambiguous descriptions
+2. **Acceptance Criteria Quality**: Verify acceptance criteria are specific, measurable, and testable
+3. **Completeness Check**: Identify any missing edge cases or error handling scenarios
+4. **Consistency**: Ensure consistent terminology and formatting across all stories
+5. **Technical Accuracy**: Verify technical requirements are correctly specified
+6. **JSON Structure**: Ensure the PRD is valid JSON with correct structure
+
+# CONSTRAINTS
+
+- PRESERVE the original intent and scope of each user story
+- DO NOT add new user stories or major features not implied in the original
+- DO NOT remove any user stories from the original PRD
+- KEEP the same task IDs and overall structure
+- MAINTAIN all existing fields and their purposes
+- FIX any JSON formatting issues if present
+
+# REVISION CATEGORIES
+
+When reviewing, consider these improvement categories:
+- Grammar and spelling corrections
+- Clarification of vague requirements
+- Addition of missing edge cases to acceptance criteria
+- Improvement of testability for acceptance criteria
+- Consistency in terminology and formatting
+
+# OUTPUT FORMAT
+
+Provide your response in the following format:
+
+<REVISED_PRD>
+{
+  "userStories": [
+    // Your revised user stories array with the same structure as input
+  ]
+}
+</REVISED_PRD>
+
+<REVISION_SUMMARY>
+[Brief summary of changes made. If no changes were needed, state "No revisions needed - PRD already meets quality standards."]
+</REVISION_SUMMARY>
+
+IMPORTANT:
+- Output ONLY valid JSON within the <REVISED_PRD> tags
+- The JSON must have the same structure as the input PRD
+- If the original PRD has invalid JSON, attempt to fix the formatting issues
+- If the PRD is already optimal, output it unchanged with a note in the summary"""
     }
 
     @staticmethod
@@ -1743,6 +1842,7 @@ Include a clear explanation of:
 class RalphOrchestrator:
     def __init__(self, agent_name: str = "claude", enable_hooks: bool = True, enabled_hook_names: Optional[List[str]] = None,
                  intent: Optional[str] = None, intent_file: Optional[str] = None, prompt_file: Optional[str] = None,
+                 enhance_intent: bool = False, enhance_intent_strict: bool = False,
                  tree_depth: int = 2, tree_ignore: Optional[List[str]] = None, memory_out: Optional[str] = None,
                  test_cmd: Optional[str] = None, skip_verify: bool = False, retries: Optional[int] = None,
                  timeout: Optional[int] = None, only: Optional[List[str]] = None, except_tasks: Optional[List[str]] = None,
@@ -1757,7 +1857,7 @@ class RalphOrchestrator:
                  pre: Optional[List[str]] = None, post: Optional[List[str]] = None,
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
-                 label: Optional[List[str]] = None) -> None:
+                 label: Optional[List[str]] = None, revise_prd: bool = False) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -1783,6 +1883,8 @@ class RalphOrchestrator:
         self._intent = intent
         self._intent_file = intent_file
         self._prompt_file_override = prompt_file
+        self._enhance_intent = enhance_intent
+        self._enhance_intent_strict = enhance_intent_strict
         # Store architect control flags
         self._tree_depth = tree_depth
         self._tree_ignore = tree_ignore
@@ -1821,6 +1923,7 @@ class RalphOrchestrator:
         self._schema_path = schema
         self._min_criteria = min_criteria
         self._labels = label or []
+        self._revise_prd = revise_prd
         # Initialize PRD manager for consolidated file operations
         self._prd = PRDManager(CONF.PRD_FILE)
 
@@ -2167,6 +2270,110 @@ class RalphOrchestrator:
             data["labels"] = labels_dict
         return data
 
+    def _revise_prd_impl(self, original_prd: Dict[str, Any]) -> Dict[str, Any]:
+        """Revise PRD through the revision agent for quality improvements.
+
+        Args:
+            original_prd: The original PRD data to revise
+
+        Returns:
+            Revised PRD data, or original PRD on failure
+
+        Notes:
+            - If revision fails or times out, falls back to original PRD with warning
+            - If revised PRD fails schema validation, falls back to original PRD
+            - Logs when no revision was needed (PRD already optimal)
+        """
+        Logger.info("\n🔧 Revising PRD...", "CYAN")
+        self.hooks.emit(Event(EventType.PRD_REVISE_START, phase="planner"))
+
+        # Convert PRD to JSON string for the prompt
+        original_prd_json = json.dumps(original_prd, indent=2)
+
+        prompt = TemplateManager.render(
+            "revise_prd.txt",
+            original_prd=original_prd_json
+        )
+
+        success, stdout, error = self.agent.run(prompt, "REVISE_PRD")
+
+        if not success:
+            error_msg = error.message if error else "Unknown error"
+            Logger.warning(f"PRD revision failed: {error_msg}")
+            Logger.warning("Falling back to original PRD.")
+            self.hooks.emit(Event(EventType.PRD_REVISE_FAILURE, phase="planner",
+                                  metadata={"reason": "agent_failure", "error": error_msg}))
+            return original_prd
+
+        # Parse the revised PRD from response
+        revised_prd, revision_summary = self._parse_revised_prd(stdout, original_prd)
+
+        if revised_prd is None:
+            Logger.warning("Could not parse revised PRD from response.")
+            Logger.warning("Falling back to original PRD.")
+            self.hooks.emit(Event(EventType.PRD_REVISE_FAILURE, phase="planner",
+                                  metadata={"reason": "parse_failure"}))
+            return original_prd
+
+        # Validate revised PRD against schema if specified
+        if self._schema_path:
+            schema_valid, schema_error = self._validate_prd_schema(revised_prd)
+            if not schema_valid:
+                Logger.warning(f"Revised PRD failed schema validation: {schema_error}")
+                Logger.warning("Falling back to original PRD.")
+                self.hooks.emit(Event(EventType.PRD_REVISE_FAILURE, phase="planner",
+                                      metadata={"reason": "schema_validation_failed", "error": schema_error}))
+                return original_prd
+
+        # Check if no revision was needed
+        if revision_summary and "no revision" in revision_summary.lower():
+            Logger.info("✅ PRD already optimal, no revision needed.", "GREEN")
+        else:
+            Logger.debug(f"Revision summary: {revision_summary}", "CYAN")
+            Logger.info("✅ PRD revised.", "GREEN")
+
+        self.hooks.emit(Event(EventType.PRD_REVISE_SUCCESS, phase="planner",
+                              metadata={"summary": revision_summary or ""}))
+        return revised_prd
+
+    def _parse_revised_prd(self, response: str, fallback: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Parse the revised PRD from the agent response.
+
+        Args:
+            response: The raw response from the revision agent
+            fallback: The fallback PRD data if parsing fails
+
+        Returns:
+            Tuple of (revised_prd_data, revision_summary). revised_prd_data is None if parsing fails.
+        """
+        import re
+
+        # Extract content between <REVISED_PRD> tags
+        prd_pattern = r'<REVISED_PRD>\s*(.*?)\s*</REVISED_PRD>'
+        prd_match = re.search(prd_pattern, response, re.DOTALL)
+
+        # Extract revision summary
+        summary_pattern = r'<REVISION_SUMMARY>\s*(.*?)\s*</REVISION_SUMMARY>'
+        summary_match = re.search(summary_pattern, response, re.DOTALL)
+        revision_summary = summary_match.group(1).strip() if summary_match else None
+
+        if not prd_match:
+            Logger.warning("Could not find <REVISED_PRD> tags in response.")
+            return None, revision_summary
+
+        prd_text = prd_match.group(1).strip()
+
+        try:
+            revised_prd = JsonUtils.parse(prd_text)
+            # Validate basic structure
+            if "userStories" not in revised_prd:
+                Logger.warning("Revised PRD missing 'userStories' key.")
+                return None, revision_summary
+            return revised_prd, revision_summary
+        except json.JSONDecodeError as e:
+            Logger.warning(f"Invalid JSON in revised PRD: {e}")
+            return None, revision_summary
+
     def run_planner(self, user_intent: str) -> None:
         """
         Run the planner phase to create a Product Requirements Document.
@@ -2178,6 +2385,7 @@ class RalphOrchestrator:
         - --schema: Validate PRD against a JSON schema file
         - --min-criteria: Ensure each story has at least N acceptance criteria
         - --label: Add custom labels to the PRD
+        - --revise-prd: Pass PRD through revision agent before saving
 
         Args:
             user_intent: Description of what the user wants to build
@@ -2228,6 +2436,18 @@ class RalphOrchestrator:
 
                 # Apply labels if --label is specified
                 data = self._apply_labels(data)
+
+                # Revise PRD if --revise-prd is specified
+                if self._revise_prd:
+                    data = self._revise_prd_impl(data)
+                    # Re-validate against schema after revision
+                    if self._schema_path:
+                        schema_valid, schema_error = self._validate_prd_schema(data)
+                        if not schema_valid:
+                            Logger.warning(f"Revised PRD failed schema validation: {schema_error}")
+                            # This shouldn't happen as _revise_prd_impl already validates,
+                            # but we check again for safety
+                            continue
 
                 self._prd.save(data)
                 Logger.info(f"✅ PRD Created ({len(data['userStories'])} stories).", "GREEN")
@@ -2707,6 +2927,107 @@ class RalphOrchestrator:
             sys.exit(0)
         return intent
 
+    def _enhance_intent_impl(self, original_intent: str) -> str:
+        """Enhance user intent through the enhancement agent.
+
+        Args:
+            original_intent: The original user intent to enhance
+
+        Returns:
+            Enhanced intent string, or original intent on failure (unless strict mode)
+
+        Raises:
+            SystemExit: If strict mode is enabled and enhancement fails
+        """
+        # Validate input - empty or whitespace-only intent
+        if not original_intent or not original_intent.strip():
+            Logger.error("Cannot enhance empty or whitespace-only intent.")
+            sys.exit(1)
+
+        Logger.info("\n🔧 Enhancing intent...", "CYAN")
+        self.hooks.emit(Event(EventType.INTENT_ENHANCE_START, phase="enhance_intent"))
+
+        prompt = TemplateManager.render(
+            "enhance_intent.txt",
+            original_intent=original_intent
+        )
+
+        success, stdout, error = self.agent.run(prompt, "ENHANCE_INTENT")
+
+        if not success:
+            error_msg = error.message if error else "Unknown error"
+            Logger.warning(f"Intent enhancement failed: {error_msg}")
+            self.hooks.emit(Event(EventType.INTENT_ENHANCE_FAILURE, phase="enhance_intent"))
+
+            if self._enhance_intent_strict:
+                Logger.error("Intent enhancement failed in strict mode. Exiting.")
+                sys.exit(1)
+
+            Logger.warning("Falling back to original intent.")
+            return original_intent
+
+        # Extract enhanced intent from response
+        enhanced_intent = self._parse_enhanced_intent(stdout, original_intent)
+
+        # Validate enhanced intent is not empty
+        if not enhanced_intent or not enhanced_intent.strip():
+            Logger.warning("Enhancement agent returned empty response.")
+            self.hooks.emit(Event(EventType.INTENT_ENHANCE_FAILURE, phase="enhance_intent"))
+
+            if self._enhance_intent_strict:
+                Logger.error("Intent enhancement returned invalid response in strict mode. Exiting.")
+                sys.exit(1)
+
+            Logger.warning("Falling back to original intent.")
+            return original_intent
+
+        # Log both original and enhanced intent when verbose
+        Logger.debug(f"Original intent: {original_intent}", "CYAN")
+        Logger.debug(f"Enhanced intent: {enhanced_intent}", "GREEN")
+
+        Logger.info("✅ Intent enhanced.", "GREEN")
+        self.hooks.emit(Event(EventType.INTENT_ENHANCE_SUCCESS, phase="enhance_intent"))
+
+        return enhanced_intent
+
+    def _parse_enhanced_intent(self, response: str, fallback: str) -> str:
+        """Parse the enhanced intent from the agent response.
+
+        Args:
+            response: The raw response from the enhancement agent
+            fallback: The fallback value if parsing fails
+
+        Returns:
+            The parsed enhanced intent or fallback value
+        """
+        # Try to extract content between <ENHANCED_INTENT> tags
+        import re
+        pattern = r'<ENHANCED_INTENT>\s*(.*?)\s*</ENHANCED_INTENT>'
+        match = re.search(pattern, response, re.DOTALL)
+
+        if match:
+            return match.group(1).strip()
+
+        # If no tags found, log warning and return fallback
+        Logger.warning("Could not parse enhanced intent from response. Falling back to original.")
+        return fallback
+
+    def _get_and_enhance_intent(self, user_intent=None) -> str:
+        """Get intent and optionally enhance it based on --enhance-intent flag.
+
+        Args:
+            user_intent: Optional pre-provided intent
+
+        Returns:
+            The (possibly enhanced) intent string
+        """
+        intent = self._get_intent(user_intent)
+
+        if self._enhance_intent:
+            intent = self._enhance_intent_impl(intent)
+
+        return intent
+
     def _run_single_phase(self, phase: str) -> None:
         """Run a single specified phase with prerequisite checks."""
         Logger.info(f"📋 Phase: {phase} only", "YELLOW")
@@ -2721,7 +3042,7 @@ class RalphOrchestrator:
         if phase == "execute":
             self.execute_loop()
         else:
-            user_intent = self._get_intent()
+            user_intent = self._get_and_enhance_intent()
             if phase == "architect":
                 self.run_architect(user_intent)
             else:
@@ -2738,7 +3059,7 @@ class RalphOrchestrator:
         if any(CONF.MEMORY_DIR.iterdir()):
             Logger.info("📋 Memory exists, skipping architect.", "YELLOW")
         elif accept_all or self._prompt_user_for_phase("Architect"):
-            user_intent = self._get_intent()
+            user_intent = self._get_and_enhance_intent()
             self.run_architect(user_intent)
         else:
             Logger.info("⏭️ Skipping architect.", "YELLOW")
@@ -2747,7 +3068,7 @@ class RalphOrchestrator:
         if self._prd.exists():
             Logger.info("📋 PRD exists, skipping planner.", "YELLOW")
         elif accept_all or self._prompt_user_for_phase("Planner"):
-            user_intent = self._get_intent(user_intent)
+            user_intent = self._get_and_enhance_intent(user_intent)
             self.run_planner(user_intent)
         else:
             Logger.info("⏭️ Skipping planner.", "YELLOW")
@@ -2825,6 +3146,8 @@ def main() -> None:
     # Intent and input flags for non-interactive runs
     parser.add_argument("--intent", type=str, metavar="TEXT", help="Provide intent inline (what to build)")
     parser.add_argument("--intent-file", type=str, metavar="FILE", help="Load intent from a file")
+    parser.add_argument("--enhance-intent", action="store_true", help="Process intent through enhancement agent before architect phase")
+    parser.add_argument("--enhance-intent-strict", action="store_true", help="Exit on enhancement failure instead of falling back to original intent")
     parser.add_argument("--prompt-file", type=str, metavar="FILE", help="Override prompt.md path for user context")
     # Architect control flags for context generation
     parser.add_argument("--tree-depth", type=int, default=2, metavar="N", help="File tree depth for architect (default: 2)")
@@ -2876,6 +3199,7 @@ def main() -> None:
     parser.add_argument("--schema", type=str, metavar="FILE", help="Validate generated PRD against a JSON schema file")
     parser.add_argument("--min-criteria", type=int, metavar="N", help="Require at least N acceptance criteria per user story")
     parser.add_argument("--label", nargs="+", metavar="KEY=VAL", help="Add custom labels to PRD (format: key=value or just key)")
+    parser.add_argument("--revise-prd", action="store_true", help="Pass PRD through revision agent for quality improvements before planner phase")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -2928,6 +3252,8 @@ def main() -> None:
         intent=args.intent,
         intent_file=args.intent_file,
         prompt_file=args.prompt_file,
+        enhance_intent=args.enhance_intent,
+        enhance_intent_strict=args.enhance_intent_strict,
         tree_depth=args.tree_depth,
         tree_ignore=args.tree_ignore,
         memory_out=args.memory_out,
@@ -2960,7 +3286,8 @@ def main() -> None:
         plugin=args.plugin,
         schema=args.schema,
         min_criteria=args.min_criteria,
-        label=args.label
+        label=args.label,
+        revise_prd=args.revise_prd
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
