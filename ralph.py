@@ -717,6 +717,44 @@ class MemoryManager:
         return "pytest"
 
 
+class PromptFormatter:
+    """Utility class for consistent prompt formatting with delimiters."""
+
+    # Standard delimiters for variable content
+    DELIMITERS = {
+        'user_intent': ('USER_INTENT', 'User-provided intent/goal'),
+        'file_tree': ('FILE_TREE', 'Project directory structure'),
+        'memory_map': ('MEMORY_MAP', 'Available memory files'),
+        'task_id': ('TASK_ID', 'Task identifier'),
+        'task_description': ('TASK_DESC', 'Task description'),
+        'acceptance_criteria': ('ACCEPTANCE_CRITERIA', 'Task acceptance criteria'),
+        'user_context': ('USER_CONTEXT', 'User preferences and instructions'),
+        'memory_tree': ('MEMORY_TREE', 'Memory file contents'),
+        'prev_errors': ('PREV_ERRORS', 'Previous error messages'),
+        'test_cmd': ('TEST_CMD', 'Verification command'),
+    }
+
+    @staticmethod
+    def wrap(content: str, delimiter_key: str) -> str:
+        """Wrap content in XML-style delimiters for clear boundaries."""
+        if delimiter_key not in PromptFormatter.DELIMITERS:
+            return content
+        tag, _ = PromptFormatter.DELIMITERS[delimiter_key]
+        return f"<{tag}>\n{content}\n</{tag}>"
+
+    @staticmethod
+    def format_list(items: list, prefix: str = "- ") -> str:
+        """Format a list with consistent prefix."""
+        if not items:
+            return "(none)"
+        return "\n".join(f"{prefix}{item}" for item in items)
+
+    @staticmethod
+    def format_code_block(content: str, language: str = "") -> str:
+        """Format content as a fenced code block."""
+        return f"```{language}\n{content}\n```"
+
+
 class TemplateManager:
     DEFAULT_TEMPLATES = {
         "architect.txt": """# ROLE
@@ -726,13 +764,16 @@ Senior Software Architect
 Analyze the project structure and initialize architecture documentation.
 
 # CONTEXT
+
 ## User Intent
+<USER_INTENT>
 {{user_intent}}
+</USER_INTENT>
 
 ## Project File Tree
-```
+<FILE_TREE>
 {{file_tree}}
-```
+</FILE_TREE>
 
 # CONSTRAINTS
 - You MUST create exactly two files: .ralph/memory/architecture.md and ARCH.md
@@ -790,11 +831,16 @@ Product Manager
 Create a comprehensive Product Requirements Document (PRD) in JSON format.
 
 # CONTEXT
+
 ## User Intent
+<USER_INTENT>
 {{user_intent}}
+</USER_INTENT>
 
 ## Available Memory Files
+<MEMORY_MAP>
 {{memory_map}}
+</MEMORY_MAP>
 
 # CHAIN-OF-THOUGHT REASONING
 Before generating the PRD, think through the following steps:
@@ -860,25 +906,39 @@ Developer
 Implement the assigned task following the acceptance criteria and verification requirements.
 
 # TASK CONTEXT
+
 ## Task ID
+<TASK_ID>
 {{task_id}}
+</TASK_ID>
 
 ## Task Description
+<TASK_DESC>
 {{task_description}}
+</TASK_DESC>
 
 ## Acceptance Criteria
+<ACCEPTANCE_CRITERIA>
 {{acceptance_criteria}}
+</ACCEPTANCE_CRITERIA>
 
 # MANDATORY INSTRUCTIONS
 The following user preferences are REQUIRED. You MUST strictly adhere to these instructions:
+<USER_CONTEXT>
 {{user_context}}
+</USER_CONTEXT>
 
 # AVAILABLE CONTEXT
+
 ## Memory Files
+<MEMORY_TREE>
 {{memory_tree}}
+</MEMORY_TREE>
 
 ## Previous Errors (if any)
+<PREV_ERRORS>
 {{prev_errors}}
+</PREV_ERRORS>
 
 # EXECUTION WORKFLOW
 
