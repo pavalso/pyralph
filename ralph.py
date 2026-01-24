@@ -3597,36 +3597,300 @@ class RalphOrchestrator:
     def _generate_prd_from_qa_findings(self, task: Dict[str, Any], findings: Dict[str, Any]) -> None:
         """Generate a PRD to address QA findings.
 
-        Creates a user intent from the QA findings and runs the planner
-        to generate a PRD for addressing the identified issues.
+        Creates a structured PRD document from QA findings. Each finding or group
+        of related findings becomes a user story with acceptance criteria.
+
+        Handles edge cases:
+        - Single finding: Creates a single-story PRD
+        - 50+ findings: Groups findings by category into logical stories
 
         Args:
             task: The task that was reviewed
             findings: The QA findings dictionary
+
+        Raises:
+            Logs error and notifies user if PRD generation fails
         """
         Logger.info("\n🔧 Generating PRD from QA findings...", "CYAN")
+        self.hooks.emit(Event(EventType.PHASE_START, phase="prd_from_qa"))
 
-        # Build a structured intent from the findings
-        issues = []
+        try:
+            prd_data = self._create_prd_from_findings(task, findings)
+        except (KeyError, TypeError, ValueError) as e:
+            error_msg = f"Invalid finding data: {type(e).__name__}: {e}"
+            Logger.error(f"PRD generation failed: {error_msg}")
+            self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa",
+                                  metadata={"success": False, "error": error_msg}))
+            return
+
+        # Validate against JSON schema if --schema is specified
+        if self._schema_path:
+            schema_valid, schema_error = self._validate_prd_schema(prd_data)
+            if not schema_valid:
+                Logger.error(f"Generated PRD failed schema validation: {schema_error}")
+                self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa",
+                                      metadata={"success": False, "error": f"schema_validation: {schema_error}"}))
+                return
+
+        # Validate minimum acceptance criteria if --min-criteria is specified
+        criteria_valid, criteria_error = self._validate_min_criteria(prd_data)
+        if not criteria_valid:
+            Logger.warning(f"Generated PRD criteria validation warning: {criteria_error}")
+
+        # Apply labels if --label is specified
+        prd_data = self._apply_labels(prd_data)
+
+        # Archive existing PRD if present
+        self._archive_prd()
+
+        # Save the generated PRD
+        self._prd.save(prd_data)
+        story_count = len(prd_data.get('userStories', []))
+        Logger.info(f"✅ PRD Generated from QA findings ({story_count} stories).", "GREEN")
+        self.hooks.emit(Event(EventType.PRD_CREATED, phase="prd_from_qa", prd_path=str(CONF.PRD_FILE)))
+        self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa", metadata={"success": True}))
+
+    def _create_prd_from_findings(self, task: Dict[str, Any], findings: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a structured PRD from QA findings.
+
+        Args:
+            task: The task that was reviewed
+            findings: The QA findings dictionary with critical_issues, warnings, suggestions
+
+        Returns:
+            A PRD dictionary following the standard schema
+
+        Raises:
+            ValueError: If findings data is invalid
+        """
+        # Threshold for grouping findings by category instead of individual stories
+        GROUPING_THRESHOLD = 50
+
+        # Collect all findings with their types
+        all_findings: List[Dict[str, Any]] = []
+
         for issue in findings.get("critical_issues", []):
-            issues.append(f"- [{issue.get('category', 'unknown')}] {issue.get('description', 'No description')}")
+            if not isinstance(issue, dict):
+                continue
+            all_findings.append({
+                "severity": "critical",
+                "category": issue.get("category", "unknown"),
+                "description": issue.get("description", "No description"),
+                "location": issue.get("location", ""),
+                "recommendation": issue.get("recommendation", "")
+            })
+
         for warning in findings.get("warnings", []):
-            issues.append(f"- [{warning.get('category', 'unknown')}] {warning.get('description', 'No description')}")
+            if not isinstance(warning, dict):
+                continue
+            all_findings.append({
+                "severity": "warning",
+                "category": warning.get("category", "unknown"),
+                "description": warning.get("description", "No description"),
+                "location": warning.get("location", ""),
+                "recommendation": warning.get("recommendation", "")
+            })
 
-        issues_text = "\n".join(issues) if issues else "No specific issues identified"
+        for suggestion in findings.get("suggestions", []):
+            if not isinstance(suggestion, dict):
+                continue
+            all_findings.append({
+                "severity": "suggestion",
+                "category": suggestion.get("category", "unknown"),
+                "description": suggestion.get("description", "No description"),
+                "location": suggestion.get("location", ""),
+                "recommendation": suggestion.get("recommendation", "")
+            })
 
-        user_intent = (
-            f"Address the following QA issues found during review of task {task['id']}:\n\n"
-            f"{issues_text}\n\n"
-            f"Original task: {task.get('description', 'N/A')}"
-        )
+        if not all_findings:
+            raise ValueError("No valid findings to generate PRD from")
 
-        # Enhance intent if enabled
-        if self._enhance_intent:
-            user_intent = self._enhance_intent_impl(user_intent)
+        # Generate PRD ID based on original task
+        original_task_id = task.get('id', 'UNKNOWN')
+        prd_id = f"PRD-QA-{original_task_id}"
 
-        # Run the planner to create the PRD
-        self.run_planner(user_intent)
+        # Determine if we need to group findings (50+ threshold)
+        if len(all_findings) >= GROUPING_THRESHOLD:
+            user_stories = self._create_grouped_stories(all_findings, original_task_id)
+        else:
+            user_stories = self._create_individual_stories(all_findings, original_task_id)
+
+        return {
+            "id": prd_id,
+            "description": f"Address QA findings from review of {original_task_id}: {task.get('description', 'N/A')}",
+            "userStories": user_stories
+        }
+
+    def _create_individual_stories(self, findings: List[Dict[str, Any]], original_task_id: str) -> List[Dict[str, Any]]:
+        """Create individual user stories for each finding or small groups.
+
+        For fewer than 50 findings, each distinct finding becomes its own story.
+
+        Args:
+            findings: List of finding dictionaries
+            original_task_id: The original task ID for context
+
+        Returns:
+            List of user story dictionaries
+        """
+        user_stories = []
+
+        for i, finding in enumerate(findings, 1):
+            task_id = f"TASK-{i:03d}"
+            severity = finding["severity"]
+            category = finding["category"]
+            description = finding["description"]
+            location = finding.get("location", "")
+            recommendation = finding.get("recommendation", "")
+
+            # Create user story description in proper format
+            story_desc = (
+                f"As a developer, I want to fix the {severity} {category} issue "
+                f"so that the codebase meets quality standards."
+            )
+
+            # Build acceptance criteria
+            acceptance_criteria = [
+                f"Given the {category} issue '{description}', when the fix is applied, then the issue is resolved",
+            ]
+
+            if location:
+                acceptance_criteria.append(
+                    f"Given the issue location at {location}, when reviewing the fix, then the specific location is addressed"
+                )
+
+            if recommendation:
+                acceptance_criteria.append(
+                    f"Given the recommendation '{recommendation}', when implementing, then the suggested approach is followed"
+                )
+
+            acceptance_criteria.append(
+                f"Given the fix is complete, when running QA review, then no {severity} issues of this type are reported"
+            )
+
+            user_stories.append({
+                "id": task_id,
+                "description": story_desc,
+                "priority": "Must Have" if severity == "critical" else ("Should Have" if severity == "warning" else "Could Have"),
+                "acceptanceCriteria": acceptance_criteria,
+                "definitionOfDone": [
+                    "Code reviewed and approved",
+                    "Fix verified through testing",
+                    "No regressions introduced"
+                ],
+                "risks": [
+                    {
+                        "type": "technical",
+                        "description": f"Fix may have unintended side effects",
+                        "mitigation": "Thorough testing and code review"
+                    }
+                ],
+                "dependencies": [f"Original task: {original_task_id}"],
+                "status": "pending"
+            })
+
+        return user_stories
+
+    def _create_grouped_stories(self, findings: List[Dict[str, Any]], original_task_id: str) -> List[Dict[str, Any]]:
+        """Create grouped user stories when findings exceed 50.
+
+        Groups findings by category to create manageable stories.
+
+        Args:
+            findings: List of finding dictionaries
+            original_task_id: The original task ID for context
+
+        Returns:
+            List of user story dictionaries
+        """
+        # Group findings by category
+        by_category: Dict[str, List[Dict[str, Any]]] = {}
+        for finding in findings:
+            category = finding.get("category", "other")
+            if category not in by_category:
+                by_category[category] = []
+            by_category[category].append(finding)
+
+        user_stories = []
+        task_num = 1
+
+        # Sort categories by severity priority (critical findings first)
+        def category_priority(cat: str) -> int:
+            cat_findings = by_category[cat]
+            has_critical = any(f["severity"] == "critical" for f in cat_findings)
+            has_warning = any(f["severity"] == "warning" for f in cat_findings)
+            if has_critical:
+                return 0
+            if has_warning:
+                return 1
+            return 2
+
+        sorted_categories = sorted(by_category.keys(), key=category_priority)
+
+        for category in sorted_categories:
+            cat_findings = by_category[category]
+            task_id = f"TASK-{task_num:03d}"
+            task_num += 1
+
+            # Determine overall severity for this category
+            has_critical = any(f["severity"] == "critical" for f in cat_findings)
+            has_warning = any(f["severity"] == "warning" for f in cat_findings)
+
+            severity_text = "critical" if has_critical else ("warning" if has_warning else "suggestion")
+            priority = "Must Have" if has_critical else ("Should Have" if has_warning else "Could Have")
+
+            # Create story description
+            story_desc = (
+                f"As a developer, I want to address all {category} issues ({len(cat_findings)} findings) "
+                f"so that the codebase quality in this area is improved."
+            )
+
+            # Build acceptance criteria from findings
+            acceptance_criteria = [
+                f"Given {len(cat_findings)} {category} issues identified, when fixes are applied, then all issues are resolved"
+            ]
+
+            # Add specific criteria for top findings (up to 5)
+            for j, finding in enumerate(cat_findings[:5], 1):
+                desc = finding["description"]
+                if len(desc) > 100:
+                    desc = desc[:97] + "..."
+                acceptance_criteria.append(
+                    f"Given issue {j}: '{desc}', when fixed, then the specific problem is resolved"
+                )
+
+            if len(cat_findings) > 5:
+                acceptance_criteria.append(
+                    f"Given {len(cat_findings) - 5} additional {category} issues, when fixed, then all remaining issues are resolved"
+                )
+
+            acceptance_criteria.append(
+                f"Given all {category} fixes are complete, when running QA review, then no {severity_text} {category} issues are reported"
+            )
+
+            user_stories.append({
+                "id": task_id,
+                "description": story_desc,
+                "priority": priority,
+                "acceptanceCriteria": acceptance_criteria,
+                "definitionOfDone": [
+                    "Code reviewed and approved",
+                    "All fixes verified through testing",
+                    f"No {category} issues remain",
+                    "No regressions introduced"
+                ],
+                "risks": [
+                    {
+                        "type": "scope",
+                        "description": f"Large number of {category} issues ({len(cat_findings)}) may require significant effort",
+                        "mitigation": "Prioritize critical issues first, batch related fixes"
+                    }
+                ],
+                "dependencies": [f"Original task: {original_task_id}"],
+                "status": "pending"
+            })
+
+        return user_stories
 
     def _display_findings_by_file(self, findings: List['QAFinding'], color: Optional[str],
                                    max_per_file: int = 5, max_files: int = 10,

@@ -3168,52 +3168,184 @@ class TestQAReviewPRDPrompt(TempConfigTestCase):
 class TestQAReviewPRDGeneration(TempConfigTestCase):
     """Tests for PRD generation from QA findings."""
 
-    def test_generate_prd_from_findings_calls_planner(self):
-        """Test that _generate_prd_from_qa_findings calls run_planner."""
+    def test_generate_prd_creates_valid_prd_structure(self):
+        """Test that _generate_prd_from_qa_findings creates a valid PRD structure."""
         mock_agent = self.create_mock_agent()
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         task = {"id": "TASK-001", "description": "Test task"}
         findings = {
             "critical_issues": [{"category": "security", "description": "SQL injection"}],
             "warnings": [{"category": "style", "description": "Inconsistent naming"}]
         }
-        with patch.object(orch, 'run_planner') as mock_planner:
-            with patch('ralph.Logger.info'):
-                orch._generate_prd_from_qa_findings(task, findings)
-        mock_planner.assert_called_once()
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        # Verify PRD was created with valid structure
+        self.assertTrue(CONF.PRD_FILE.exists())
+        prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        self.assertIn("id", prd_data)
+        self.assertIn("description", prd_data)
+        self.assertIn("userStories", prd_data)
+        self.assertEqual(len(prd_data["userStories"]), 2)  # One per finding
 
     def test_generate_prd_from_findings_includes_task_context(self):
-        """Test that generated intent includes task ID and description."""
+        """Test that generated PRD includes task ID and description."""
         mock_agent = self.create_mock_agent()
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         task = {"id": "TASK-001", "description": "Implement login feature"}
         findings = {
             "critical_issues": [{"category": "security", "description": "SQL injection"}],
             "warnings": []
         }
-        captured_intent = None
-        def capture_intent(intent):
-            nonlocal captured_intent
-            captured_intent = intent
-        with patch.object(orch, 'run_planner', side_effect=capture_intent):
-            with patch('ralph.Logger.info'):
-                orch._generate_prd_from_qa_findings(task, findings)
-        self.assertIn("TASK-001", captured_intent)
-        self.assertIn("Implement login feature", captured_intent)
-        self.assertIn("SQL injection", captured_intent)
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
 
-    def test_generate_prd_enhances_intent_when_enabled(self):
-        """Test that intent is enhanced when enhance_intent is enabled."""
+        prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        self.assertIn("TASK-001", prd_data["id"])
+        self.assertIn("TASK-001", prd_data["description"])
+
+    def test_generate_prd_user_story_format(self):
+        """Test that user stories have proper format with TASK-XXX IDs."""
         mock_agent = self.create_mock_agent()
-        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, enhance_intent=True)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         task = {"id": "TASK-001", "description": "Test task"}
-        findings = {"critical_issues": [{"category": "test", "description": "issue"}], "warnings": []}
-        with patch.object(orch, '_enhance_intent_impl', return_value="enhanced intent") as mock_enhance:
-            with patch.object(orch, 'run_planner') as mock_planner:
-                with patch('ralph.Logger.info'):
-                    orch._generate_prd_from_qa_findings(task, findings)
-        mock_enhance.assert_called_once()
-        mock_planner.assert_called_once_with("enhanced intent")
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        story = prd_data["userStories"][0]
+        self.assertRegex(story["id"], r"TASK-\d{3}")
+        self.assertIn("As a developer", story["description"])
+        self.assertIn("acceptanceCriteria", story)
+        self.assertIsInstance(story["acceptanceCriteria"], list)
+        self.assertGreater(len(story["acceptanceCriteria"]), 0)
+
+    def test_generate_prd_single_finding_creates_single_story(self):
+        """Test that a single finding creates a single-story PRD."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": [],
+            "suggestions": []
+        }
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        self.assertEqual(len(prd_data["userStories"]), 1)
+
+    def test_generate_prd_many_findings_groups_by_category(self):
+        """Test that 50+ findings are grouped by category."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+
+        # Create 60 findings across 3 categories
+        findings = {
+            "critical_issues": [{"category": "security", "description": f"Issue {i}"} for i in range(20)],
+            "warnings": [{"category": "style", "description": f"Warning {i}"} for i in range(20)],
+            "suggestions": [{"category": "performance", "description": f"Suggestion {i}"} for i in range(20)]
+        }
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        # Should be grouped into 3 stories (one per category)
+        self.assertEqual(len(prd_data["userStories"]), 3)
+        # Each story should mention the count
+        for story in prd_data["userStories"]:
+            self.assertIn("20 findings", story["description"])
+
+    def test_generate_prd_error_handling_invalid_findings(self):
+        """Test error handling when findings data is invalid."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        # Empty findings - no valid data
+        findings = {
+            "critical_issues": [],
+            "warnings": [],
+            "suggestions": []
+        }
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error') as mock_error:
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        # Should log an error
+        mock_error.assert_called()
+        error_call = str(mock_error.call_args)
+        self.assertIn("PRD generation failed", error_call)
+
+    def test_generate_prd_schema_validation(self):
+        """Test that generated PRD passes schema validation when --schema is provided."""
+        mock_agent = self.create_mock_agent()
+        # Create a schema file
+        schema_path = CONF.ROOT_DIR / "prd_schema.json"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        schema = {
+            "type": "object",
+            "required": ["id", "description", "userStories"],
+            "properties": {
+                "id": {"type": "string"},
+                "description": {"type": "string"},
+                "userStories": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "description", "acceptanceCriteria"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "description": {"type": "string"},
+                            "acceptanceCriteria": {"type": "array"}
+                        }
+                    }
+                }
+            }
+        }
+        schema_path.write_text(json.dumps(schema), encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, schema=str(schema_path))
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        # PRD should be created (passes validation)
+        self.assertTrue(CONF.PRD_FILE.exists())
+
+    def test_generate_prd_priority_based_on_severity(self):
+        """Test that story priority is based on finding severity."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "Critical issue"}],
+            "warnings": [{"category": "style", "description": "Warning issue"}],
+            "suggestions": [{"category": "docs", "description": "Suggestion"}]
+        }
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        priorities = [story["priority"] for story in prd_data["userStories"]]
+        self.assertIn("Must Have", priorities)  # Critical
+        self.assertIn("Should Have", priorities)  # Warning
+        self.assertIn("Could Have", priorities)  # Suggestion
 
 
 class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
