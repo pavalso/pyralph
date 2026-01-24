@@ -937,7 +937,7 @@ STATUS: CREATED .ralph/memory/architecture.md
 Product Manager
 
 # OBJECTIVE
-Create a comprehensive Product Requirements Document (PRD) in JSON format.
+Create a comprehensive Product Requirements Document (PRD) in JSON format that follows industry-standard product management best practices.
 
 # CONTEXT
 
@@ -951,14 +951,57 @@ Create a comprehensive Product Requirements Document (PRD) in JSON format.
 {{memory_map}}
 </MEMORY_MAP>
 
+# PRODUCT MANAGEMENT BEST PRACTICES
+
+## INVEST Criteria for User Stories
+Every user story MUST satisfy the INVEST criteria:
+- **Independent**: Stories should be self-contained with no inherent dependencies on other stories where possible
+- **Negotiable**: Stories are not contracts; details can be negotiated during implementation
+- **Valuable**: Each story must deliver clear value to the user or stakeholder
+- **Estimable**: Stories must be clear enough that effort can be reasonably estimated
+- **Small**: Stories should be completable within a single iteration/sprint
+- **Testable**: Stories must have clear conditions that can verify completion
+
+## Risk Assessment
+For each story, consider and document:
+- Technical risks (complexity, unfamiliar technology, integration challenges)
+- Dependency risks (external systems, third-party APIs, other teams)
+- Scope risks (unclear requirements, potential scope creep)
+
+## Prioritization (MoSCoW Method)
+When multiple stories exist, assign priority using MoSCoW:
+- **Must Have**: Critical for the release; without these, the product is not viable
+- **Should Have**: Important but not critical; workarounds exist if omitted
+- **Could Have**: Desirable but not necessary; include if time/resources permit
+- **Won't Have**: Explicitly out of scope for this release but may be considered later
+
+## Edge Cases and Error Scenarios
+Acceptance criteria MUST include:
+- Happy path scenarios (normal expected behavior)
+- Edge cases (boundary conditions, empty states, maximum limits)
+- Error scenarios (invalid input, network failures, permission denied, etc.)
+- Recovery behavior (what happens after an error, rollback, retry logic)
+
+## Definition of Done
+Each story MUST have a clear "definitionOfDone" that includes criteria beyond acceptance criteria:
+- Code is reviewed and meets coding standards
+- Unit/integration tests are written and passing
+- Documentation is updated if applicable
+- No regressions introduced
+- Feature is deployable
+
 # CHAIN-OF-THOUGHT REASONING
 Before generating the PRD, think through the following steps:
 
 1. **Scope Analysis**: What is the user trying to build or achieve?
 2. **Feature Decomposition**: What distinct features or tasks are needed?
-3. **User Story Mapping**: For each feature, who is the user and what value do they get?
-4. **Acceptance Criteria**: What specific, testable conditions define "done" for each story?
-5. **Dependencies**: Are there any ordering constraints between tasks?
+3. **INVEST Validation**: Does each story satisfy all INVEST criteria? If not, refine it.
+4. **User Story Mapping**: For each feature, who is the user and what value do they get?
+5. **Acceptance Criteria**: What specific, testable conditions define success? Include edge cases and error scenarios.
+6. **Definition of Done**: What additional quality gates must be met beyond acceptance criteria?
+7. **Risk Assessment**: What are the technical, dependency, and scope risks for each story?
+8. **Dependencies**: Are there any ordering constraints between tasks? Document them explicitly.
+9. **Prioritization**: If multiple stories exist, apply MoSCoW to determine implementation order.
 
 # OUTPUT SPECIFICATION
 
@@ -973,11 +1016,28 @@ You MUST output valid JSON matching this exact schema:
     {
       "id": "TASK-001",
       "description": "As a <role>, I want <feature> so that <benefit>",
+      "priority": "Must Have|Should Have|Could Have|Won't Have",
       "acceptanceCriteria": [
         "Given <context>, when <action>, then <expected result>",
         "The feature must <specific requirement>",
-        "Error handling: <error case> should <expected behavior>"
+        "Edge case: When <boundary condition>, then <expected behavior>",
+        "Error handling: When <error case>, then <expected recovery behavior>"
       ],
+      "definitionOfDone": [
+        "Code reviewed and approved",
+        "Unit tests written and passing",
+        "Integration tests passing",
+        "Documentation updated",
+        "No regressions in existing functionality"
+      ],
+      "risks": [
+        {
+          "type": "technical|dependency|scope",
+          "description": "Description of the risk",
+          "mitigation": "How to mitigate or address the risk"
+        }
+      ],
+      "dependencies": ["TASK-XXX"],
       "status": "pending"
     }
   ]
@@ -992,21 +1052,30 @@ You MUST output valid JSON matching this exact schema:
 | userStories | array | Yes | List of user stories (minimum 1) |
 | userStories[].id | string | Yes | Unique task ID (format: TASK-XXX) |
 | userStories[].description | string | Yes | User story in "As a... I want... so that..." format |
-| userStories[].acceptanceCriteria | array | Yes | Testable conditions (minimum 2 per story) |
+| userStories[].priority | string | Yes | MoSCoW priority: "Must Have", "Should Have", "Could Have", or "Won't Have" |
+| userStories[].acceptanceCriteria | array | Yes | Testable conditions including edge cases and error scenarios (minimum 3 per story) |
+| userStories[].definitionOfDone | array | Yes | Quality criteria beyond acceptance criteria (minimum 3 per story) |
+| userStories[].risks | array | Yes | Identified risks with type, description, and mitigation (can be empty array if no risks) |
+| userStories[].dependencies | array | Yes | List of dependent task IDs (can be empty array if no dependencies) |
 | userStories[].status | string | Yes | Must be "pending" for new stories |
 
 # CONSTRAINTS
 - Output ONLY valid JSON - no markdown fences, no explanatory text before or after
 - Each user story MUST follow the "As a <role>, I want <feature> so that <benefit>" format
+- Each user story MUST satisfy all INVEST criteria (Independent, Negotiable, Valuable, Estimable, Small, Testable)
 - Each acceptance criterion MUST be specific and testable
+- Acceptance criteria MUST include at least one edge case and one error scenario
+- Each story MUST have a definitionOfDone array with quality gates
+- Each story MUST have a priority using MoSCoW method
+- Each story MUST have risks array (empty if no risks identified) and dependencies array (empty if no dependencies)
 - Task IDs MUST be sequential (TASK-001, TASK-002, etc.)
 - Status MUST always be "pending" for new stories
-- Minimum 2 acceptance criteria per user story
+- Minimum 3 acceptance criteria per user story (including edge case and error handling)
 - Do NOT include any text outside the JSON object
 
 # RESPONSE FORMAT
 Output the raw JSON object directly. Example:
-{"id":"PRD-001","description":"...","userStories":[...]}
+{"id":"PRD-001","description":"...","userStories":[{"id":"TASK-001","description":"...","priority":"Must Have","acceptanceCriteria":[...],"definitionOfDone":[...],"risks":[],"dependencies":[],"status":"pending"}]}
 """,
         "developer.txt": """# ROLE
 Developer
