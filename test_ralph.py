@@ -533,9 +533,6 @@ class TestOrchestratorFlags(TempConfigTestCase):
         ('prompt_file', '_prompt_file_override', "/prompt", None),
         ('include', '_include_patterns', ["arch"], None),
         ('exclude', '_exclude_patterns', ["tasks"], None),
-        ('git', '_git_enabled', False, True),
-        ('git_branch', '_git_branch', "feature/x", None),
-        ('git_message', '_git_message', "test", None),
         ('write_allow', '_write_allow', ["*.py"], None),
         ('write_deny', '_write_deny', ["*.pyc"], None),
         ('dry_run', '_dry_run', True, False),
@@ -722,9 +719,6 @@ class TestCliArguments(unittest.TestCase):
         self.parser.add_argument("--resume", type=str)
         self.parser.add_argument("--include-memory", nargs="+")
         self.parser.add_argument("--exclude-memory", nargs="+")
-        self.parser.add_argument("--no-git", action="store_true")
-        self.parser.add_argument("--git-branch", type=str)
-        self.parser.add_argument("--git-message", type=str)
         self.parser.add_argument("--write-allow", nargs="+")
         self.parser.add_argument("--write-deny", nargs="+")
         self.parser.add_argument("--dry-run", action="store_true")
