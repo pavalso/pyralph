@@ -1,8 +1,12 @@
 # Include documentation files
-include CLAUDE.md
 include README.md
+include ARCH.md
+include prompt.md
 
-# Include package data
+# Include license
+include LICENSE
+
+# Include package configuration
 include pyproject.toml
 
 # Exclude agent state directory
@@ -11,5 +15,13 @@ prune .ralph
 # Exclude test files
 exclude test_ralph.py
 exclude test_*.py
+
+# Exclude cache and build artifacts
 prune __pycache__
 prune .pytest_cache
+prune build
+prune dist
+prune *.egg-info
+
+# Exclude git directory
+prune .git
