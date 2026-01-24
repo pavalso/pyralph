@@ -3643,12 +3643,16 @@ class RalphOrchestrator:
         # Archive existing PRD if present
         self._archive_prd()
 
-        # Save the generated PRD
-        self._prd.save(prd_data)
+        # Save the generated PRD to file
         story_count = len(prd_data.get('userStories', []))
-        Logger.info(f"✅ PRD Generated from QA findings ({story_count} stories).", "GREEN")
-        self.hooks.emit(Event(EventType.PRD_CREATED, phase="prd_from_qa", prd_path=str(CONF.PRD_FILE)))
-        self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa", metadata={"success": True}))
+        output_path = self._save_generated_prd(prd_data)
+        if output_path:
+            Logger.info(f"✅ PRD Generated from QA findings ({story_count} stories).", "GREEN")
+            self.hooks.emit(Event(EventType.PRD_CREATED, phase="prd_from_qa", prd_path=str(output_path)))
+            self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa", metadata={"success": True}))
+        else:
+            # Save was aborted (user declined overwrite), but PRD was printed to stdout
+            self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa", metadata={"success": False, "reason": "save_aborted"}))
 
     def _create_prd_from_findings(self, task: Dict[str, Any], findings: Dict[str, Any]) -> Dict[str, Any]:
         """Create a structured PRD from QA findings.
@@ -4015,6 +4019,96 @@ class RalphOrchestrator:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(self._prd.read_raw(), encoding='utf-8')
         Logger.info(f"📋 PRD exported to {out_path}", "MAGENTA")
+
+    def _save_generated_prd(self, prd_data: Dict[str, Any]) -> Optional[Path]:
+        """
+        Save generated PRD to a file with overwrite protection.
+
+        Saves the PRD to the location specified by --prd-out flag, or to the default
+        .ralph/prd.json location. Handles:
+        - Overwrite confirmation in interactive mode
+        - Error in non-interactive mode when file exists
+        - Auto-creation of output directory
+        - Fallback to stdout on write errors
+
+        Args:
+            prd_data: The PRD dictionary to save
+
+        Returns:
+            Path to the saved file if successful, None if save was aborted
+        """
+        # Determine output path: use --prd-out if specified, otherwise default
+        if self._prd_out:
+            out_path = Path(self._prd_out)
+        else:
+            out_path = CONF.PRD_FILE
+
+        prd_json = json.dumps(prd_data, indent=2)
+
+        # Check if file exists and handle overwrite
+        if out_path.exists():
+            if self._non_interactive:
+                Logger.error(f"Output file already exists: {out_path}")
+                Logger.error("Use a different path or remove the existing file.")
+                Logger.info("PRD content printed to stdout as fallback:", "YELLOW")
+                print(prd_json)
+                return None
+            else:
+                # Interactive mode: prompt for overwrite confirmation
+                if not self._prompt_overwrite_confirmation(out_path):
+                    Logger.info("PRD save cancelled. PRD content printed to stdout:", "YELLOW")
+                    print(prd_json)
+                    return None
+
+        # Ensure output directory exists
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            Logger.error(f"Failed to create output directory {out_path.parent}: {e}")
+            Logger.info("PRD content printed to stdout as fallback:", "YELLOW")
+            print(prd_json)
+            return None
+
+        # Write the file with error handling
+        try:
+            out_path.write_text(prd_json, encoding='utf-8')
+            Logger.info(f"📋 PRD saved to {out_path}", "MAGENTA")
+            # Update PRD manager cache if saved to default location
+            if out_path == CONF.PRD_FILE:
+                self._prd.invalidate_cache()
+            return out_path
+        except PermissionError as e:
+            Logger.error(f"Permission denied writing to {out_path}: {e}")
+            Logger.info("PRD content printed to stdout as fallback:", "YELLOW")
+            print(prd_json)
+            return None
+        except OSError as e:
+            Logger.error(f"Failed to write PRD to {out_path}: {e}")
+            Logger.info("PRD content printed to stdout as fallback:", "YELLOW")
+            print(prd_json)
+            return None
+
+    def _prompt_overwrite_confirmation(self, file_path: Path) -> bool:
+        """
+        Prompt user to confirm overwriting an existing file.
+
+        Args:
+            file_path: Path to the file that would be overwritten
+
+        Returns:
+            True if user confirms overwrite, False otherwise
+        """
+        while True:
+            response = input(
+                f"{Logger.COLORS['YELLOW']}File {file_path} already exists. Overwrite? (y/n): {Logger.COLORS['RESET']}"
+            ).strip().lower()
+
+            if response in ('y', 'yes'):
+                return True
+            elif response in ('n', 'no'):
+                return False
+            else:
+                Logger.info("   ⚠️  Invalid input. Please enter 'y' or 'n'.", "YELLOW")
 
     def _check_prd_status(self) -> int:
         """

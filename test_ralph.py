@@ -3348,6 +3348,298 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
         self.assertIn("Could Have", priorities)  # Suggestion
 
 
+class TestPRDFileSaving(TempConfigTestCase):
+    """Tests for PRD file saving with overwrite protection and error handling."""
+
+    def test_save_prd_to_default_location(self):
+        """Test that PRD is saved to default .ralph/prd.json location."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        self.assertTrue(CONF.PRD_FILE.exists())
+        prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        self.assertIn("id", prd_data)
+
+    def test_save_prd_to_custom_location_with_prd_out(self):
+        """Test that --prd-out flag saves PRD to custom location."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "custom" / "output.json"
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path)
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        self.assertTrue(custom_path.exists())
+        prd_data = json.loads(custom_path.read_text(encoding='utf-8'))
+        self.assertIn("id", prd_data)
+
+    def test_save_prd_creates_directory_if_not_exists(self):
+        """Test that output directory is created automatically."""
+        mock_agent = self.create_mock_agent()
+        nested_path = self.temp_path / "deep" / "nested" / "path" / "output.json"
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(nested_path)
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+        self.assertFalse(nested_path.parent.exists())
+
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        self.assertTrue(nested_path.exists())
+
+    def test_overwrite_error_in_non_interactive_mode(self):
+        """Test that existing file causes error in non-interactive mode."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "existing.json"
+        custom_path.write_text('{"existing": "content"}', encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path), non_interactive=True
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+
+        with patch('ralph.Logger.info') as mock_info, patch('ralph.Logger.error') as mock_error:
+            with patch('builtins.print') as mock_print:
+                orch._generate_prd_from_qa_findings(task, findings)
+
+        # Should show error about existing file
+        error_calls = [str(call) for call in mock_error.call_args_list]
+        self.assertTrue(any("already exists" in call for call in error_calls))
+        # Should print PRD to stdout as fallback
+        mock_print.assert_called()
+        # Original file should remain unchanged
+        self.assertEqual(custom_path.read_text(encoding='utf-8'), '{"existing": "content"}')
+
+    def test_overwrite_confirmation_accepted_in_interactive_mode(self):
+        """Test that overwrite confirmation works in interactive mode."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "existing.json"
+        custom_path.write_text('{"existing": "content"}', encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path), non_interactive=False
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            with patch('builtins.input', return_value='y'):
+                orch._generate_prd_from_qa_findings(task, findings)
+
+        # File should be overwritten
+        prd_data = json.loads(custom_path.read_text(encoding='utf-8'))
+        self.assertIn("userStories", prd_data)
+
+    def test_overwrite_confirmation_declined_in_interactive_mode(self):
+        """Test that declining overwrite prints PRD to stdout."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "existing.json"
+        custom_path.write_text('{"existing": "content"}', encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path), non_interactive=False
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            with patch('builtins.input', return_value='n'):
+                with patch('builtins.print') as mock_print:
+                    orch._generate_prd_from_qa_findings(task, findings)
+
+        # Original file should remain unchanged
+        self.assertEqual(custom_path.read_text(encoding='utf-8'), '{"existing": "content"}')
+        # PRD should be printed to stdout
+        mock_print.assert_called()
+
+    def test_save_prd_displays_file_path_on_success(self):
+        """Test that confirmation message shows file path."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "output.json"
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path)
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+
+        with patch('ralph.Logger.info') as mock_info, patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        # Check for file path in info messages
+        info_calls = [str(call) for call in mock_info.call_args_list]
+        self.assertTrue(any("output.json" in call for call in info_calls))
+
+    def test_save_prd_valid_json_output(self):
+        """Test that saved PRD file contains valid JSON matching schema."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "output.json"
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path)
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": [{"category": "style", "description": "Naming issue"}]
+        }
+
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            orch._generate_prd_from_qa_findings(task, findings)
+
+        prd_data = json.loads(custom_path.read_text(encoding='utf-8'))
+        # Validate PRD schema
+        self.assertIn("id", prd_data)
+        self.assertIn("description", prd_data)
+        self.assertIn("userStories", prd_data)
+        self.assertIsInstance(prd_data["userStories"], list)
+        for story in prd_data["userStories"]:
+            self.assertIn("id", story)
+            self.assertIn("description", story)
+            self.assertIn("acceptanceCriteria", story)
+            self.assertIn("status", story)
+
+    def test_save_prd_permission_error_fallback_to_stdout(self):
+        """Test that permission errors fall back to stdout."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "output.json"
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path)
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error') as mock_error:
+            with patch('builtins.print') as mock_print:
+                with patch.object(Path, 'write_text', side_effect=PermissionError("Access denied")):
+                    orch._generate_prd_from_qa_findings(task, findings)
+
+        # Should show permission error
+        error_calls = [str(call) for call in mock_error.call_args_list]
+        self.assertTrue(any("Permission denied" in call for call in error_calls))
+        # Should print PRD to stdout
+        mock_print.assert_called()
+
+    def test_save_prd_oserror_fallback_to_stdout(self):
+        """Test that OS errors (disk full, etc.) fall back to stdout."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "output.json"
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path)
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error') as mock_error:
+            with patch('builtins.print') as mock_print:
+                with patch.object(Path, 'write_text', side_effect=OSError("Disk full")):
+                    orch._generate_prd_from_qa_findings(task, findings)
+
+        # Should show OS error
+        error_calls = [str(call) for call in mock_error.call_args_list]
+        self.assertTrue(any("Failed to write PRD" in call for call in error_calls))
+        # Should print PRD to stdout
+        mock_print.assert_called()
+
+    def test_overwrite_prompt_retries_on_invalid_input(self):
+        """Test that overwrite prompt retries on invalid input."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "existing.json"
+        custom_path.write_text('{"existing": "content"}', encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path), non_interactive=False
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+
+        with patch('ralph.Logger.info') as mock_info, patch('ralph.Logger.error'):
+            with patch('builtins.input', side_effect=['invalid', 'maybe', 'y']):
+                orch._generate_prd_from_qa_findings(task, findings)
+
+        # Should have shown invalid input warning twice
+        info_calls = [str(call) for call in mock_info.call_args_list]
+        invalid_warnings = [c for c in info_calls if "Invalid input" in c]
+        self.assertEqual(len(invalid_warnings), 2)
+        # File should be overwritten after 'y'
+        prd_data = json.loads(custom_path.read_text(encoding='utf-8'))
+        self.assertIn("userStories", prd_data)
+
+    def test_save_prd_directory_creation_failure_fallback(self):
+        """Test fallback when directory creation fails."""
+        mock_agent = self.create_mock_agent()
+        custom_path = self.temp_path / "protected" / "output.json"
+        orch = self.create_mock_orchestrator(
+            mock_agent=mock_agent, qa_review=True, prd_out=str(custom_path)
+        )
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error') as mock_error:
+            with patch('builtins.print') as mock_print:
+                with patch.object(Path, 'mkdir', side_effect=OSError("Cannot create directory")):
+                    orch._generate_prd_from_qa_findings(task, findings)
+
+        # Should show directory creation error
+        error_calls = [str(call) for call in mock_error.call_args_list]
+        self.assertTrue(any("Failed to create output directory" in call for call in error_calls))
+        # Should print PRD to stdout
+        mock_print.assert_called()
+
+
 class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
     """Integration tests for QA review with PRD prompt workflow."""
 
