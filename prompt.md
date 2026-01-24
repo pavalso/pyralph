@@ -6,24 +6,48 @@ Complete workflow from task start to merge completion.
 
 | Phase | Description |
 |-------|-------------|
-| 1. Branch Management | Create feature branch from main |
-| 2. Commit Workflow | Make commits during development |
-| 3. Test Verification | Ensure all tests pass |
-| 4. Merge-Back | Merge feature branch to main |
-| 5. Conflict Resolution | Resolve merge conflicts (if needed) |
+| 1. PRD Branch Setup | Create PRD branch from master for PRD-scoped work |
+| 2. Feature Branch Management | Create feature branches from PRD branch |
+| 3. Commit Workflow | Make commits during development |
+| 4. Test Verification | Ensure all tests pass |
+| 5. Merge-Back | Merge feature branches to PRD, then PRD to master |
+| 6. Conflict Resolution | Resolve merge conflicts (if needed) |
+
+## Branch Hierarchy
+
+```
+master
+  └── PRD/<prd-id>
+        ├── feature/TASK-<id>-<description>
+        ├── feature/TASK-<id>-<description>
+        └── ...
+```
 
 ---
 
-## Phase 1: Branch Management
+## Phase 1: PRD Branch Setup
 
-1. Branch from `main` or `master`
-2. Use naming convention: `feature/TASK-<id>-<short-description>`
-3. Commit changes to this feature branch
-4. Merge back to main after completion and verification
+When starting work on a PRD, create a dedicated PRD branch from master.
+
+1. Ensure master is up-to-date: `git pull origin master`
+2. Create PRD branch: `git checkout -b PRD/<prd-id> master`
+3. Use naming convention: `PRD/<prd-id>` (e.g., `PRD/user-authentication`)
 
 ---
 
-## Phase 2: Commit Workflow
+## Phase 2: Feature Branch Management
+
+Feature branches are created from the PRD branch, **not** from master.
+
+1. Ensure the PRD branch exists and is up-to-date
+2. Create feature branch from PRD: `git checkout -b feature/TASK-<id>-<description> PRD/<prd-id>`
+3. Use naming convention: `feature/TASK-<id>-<short-description>`
+4. Commit changes to the feature branch
+5. Merge back to the PRD branch (not master) after completion and verification
+
+---
+
+## Phase 3: Commit Workflow
 
 1. Stage only modified files: `git add <file>`
 2. Write clear commit messages: `TASK-<id>: <description>`
@@ -33,7 +57,7 @@ Complete workflow from task start to merge completion.
 
 ---
 
-## Phase 3: Test Verification
+## Phase 4: Test Verification
 
 1. Run tests: `pytest`
 2. All tests must pass (exit code 0) before merging
@@ -43,21 +67,48 @@ Complete workflow from task start to merge completion.
 
 ---
 
-## Phase 4: Merge-Back
+## Phase 5: Merge-Back
 
-1. Verify all tests pass
-2. Switch to main: `git checkout main`
-3. Pull latest: `git pull origin main`
+The merge-back process follows a strict two-tier sequence:
+
+### 5a. Feature Branch → PRD Branch
+
+When a feature is complete, merge it back to the parent PRD branch.
+
+1. Verify all tests pass on the feature branch
+2. Switch to PRD branch: `git checkout PRD/<prd-id>`
+3. Pull latest: `git pull origin PRD/<prd-id>`
 4. Merge feature branch: `git merge feature/TASK-<id>-<short-description>`
 5. Resolve conflicts if needed, then re-run tests
-6. Push: `git push origin main`
+6. Push: `git push origin PRD/<prd-id>`
 7. Delete feature branch (optional):
    - Local: `git branch -d feature/TASK-<id>-<short-description>`
    - Remote: `git push origin --delete feature/TASK-<id>-<short-description>`
 
+### 5b. PRD Branch → Master
+
+When all features in a PRD are complete and merged, merge the PRD branch to master.
+
+**Prerequisites:**
+- All feature branches have been merged to the PRD branch
+- All tests pass on the PRD branch
+- No pending tasks remain in the PRD scope
+
+**Steps:**
+
+1. Verify all tests pass on the PRD branch
+2. Switch to master: `git checkout master`
+3. Pull latest: `git pull origin master`
+4. Merge PRD branch: `git merge PRD/<prd-id>`
+5. Resolve conflicts if needed, then re-run tests
+6. Push: `git push origin master`
+7. Delete PRD branch:
+   - Local: `git branch -d PRD/<prd-id>`
+   - Remote: `git push origin --delete PRD/<prd-id>`
+
 ---
 
-## Phase 5: Conflict Resolution
+## Phase 6: Conflict Resolution
 
 ### Steps
 
