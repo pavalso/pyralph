@@ -987,15 +987,6 @@ The following user preferences are REQUIRED. You MUST strictly adhere to these i
 3. Fix the specific issue - do not make unrelated changes
 4. Re-run verification to confirm the fix
 
-## Common Error Patterns
-| Error Type | Resolution |
-|------------|------------|
-| Import error | Add missing import or fix module path |
-| Syntax error | Fix the syntax at the indicated line |
-| Type error | Check argument types and return values |
-| Test assertion | Verify logic matches expected behavior |
-| File not found | Check file paths and ensure files exist |
-
 ## Self-Correction Rules
 - If you encounter the same error twice, try a different approach
 - If verification fails 3+ times, step back and re-analyze the requirements
