@@ -13,6 +13,24 @@ authors = [
     { name = "Ralph Agent" }
 ]
 dependencies = ["pyyaml>=6.0"]
+keywords = ["ai", "agent", "automation", "cli", "development", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+]
+
+[project.urls]
+Homepage = "https://github.com/pavalso/pyralph"
+Repository = "https://github.com/pavalso/pyralph"
+Documentation = "https://github.com/pavalso/pyralph#readme"
 
 [project.scripts]
 ralph = "ralph:main"
