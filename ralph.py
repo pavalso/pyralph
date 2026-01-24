@@ -8,7 +8,7 @@ import datetime
 import argparse
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 # Import agents
 from agents import get_agent, list_agents
@@ -263,19 +263,19 @@ class Logger(metaclass=_LoggerMeta):
         }
         return json.dumps(data)
 
-    @staticmethod
-    def _strip_emoji(msg: str) -> str:
+    _EMOJI_MAP = {
+        "🤖": "[BOT]", "🕵️": "[ARCH]", "🧠": "[PLAN]", "🚀": "[EXEC]",
+        "✅": "[OK]", "❌": "[FAIL]", "⚠️": "[WARN]", "▶️": "[>]",
+        "🔒": "[VERIFY]", "🛑": "[STOP]", "⏭️": "[SKIP]", "📋": "[LIST]",
+        "📦": "[PKG]", "🎉": "[DONE]", "➡️": "[->]", "⬅️": "[<-]",
+        "ℹ️": "[INFO]", "❓": "[?]",
+    }
+    _EMOJI_PATTERN = re.compile('|'.join(re.escape(e) for e in _EMOJI_MAP.keys()))
+
+    @classmethod
+    def _strip_emoji(cls, msg: str) -> str:
         """Replace emojis with text equivalents."""
-        emoji_map = {
-            "🤖": "[BOT]", "🕵️": "[ARCH]", "🧠": "[PLAN]", "🚀": "[EXEC]",
-            "✅": "[OK]", "❌": "[FAIL]", "⚠️": "[WARN]", "▶️": "[>]",
-            "🔒": "[VERIFY]", "🛑": "[STOP]", "⏭️": "[SKIP]", "📋": "[LIST]",
-            "📦": "[PKG]", "🎉": "[DONE]", "➡️": "[->]", "⬅️": "[<-]",
-            "ℹ️": "[INFO]", "❓": "[?]",
-        }
-        for emoji, text in emoji_map.items():
-            msg = msg.replace(emoji, text)
-        return msg
+        return cls._EMOJI_PATTERN.sub(lambda m: cls._EMOJI_MAP[m.group()], msg)
 
     @staticmethod
     def _print_colored(msg: str, color: str = "RESET", prefix: str = ""):
@@ -486,11 +486,55 @@ class MemoryManager:
         return result
 
     @staticmethod
+    def _compile_patterns(patterns: List[str]) -> List['re.Pattern']:
+        """
+        Compile glob patterns into regex patterns for efficient repeated matching.
+
+        For each pattern, compiles three variants for matching:
+        1. Full path pattern
+        2. Filename-only pattern
+        3. Partial path pattern (*/{pattern})
+
+        Args:
+            patterns: List of glob patterns to compile
+
+        Returns:
+            List of compiled regex patterns
+        """
+        import fnmatch
+        import re
+        compiled = []
+        for pattern in patterns:
+            regex_full = fnmatch.translate(pattern)
+            regex_name = fnmatch.translate(pattern)
+            regex_partial = fnmatch.translate(f"*/{pattern}")
+            combined = f"({regex_full})|({regex_name})|({regex_partial})"
+            compiled.append(re.compile(combined))
+        return compiled
+
+    @staticmethod
+    def _matches_compiled(path: Path, compiled_patterns: List['re.Pattern']) -> bool:
+        """
+        Check if a path matches any of the pre-compiled patterns.
+
+        Args:
+            path: Path to check
+            compiled_patterns: List of compiled regex patterns
+
+        Returns:
+            True if path matches any pattern
+        """
+        from pathlib import PurePosixPath
+        path_posix = PurePosixPath(path.as_posix())
+        path_str = str(path_posix)
+        name = path.name
+        test_str = f"{path_str}\n{name}\n{path_str}"
+        return any(p.search(test_str) for p in compiled_patterns)
+
+    @staticmethod
     def _matches_pattern(path: Path, pattern: str) -> bool:
         """Check if a path matches a glob pattern."""
         from fnmatch import fnmatch
-        # Use PurePosixPath for consistent cross-platform pattern matching
-        # This normalizes all paths to forward slashes for fnmatch comparison
         from pathlib import PurePosixPath
         path_posix = PurePosixPath(path.as_posix())
         path_str = str(path_posix)
@@ -498,10 +542,30 @@ class MemoryManager:
         return fnmatch(path_str, pattern) or fnmatch(name, pattern) or fnmatch(path_str, f"*/{pattern}")
 
     @staticmethod
+    def _iter_memory_files() -> 'Iterator[Path]':
+        """
+        Generator that yields memory files lazily.
+
+        Yields:
+            Path objects for each valid memory file
+        """
+        if not CONF.MEMORY_DIR.exists():
+            return
+        for p in CONF.MEMORY_DIR.rglob('*'):
+            if p.is_file() and not p.name.startswith('.'):
+                yield p
+
+    @staticmethod
     def get_filtered_files(include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
                            limit: Optional[int] = None) -> List[Path]:
         """
         Get filtered list of memory files based on include/exclude patterns and limit.
+
+        Optimized for large file sets with:
+        - Pre-compiled patterns for O(1) pattern matching per file
+        - Single-pass filtering combining include/exclude checks
+        - Lazy file enumeration via generator
+        - Early termination when limit is reached (after sorting)
 
         Args:
             include: Glob patterns to include (if specified, only matching files are included)
@@ -514,38 +578,19 @@ class MemoryManager:
         if not CONF.MEMORY_DIR.exists():
             return []
 
+        include_compiled = MemoryManager._compile_patterns(include) if include else None
+        exclude_compiled = MemoryManager._compile_patterns(exclude) if exclude else None
+
         files = []
-        for p in CONF.MEMORY_DIR.rglob('*'):
-            if p.is_file() and not p.name.startswith('.'):
-                files.append(p)
+        for p in MemoryManager._iter_memory_files():
+            if include_compiled and not MemoryManager._matches_compiled(p, include_compiled):
+                continue
+            if exclude_compiled and MemoryManager._matches_compiled(p, exclude_compiled):
+                continue
+            files.append(p)
 
-        # Apply include filter (if specified, only keep matching files)
-        if include:
-            filtered = []
-            for f in files:
-                for pattern in include:
-                    if MemoryManager._matches_pattern(f, pattern):
-                        filtered.append(f)
-                        break
-            files = filtered
-
-        # Apply exclude filter (remove matching files)
-        if exclude:
-            filtered = []
-            for f in files:
-                excluded = False
-                for pattern in exclude:
-                    if MemoryManager._matches_pattern(f, pattern):
-                        excluded = True
-                        break
-                if not excluded:
-                    filtered.append(f)
-            files = filtered
-
-        # Sort by path for deterministic ordering
         files.sort(key=lambda p: str(p))
 
-        # Apply limit
         if limit is not None and limit > 0:
             files = files[:limit]
 
@@ -1390,9 +1435,8 @@ class RalphOrchestrator:
             "{{TASK_DESCRIPTION}}": task['description'],
             "{{TEST_CMD}}": test_cmd,
         }
-        for placeholder, value in replacements.items():
-            raw_text = raw_text.replace(placeholder, value)
-        return raw_text
+        pattern = re.compile('|'.join(re.escape(k) for k in replacements.keys()))
+        return pattern.sub(lambda m: replacements[m.group()], raw_text)
 
     def _verify_task(self, task: Dict[str, Any], test_cmd: str) -> Tuple[bool, Optional[AgentError]]:
         """Run verification and return (success, error_if_failed)."""

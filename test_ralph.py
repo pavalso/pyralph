@@ -485,6 +485,99 @@ class TestMemoryManager(TempConfigTestCase):
         (CONF.MEMORY_DIR / "arch.md").write_text("Test Command: `npm test`\n", encoding="utf-8")
         self.assertEqual(self.memory.extract_test_command(), "npm test")
 
+    def test_compile_patterns(self):
+        patterns = ["*.md", "test_*"]
+        compiled = MemoryManager._compile_patterns(patterns)
+        self.assertEqual(len(compiled), 2)
+        for p in compiled:
+            self.assertIsNotNone(p.pattern)
+
+    def test_matches_compiled_full_path(self):
+        patterns = ["*.md"]
+        compiled = MemoryManager._compile_patterns(patterns)
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        test_file = CONF.MEMORY_DIR / "test.md"
+        test_file.write_text("content", encoding="utf-8")
+        self.assertTrue(MemoryManager._matches_compiled(test_file, compiled))
+
+    def test_matches_compiled_no_match(self):
+        patterns = ["*.txt"]
+        compiled = MemoryManager._compile_patterns(patterns)
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        test_file = CONF.MEMORY_DIR / "test.md"
+        test_file.write_text("content", encoding="utf-8")
+        self.assertFalse(MemoryManager._matches_compiled(test_file, compiled))
+
+    def test_iter_memory_files_empty(self):
+        files = list(MemoryManager._iter_memory_files())
+        self.assertEqual(files, [])
+
+    def test_iter_memory_files_with_content(self):
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        (CONF.MEMORY_DIR / "a.md").write_text("a", encoding="utf-8")
+        (CONF.MEMORY_DIR / "b.md").write_text("b", encoding="utf-8")
+        files = list(MemoryManager._iter_memory_files())
+        self.assertEqual(len(files), 2)
+
+    def test_iter_memory_files_skips_hidden(self):
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        (CONF.MEMORY_DIR / ".hidden").write_text("h", encoding="utf-8")
+        (CONF.MEMORY_DIR / "visible.md").write_text("v", encoding="utf-8")
+        files = list(MemoryManager._iter_memory_files())
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].name, "visible.md")
+
+    def test_get_filtered_files_empty(self):
+        files = MemoryManager.get_filtered_files()
+        self.assertEqual(files, [])
+
+    def test_get_filtered_files_include_pattern(self):
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("a", encoding="utf-8")
+        (CONF.MEMORY_DIR / "notes.txt").write_text("n", encoding="utf-8")
+        files = MemoryManager.get_filtered_files(include=["*.md"])
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].name, "arch.md")
+
+    def test_get_filtered_files_exclude_pattern(self):
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("a", encoding="utf-8")
+        (CONF.MEMORY_DIR / "notes.txt").write_text("n", encoding="utf-8")
+        files = MemoryManager.get_filtered_files(exclude=["*.txt"])
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].name, "arch.md")
+
+    def test_get_filtered_files_include_and_exclude(self):
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        (CONF.MEMORY_DIR / "arch.md").write_text("a", encoding="utf-8")
+        (CONF.MEMORY_DIR / "test_arch.md").write_text("t", encoding="utf-8")
+        (CONF.MEMORY_DIR / "notes.txt").write_text("n", encoding="utf-8")
+        files = MemoryManager.get_filtered_files(include=["*.md"], exclude=["test_*"])
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].name, "arch.md")
+
+    def test_get_filtered_files_limit(self):
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        for i in range(5):
+            (CONF.MEMORY_DIR / f"file{i}.md").write_text(f"{i}", encoding="utf-8")
+        files = MemoryManager.get_filtered_files(limit=2)
+        self.assertEqual(len(files), 2)
+
+    def test_get_filtered_files_sorted(self):
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        (CONF.MEMORY_DIR / "zebra.md").write_text("z", encoding="utf-8")
+        (CONF.MEMORY_DIR / "alpha.md").write_text("a", encoding="utf-8")
+        files = MemoryManager.get_filtered_files()
+        self.assertEqual(files[0].name, "alpha.md")
+        self.assertEqual(files[1].name, "zebra.md")
+
+    def test_matches_pattern_backward_compat(self):
+        CONF.MEMORY_DIR.mkdir(parents=True)
+        test_file = CONF.MEMORY_DIR / "test.md"
+        test_file.write_text("content", encoding="utf-8")
+        self.assertTrue(MemoryManager._matches_pattern(test_file, "*.md"))
+        self.assertFalse(MemoryManager._matches_pattern(test_file, "*.txt"))
+
 
 # ==============================================================================
 # ORCHESTRATOR TESTS
