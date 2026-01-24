@@ -17,6 +17,7 @@ from agents.claude import ClaudeAgent
 from agents.copilot import GithubAgent
 from ralph import (
     Config, CONF, JsonUtils, Logger, MemoryManager, PRDManager, PromptFormatter,
+    QAFinding, QAFindingsAnalyzer, QAFindingType,
     RalphOrchestrator, Shell, TemplateManager, get_version, main,
 )
 from hooks import Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook
@@ -3233,6 +3234,656 @@ class TestEnhanceAllLogging(unittest.TestCase):
             log_calls = [str(call) for call in mock_log.call_args_list]
             disabled_log = [c for c in log_calls if 'disabled' in c.lower()]
             self.assertTrue(len(disabled_log) > 0)
+
+
+# ==============================================================================
+# QA FINDINGS ANALYSIS TESTS
+# ==============================================================================
+
+
+class TestQAFindingType(unittest.TestCase):
+    """Tests for QAFindingType enum."""
+
+    def test_finding_types_exist(self):
+        """Test all expected finding types are defined."""
+        self.assertTrue(hasattr(QAFindingType, 'ERROR'))
+        self.assertTrue(hasattr(QAFindingType, 'WARNING'))
+        self.assertTrue(hasattr(QAFindingType, 'SUGGESTION'))
+        self.assertTrue(hasattr(QAFindingType, 'INFO'))
+
+    def test_severity_ordering(self):
+        """Test that finding types are ordered by severity (ERROR is highest)."""
+        self.assertLess(QAFindingType.ERROR, QAFindingType.WARNING)
+        self.assertLess(QAFindingType.WARNING, QAFindingType.SUGGESTION)
+        self.assertLess(QAFindingType.SUGGESTION, QAFindingType.INFO)
+
+
+class TestQAFinding(unittest.TestCase):
+    """Tests for QAFinding dataclass."""
+
+    def test_from_dict_basic(self):
+        """Test creating a finding from a valid dictionary."""
+        data = {
+            "category": "security",
+            "description": "SQL injection vulnerability",
+            "location": "src/db.py:42",
+            "recommendation": "Use parameterized queries"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.ERROR)
+        self.assertEqual(finding.finding_type, QAFindingType.ERROR)
+        self.assertEqual(finding.category, "security")
+        self.assertEqual(finding.description, "SQL injection vulnerability")
+        self.assertEqual(finding.file_path, "src/db.py")
+        self.assertEqual(finding.line_number, 42)
+        self.assertEqual(finding.recommendation, "Use parameterized queries")
+        self.assertFalse(finding.has_missing_data)
+
+    def test_from_dict_without_line_number(self):
+        """Test creating a finding with file path but no line number."""
+        data = {
+            "category": "style",
+            "description": "Inconsistent naming",
+            "location": "src/utils.py"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.WARNING)
+        self.assertEqual(finding.file_path, "src/utils.py")
+        self.assertIsNone(finding.line_number)
+        self.assertFalse(finding.has_missing_data)
+
+    def test_from_dict_missing_location(self):
+        """Test creating a finding without location information."""
+        data = {
+            "category": "testing",
+            "description": "Missing unit tests"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.WARNING)
+        self.assertIsNone(finding.file_path)
+        self.assertIsNone(finding.line_number)
+        self.assertTrue(finding.has_missing_data)
+        self.assertIn("location", finding.missing_data_note)
+
+    def test_from_dict_missing_category(self):
+        """Test creating a finding without category."""
+        data = {
+            "description": "Some issue",
+            "location": "file.py:10"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.SUGGESTION)
+        self.assertEqual(finding.category, "unknown")
+        self.assertTrue(finding.has_missing_data)
+        self.assertIn("category", finding.missing_data_note)
+
+    def test_from_dict_missing_description(self):
+        """Test creating a finding without description."""
+        data = {
+            "category": "error_handling",
+            "location": "main.py:1"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.ERROR)
+        self.assertEqual(finding.description, "No description provided")
+        self.assertTrue(finding.has_missing_data)
+        self.assertIn("description", finding.missing_data_note)
+
+    def test_from_dict_all_missing(self):
+        """Test creating a finding from empty dictionary."""
+        data = {}
+        finding = QAFinding.from_dict(data, QAFindingType.INFO)
+        self.assertEqual(finding.category, "unknown")
+        self.assertEqual(finding.description, "No description provided")
+        self.assertIsNone(finding.file_path)
+        self.assertTrue(finding.has_missing_data)
+
+    def test_from_dict_windows_path(self):
+        """Test parsing Windows-style file paths."""
+        data = {
+            "category": "security",
+            "description": "Issue found",
+            "location": "C:\\Users\\test\\file.py:100"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.ERROR)
+        self.assertEqual(finding.file_path, "C:\\Users\\test\\file.py")
+        self.assertEqual(finding.line_number, 100)
+
+    def test_from_dict_non_numeric_after_colon(self):
+        """Test location with colon but no line number."""
+        data = {
+            "category": "documentation",
+            "description": "Missing docs",
+            "location": "general:module_level"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.SUGGESTION)
+        self.assertEqual(finding.file_path, "general:module_level")
+        self.assertIsNone(finding.line_number)
+
+    def test_format_location_with_line(self):
+        """Test format_location with file and line number."""
+        finding = QAFinding(
+            finding_type=QAFindingType.ERROR,
+            category="test",
+            description="test",
+            file_path="src/main.py",
+            line_number=42
+        )
+        self.assertEqual(finding.format_location(), "src/main.py:42")
+
+    def test_format_location_without_line(self):
+        """Test format_location with file but no line number."""
+        finding = QAFinding(
+            finding_type=QAFindingType.WARNING,
+            category="test",
+            description="test",
+            file_path="src/utils.py"
+        )
+        self.assertEqual(finding.format_location(), "src/utils.py")
+
+    def test_format_location_empty(self):
+        """Test format_location with no location info."""
+        finding = QAFinding(
+            finding_type=QAFindingType.INFO,
+            category="test",
+            description="test"
+        )
+        self.assertEqual(finding.format_location(), "")
+
+
+class TestQAFindingsAnalyzer(unittest.TestCase):
+    """Tests for QAFindingsAnalyzer class."""
+
+    def test_basic_parsing(self):
+        """Test basic parsing of findings dictionary."""
+        findings_dict = {
+            "summary": "WARN",
+            "critical_issues": [
+                {"category": "security", "description": "SQL injection", "location": "db.py:10"}
+            ],
+            "warnings": [
+                {"category": "style", "description": "Long line", "location": "utils.py:5"}
+            ],
+            "suggestions": [],
+            "passed_checks": ["Error handling", "Documentation"]
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        self.assertEqual(analyzer.summary, "WARN")
+        self.assertEqual(len(analyzer.all_findings), 2)
+        self.assertEqual(len(analyzer.passed_checks), 2)
+
+    def test_categorization_by_type(self):
+        """Test findings are correctly categorized by type."""
+        findings_dict = {
+            "summary": "FAIL",
+            "critical_issues": [
+                {"category": "security", "description": "Issue 1", "location": "a.py:1"}
+            ],
+            "warnings": [
+                {"category": "style", "description": "Issue 2", "location": "b.py:2"},
+                {"category": "testing", "description": "Issue 3", "location": "c.py:3"}
+            ],
+            "suggestions": [
+                {"category": "documentation", "description": "Issue 4", "location": "d.py:4"}
+            ],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+
+        errors = analyzer.get_findings_by_type(QAFindingType.ERROR)
+        warnings = analyzer.get_findings_by_type(QAFindingType.WARNING)
+        suggestions = analyzer.get_findings_by_type(QAFindingType.SUGGESTION)
+        info = analyzer.get_findings_by_type(QAFindingType.INFO)
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(len(warnings), 2)
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(len(info), 0)
+
+    def test_sorting_by_severity(self):
+        """Test all_findings returns findings sorted by severity."""
+        findings_dict = {
+            "summary": "FAIL",
+            "critical_issues": [
+                {"category": "security", "description": "Error", "location": "z.py:1"}
+            ],
+            "warnings": [
+                {"category": "style", "description": "Warning", "location": "a.py:1"}
+            ],
+            "suggestions": [
+                {"category": "docs", "description": "Suggestion", "location": "b.py:1"}
+            ],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        all_findings = analyzer.all_findings
+
+        self.assertEqual(all_findings[0].finding_type, QAFindingType.ERROR)
+        self.assertEqual(all_findings[1].finding_type, QAFindingType.WARNING)
+        self.assertEqual(all_findings[2].finding_type, QAFindingType.SUGGESTION)
+
+    def test_grouping_by_file(self):
+        """Test findings are correctly grouped by file."""
+        findings_dict = {
+            "summary": "WARN",
+            "critical_issues": [
+                {"category": "security", "description": "Issue 1", "location": "file_a.py:10"},
+                {"category": "security", "description": "Issue 2", "location": "file_b.py:20"}
+            ],
+            "warnings": [
+                {"category": "style", "description": "Issue 3", "location": "file_a.py:30"}
+            ],
+            "suggestions": [],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        grouped = analyzer.get_findings_grouped_by_file()
+
+        self.assertIn("file_a.py", grouped)
+        self.assertIn("file_b.py", grouped)
+        self.assertEqual(len(grouped["file_a.py"]), 2)
+        self.assertEqual(len(grouped["file_b.py"]), 1)
+
+    def test_grouping_sorted_by_severity_within_file(self):
+        """Test findings within each file group are sorted by severity."""
+        findings_dict = {
+            "summary": "FAIL",
+            "critical_issues": [
+                {"category": "security", "description": "Error", "location": "file.py:100"}
+            ],
+            "warnings": [
+                {"category": "style", "description": "Warning", "location": "file.py:10"}
+            ],
+            "suggestions": [
+                {"category": "docs", "description": "Suggestion", "location": "file.py:50"}
+            ],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        grouped = analyzer.get_findings_grouped_by_file()
+        file_findings = grouped["file.py"]
+
+        self.assertEqual(file_findings[0].finding_type, QAFindingType.ERROR)
+        self.assertEqual(file_findings[1].finding_type, QAFindingType.WARNING)
+        self.assertEqual(file_findings[2].finding_type, QAFindingType.SUGGESTION)
+
+    def test_findings_without_file(self):
+        """Test findings without file path are grouped under special key."""
+        findings_dict = {
+            "summary": "WARN",
+            "critical_issues": [],
+            "warnings": [
+                {"category": "style", "description": "General warning"}
+            ],
+            "suggestions": [],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        grouped = analyzer.get_findings_grouped_by_file()
+
+        self.assertIn("(no file)", grouped)
+        self.assertEqual(len(grouped["(no file)"]), 1)
+
+    def test_counts(self):
+        """Test get_counts returns correct statistics."""
+        findings_dict = {
+            "summary": "FAIL",
+            "critical_issues": [
+                {"category": "a", "description": "1", "location": "f1.py:1"},
+                {"category": "b", "description": "2", "location": "f2.py:1"}
+            ],
+            "warnings": [
+                {"category": "c", "description": "3", "location": "f1.py:2"}
+            ],
+            "suggestions": [
+                {"category": "d", "description": "4", "location": "f3.py:1"},
+                {"category": "e", "description": "5", "location": "f3.py:2"},
+                {"category": "f", "description": "6", "location": "f3.py:3"}
+            ],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        counts = analyzer.get_counts()
+
+        self.assertEqual(counts['errors'], 2)
+        self.assertEqual(counts['warnings'], 1)
+        self.assertEqual(counts['suggestions'], 3)
+        self.assertEqual(counts['total'], 6)
+        self.assertEqual(counts['files'], 3)
+
+    def test_large_output_detection(self):
+        """Test is_large_output flag for many files."""
+        # Create findings spanning >50 files
+        findings_dict = {
+            "summary": "WARN",
+            "critical_issues": [],
+            "warnings": [
+                {"category": "style", "description": f"Issue {i}", "location": f"file_{i}.py:1"}
+                for i in range(60)
+            ],
+            "suggestions": [],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        self.assertTrue(analyzer.is_large_output)
+        self.assertEqual(analyzer.total_files, 60)
+
+    def test_small_output_detection(self):
+        """Test is_large_output is False for small outputs."""
+        findings_dict = {
+            "summary": "PASS",
+            "critical_issues": [],
+            "warnings": [
+                {"category": "style", "description": "Issue", "location": "file.py:1"}
+            ],
+            "suggestions": [],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        self.assertFalse(analyzer.is_large_output)
+
+    def test_summary_report(self):
+        """Test get_summary_report returns structured data."""
+        findings_dict = {
+            "summary": "WARN",
+            "critical_issues": [
+                {"category": "security", "description": "Issue", "location": "file.py:1"}
+            ],
+            "warnings": [],
+            "suggestions": [],
+            "passed_checks": ["Test 1", "Test 2"]
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        report = analyzer.get_summary_report()
+
+        self.assertEqual(report['summary'], "WARN")
+        self.assertIn('counts', report)
+        self.assertIn('files', report)
+        self.assertEqual(report['passed_checks'], ["Test 1", "Test 2"])
+
+    def test_format_for_display(self):
+        """Test format_for_display returns formatted string."""
+        findings_dict = {
+            "summary": "WARN",
+            "critical_issues": [
+                {"category": "security", "description": "SQL injection", "location": "db.py:10"}
+            ],
+            "warnings": [],
+            "suggestions": [],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        output = analyzer.format_for_display()
+
+        self.assertIn("WARN", output)
+        self.assertIn("db.py", output)
+        self.assertIn("SQL injection", output)
+
+    def test_malformed_finding_non_dict(self):
+        """Test handling of non-dict finding entries."""
+        findings_dict = {
+            "summary": "WARN",
+            "critical_issues": [],
+            "warnings": ["This is a string, not a dict", 12345, None],
+            "suggestions": [],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        warnings = analyzer.get_findings_by_type(QAFindingType.WARNING)
+
+        self.assertEqual(len(warnings), 3)
+        for w in warnings:
+            self.assertTrue(w.has_missing_data)
+
+    def test_malformed_findings_list(self):
+        """Test handling when findings list is not a list."""
+        findings_dict = {
+            "summary": "PASS",
+            "critical_issues": "not a list",
+            "warnings": 42,
+            "suggestions": None,
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        self.assertEqual(len(analyzer.all_findings), 0)
+
+    def test_empty_findings(self):
+        """Test handling of empty findings dictionary."""
+        findings_dict = {
+            "summary": "PASS",
+            "critical_issues": [],
+            "warnings": [],
+            "suggestions": [],
+            "passed_checks": ["All checks passed"]
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        self.assertEqual(len(analyzer.all_findings), 0)
+        self.assertEqual(analyzer.get_counts()['total'], 0)
+
+    def test_missing_keys_in_findings_dict(self):
+        """Test handling when some keys are missing from findings dict."""
+        findings_dict = {
+            "summary": "PASS"
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        self.assertEqual(len(analyzer.all_findings), 0)
+        self.assertEqual(analyzer.passed_checks, [])
+
+
+class TestQAFindingsAnalyzerPagination(unittest.TestCase):
+    """Tests for QAFindingsAnalyzer pagination functionality."""
+
+    def test_pagination_respects_page_size(self):
+        """Test that pagination limits output to page_size."""
+        findings_dict = {
+            "summary": "WARN",
+            "critical_issues": [],
+            "warnings": [
+                {"category": "style", "description": f"Issue {i}", "location": f"file_{i}.py:1"}
+                for i in range(100)
+            ],
+            "suggestions": [],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict, page_size=5)
+        report = analyzer.get_summary_report()
+
+        self.assertLessEqual(len(report['files']), 5)
+        self.assertGreater(report['remaining_files'], 0)
+
+    def test_custom_page_size(self):
+        """Test custom page_size parameter."""
+        findings_dict = {
+            "summary": "WARN",
+            "critical_issues": [],
+            "warnings": [
+                {"category": "style", "description": f"Issue {i}", "location": f"file_{i}.py:1"}
+                for i in range(100)
+            ],
+            "suggestions": [],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict, page_size=20)
+        report = analyzer.get_summary_report()
+
+        self.assertLessEqual(len(report['files']), 20)
+
+
+class TestQAFindingsEdgeCases(unittest.TestCase):
+    """Tests for edge cases in QA findings analysis."""
+
+    def test_empty_location_string(self):
+        """Test handling of empty location string."""
+        data = {
+            "category": "test",
+            "description": "Issue",
+            "location": ""
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.WARNING)
+        self.assertIsNone(finding.file_path)
+        self.assertTrue(finding.has_missing_data)
+
+    def test_whitespace_only_location(self):
+        """Test handling of whitespace-only location."""
+        data = {
+            "category": "test",
+            "description": "Issue",
+            "location": "   "
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.WARNING)
+        self.assertEqual(finding.file_path, "")
+
+    def test_location_with_multiple_colons(self):
+        """Test handling of location with multiple colons."""
+        data = {
+            "category": "test",
+            "description": "Issue",
+            "location": "src/module:class:method:42"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.WARNING)
+        self.assertEqual(finding.file_path, "src/module:class:method")
+        self.assertEqual(finding.line_number, 42)
+
+    def test_non_string_category(self):
+        """Test handling of non-string category."""
+        data = {
+            "category": 123,
+            "description": "Issue",
+            "location": "file.py:1"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.WARNING)
+        self.assertEqual(finding.category, "unknown")
+        self.assertTrue(finding.has_missing_data)
+
+    def test_non_string_description(self):
+        """Test handling of non-string description."""
+        data = {
+            "category": "test",
+            "description": ["This", "is", "a", "list"],
+            "location": "file.py:1"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.WARNING)
+        self.assertEqual(finding.description, "No description provided")
+        self.assertTrue(finding.has_missing_data)
+
+    def test_very_large_line_number(self):
+        """Test handling of very large line numbers."""
+        data = {
+            "category": "test",
+            "description": "Issue",
+            "location": "file.py:999999999"
+        }
+        finding = QAFinding.from_dict(data, QAFindingType.WARNING)
+        self.assertEqual(finding.line_number, 999999999)
+
+    def test_info_finding_type(self):
+        """Test info finding type is handled."""
+        findings_dict = {
+            "summary": "PASS",
+            "critical_issues": [],
+            "warnings": [],
+            "suggestions": [],
+            "info": [
+                {"category": "note", "description": "Informational message", "location": "readme.md"}
+            ],
+            "passed_checks": []
+        }
+        analyzer = QAFindingsAnalyzer(findings_dict)
+        info = analyzer.get_findings_by_type(QAFindingType.INFO)
+        self.assertEqual(len(info), 1)
+        self.assertEqual(info[0].description, "Informational message")
+
+
+class TestQAReportFindingsIntegration(TempConfigTestCase):
+    """Integration tests for _report_qa_findings using QAFindingsAnalyzer."""
+
+    def test_report_qa_findings_uses_analyzer(self):
+        """Test that _report_qa_findings properly uses QAFindingsAnalyzer."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+
+        findings = {
+            "summary": "WARN",
+            "critical_issues": [
+                {"category": "security", "description": "SQL injection", "location": "db.py:10"}
+            ],
+            "warnings": [
+                {"category": "style", "description": "Long line", "location": "utils.py:5"}
+            ],
+            "suggestions": [],
+            "passed_checks": ["Error handling"]
+        }
+
+        task = {"id": "TASK-001", "description": "Test task"}
+
+        with patch('ralph.Logger.info'), patch('ralph.Logger.debug'), patch('ralph.Logger.file_log'):
+            orch._report_qa_findings(task, findings)
+
+    def test_report_qa_findings_json_output(self):
+        """Test JSON output includes analyzer data."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+
+        findings = {
+            "summary": "WARN",
+            "critical_issues": [
+                {"category": "security", "description": "Issue", "location": "file.py:10"}
+            ],
+            "warnings": [],
+            "suggestions": [],
+            "passed_checks": []
+        }
+
+        task = {"id": "TASK-001", "description": "Test task"}
+
+        original_json = Logger.json_output
+        try:
+            Logger.json_output = True
+            with patch('ralph.Logger.file_log'):
+                with patch('builtins.print') as mock_print:
+                    orch._report_qa_findings(task, findings)
+
+            mock_print.assert_called_once()
+            output = json.loads(mock_print.call_args[0][0])
+            self.assertIn('counts', output)
+            self.assertIn('findings_by_file', output)
+            self.assertEqual(output['counts']['errors'], 1)
+        finally:
+            Logger.json_output = original_json
+
+    def test_report_qa_findings_groups_by_file(self):
+        """Test that text output groups findings by file."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+
+        findings = {
+            "summary": "FAIL",
+            "critical_issues": [
+                {"category": "security", "description": "Issue 1", "location": "file_a.py:10"},
+                {"category": "security", "description": "Issue 2", "location": "file_a.py:20"}
+            ],
+            "warnings": [],
+            "suggestions": [],
+            "passed_checks": []
+        }
+
+        task = {"id": "TASK-001", "description": "Test task"}
+        logged_messages = []
+
+        def capture_info(msg, color=None):
+            logged_messages.append(msg)
+
+        # Ensure text output mode (not JSON)
+        original_json = Logger.json_output
+        original_ndjson = Logger.ndjson_output
+        try:
+            Logger.json_output = False
+            Logger.ndjson_output = False
+            with patch('ralph.Logger.info', side_effect=capture_info):
+                with patch('ralph.Logger.debug'), patch('ralph.Logger.file_log'):
+                    orch._report_qa_findings(task, findings)
+
+            # Check that file_a.py appears in output
+            file_a_logged = any("file_a.py" in msg for msg in logged_messages)
+            self.assertTrue(file_a_logged)
+        finally:
+            Logger.json_output = original_json
+            Logger.ndjson_output = original_ndjson
 
 
 if __name__ == '__main__':
