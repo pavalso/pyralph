@@ -56,7 +56,7 @@ pip install ralph
 Or install from source:
 
 ```bash
-git clone https://github.com/your-repo/ralph.git
+git clone https://github.com/pavalso/ralph.git
 cd ralph
 pip install -e .
 ```
