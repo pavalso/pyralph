@@ -2853,8 +2853,9 @@ class TestQAReviewMethod(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_strict=False)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
-                passed, findings = orch._run_qa_review(task)
+            with patch.object(orch, '_prompt_for_prd_generation', return_value=False):
+                with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                    passed, findings = orch._run_qa_review(task)
         self.assertTrue(passed)  # Non-strict mode continues despite critical issues
         self.assertIsNotNone(findings)
         self.assertEqual(len(findings["critical_issues"]), 1)
@@ -3085,6 +3086,291 @@ class TestQAReviewEvents(TempConfigTestCase):
             with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
                 orch._run_qa_review(task)
         self.assertIn(EventType.QA_REVIEW_FAILURE, events)
+
+
+# ==============================================================================
+# QA REVIEW PRD PROMPT TESTS (TASK-003)
+# ==============================================================================
+
+
+class TestQAReviewPRDPrompt(TempConfigTestCase):
+    """Tests for PRD generation prompt after QA review findings."""
+
+    def test_prompt_returns_true_for_yes_response(self):
+        """Test that _prompt_for_prd_generation returns True for 'y' input."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        findings = {"critical_issues": [{"description": "test"}], "warnings": []}
+        with patch('builtins.input', return_value='y'):
+            result = orch._prompt_for_prd_generation(findings)
+        self.assertTrue(result)
+
+    def test_prompt_returns_true_for_yes_word_response(self):
+        """Test that _prompt_for_prd_generation returns True for 'yes' input."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        findings = {"critical_issues": [{"description": "test"}], "warnings": []}
+        with patch('builtins.input', return_value='yes'):
+            result = orch._prompt_for_prd_generation(findings)
+        self.assertTrue(result)
+
+    def test_prompt_returns_false_for_no_response(self):
+        """Test that _prompt_for_prd_generation returns False for 'n' input."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        findings = {"critical_issues": [{"description": "test"}], "warnings": []}
+        with patch('builtins.input', return_value='n'):
+            result = orch._prompt_for_prd_generation(findings)
+        self.assertFalse(result)
+
+    def test_prompt_returns_false_for_no_word_response(self):
+        """Test that _prompt_for_prd_generation returns False for 'no' input."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        findings = {"critical_issues": [{"description": "test"}], "warnings": []}
+        with patch('builtins.input', return_value='no'):
+            result = orch._prompt_for_prd_generation(findings)
+        self.assertFalse(result)
+
+    def test_prompt_skipped_in_non_interactive_mode(self):
+        """Test that prompt is skipped in non-interactive mode."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, non_interactive=True)
+        findings = {"critical_issues": [{"description": "test"}], "warnings": []}
+        with patch('ralph.Logger.info') as mock_info:
+            result = orch._prompt_for_prd_generation(findings)
+        self.assertFalse(result)
+        mock_info.assert_called()
+
+    def test_prompt_skipped_in_ci_mode(self):
+        """Test that prompt is skipped in CI mode (which implies non-interactive)."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, non_interactive=True, ci=True)
+        findings = {"critical_issues": [{"description": "test"}], "warnings": []}
+        with patch('ralph.Logger.info'):
+            result = orch._prompt_for_prd_generation(findings)
+        self.assertFalse(result)
+
+    def test_prompt_reprompts_on_invalid_input(self):
+        """Test that invalid input triggers re-prompt."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        findings = {"critical_issues": [{"description": "test"}], "warnings": []}
+        # First input is invalid, second is valid
+        with patch('builtins.input', side_effect=['invalid', 'maybe', 'y']):
+            with patch('ralph.Logger.info') as mock_info:
+                result = orch._prompt_for_prd_generation(findings)
+        self.assertTrue(result)
+        # Should have shown invalid input warning twice
+        self.assertEqual(mock_info.call_count, 2)
+
+
+class TestQAReviewPRDGeneration(TempConfigTestCase):
+    """Tests for PRD generation from QA findings."""
+
+    def test_generate_prd_from_findings_calls_planner(self):
+        """Test that _generate_prd_from_qa_findings calls run_planner."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": [{"category": "style", "description": "Inconsistent naming"}]
+        }
+        with patch.object(orch, 'run_planner') as mock_planner:
+            with patch('ralph.Logger.info'):
+                orch._generate_prd_from_qa_findings(task, findings)
+        mock_planner.assert_called_once()
+
+    def test_generate_prd_from_findings_includes_task_context(self):
+        """Test that generated intent includes task ID and description."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Implement login feature"}
+        findings = {
+            "critical_issues": [{"category": "security", "description": "SQL injection"}],
+            "warnings": []
+        }
+        captured_intent = None
+        def capture_intent(intent):
+            nonlocal captured_intent
+            captured_intent = intent
+        with patch.object(orch, 'run_planner', side_effect=capture_intent):
+            with patch('ralph.Logger.info'):
+                orch._generate_prd_from_qa_findings(task, findings)
+        self.assertIn("TASK-001", captured_intent)
+        self.assertIn("Implement login feature", captured_intent)
+        self.assertIn("SQL injection", captured_intent)
+
+    def test_generate_prd_enhances_intent_when_enabled(self):
+        """Test that intent is enhanced when enhance_intent is enabled."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, enhance_intent=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        findings = {"critical_issues": [{"category": "test", "description": "issue"}], "warnings": []}
+        with patch.object(orch, '_enhance_intent_impl', return_value="enhanced intent") as mock_enhance:
+            with patch.object(orch, 'run_planner') as mock_planner:
+                with patch('ralph.Logger.info'):
+                    orch._generate_prd_from_qa_findings(task, findings)
+        mock_enhance.assert_called_once()
+        mock_planner.assert_called_once_with("enhanced intent")
+
+
+class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
+    """Integration tests for QA review with PRD prompt workflow."""
+
+    def test_no_prompt_when_no_findings(self):
+        """Test that no prompt is shown when QA review has no findings."""
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "PASS",
+  "critical_issues": [],
+  "warnings": [],
+  "suggestions": [],
+  "passed_checks": ["All checks passed"]
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch.object(orch, '_prompt_for_prd_generation') as mock_prompt:
+                with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                    orch._run_qa_review(task)
+        mock_prompt.assert_not_called()
+
+    def test_prompt_shown_when_critical_issues_found(self):
+        """Test that prompt is shown when critical issues are found."""
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "FAIL",
+  "critical_issues": [{"category": "security", "description": "SQL injection"}],
+  "warnings": [],
+  "suggestions": [],
+  "passed_checks": []
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch.object(orch, '_prompt_for_prd_generation', return_value=False) as mock_prompt:
+                with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                    orch._run_qa_review(task)
+        mock_prompt.assert_called_once()
+
+    def test_prompt_shown_when_only_warnings_found(self):
+        """Test that prompt is shown when only warnings are found."""
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "WARN",
+  "critical_issues": [],
+  "warnings": [{"category": "style", "description": "Inconsistent naming"}],
+  "suggestions": [],
+  "passed_checks": []
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch.object(orch, '_prompt_for_prd_generation', return_value=False) as mock_prompt:
+                with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                    orch._run_qa_review(task)
+        mock_prompt.assert_called_once()
+
+    def test_no_prompt_in_strict_mode_with_critical_issues(self):
+        """Test that prompt is NOT shown in strict mode (task fails instead)."""
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "FAIL",
+  "critical_issues": [{"category": "security", "description": "SQL injection"}],
+  "warnings": [],
+  "suggestions": [],
+  "passed_checks": []
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_strict=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch.object(orch, '_prompt_for_prd_generation') as mock_prompt:
+                with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                    passed, _ = orch._run_qa_review(task)
+        mock_prompt.assert_not_called()
+        self.assertFalse(passed)
+
+    def test_prd_generated_when_user_accepts(self):
+        """Test that PRD is generated when user accepts the prompt."""
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "FAIL",
+  "critical_issues": [{"category": "security", "description": "SQL injection"}],
+  "warnings": [],
+  "suggestions": [],
+  "passed_checks": []
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch.object(orch, '_prompt_for_prd_generation', return_value=True):
+                with patch.object(orch, '_generate_prd_from_qa_findings') as mock_gen:
+                    with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                        orch._run_qa_review(task)
+        mock_gen.assert_called_once()
+
+    def test_prd_not_generated_when_user_declines(self):
+        """Test that PRD is NOT generated when user declines the prompt."""
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "FAIL",
+  "critical_issues": [{"category": "security", "description": "SQL injection"}],
+  "warnings": [],
+  "suggestions": [],
+  "passed_checks": []
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch.object(orch, '_prompt_for_prd_generation', return_value=False):
+                with patch.object(orch, '_generate_prd_from_qa_findings') as mock_gen:
+                    with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                        orch._run_qa_review(task)
+        mock_gen.assert_not_called()
+
+    def test_graceful_exit_message_when_user_declines(self):
+        """Test that a summary message is shown when user declines PRD generation."""
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "FAIL",
+  "critical_issues": [{"category": "security", "description": "SQL injection"}],
+  "warnings": [{"category": "style", "description": "warning"}],
+  "suggestions": [],
+  "passed_checks": []
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch.object(orch, '_prompt_for_prd_generation', return_value=False):
+                with patch('ralph.Logger.info') as mock_info, patch('ralph.Logger.debug'):
+                    orch._run_qa_review(task)
+        # Check that the summary message was logged
+        calls = [str(call) for call in mock_info.call_args_list]
+        found_summary = any("2 finding(s)" in str(call) and "Continuing without PRD generation" in str(call) for call in calls)
+        self.assertTrue(found_summary, f"Expected summary message not found in calls: {calls}")
 
 
 # ==============================================================================

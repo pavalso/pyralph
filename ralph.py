@@ -3416,6 +3416,9 @@ class RalphOrchestrator:
         self._report_qa_findings(task, findings)
 
         has_critical = len(findings.get("critical_issues", [])) > 0
+        has_warnings = len(findings.get("warnings", [])) > 0
+        has_any_findings = has_critical or has_warnings
+
         if has_critical:
             self.hooks.emit(Event(
                 EventType.QA_REVIEW_SUCCESS, phase="execute",
@@ -3427,13 +3430,29 @@ class RalphOrchestrator:
                 return False, findings
             else:
                 Logger.info("   ⚠️  QA review found critical issues (non-strict mode, continuing)", "YELLOW")
+        elif has_warnings:
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_SUCCESS, phase="execute",
+                task_id=task['id'], task_description=task['description'],
+                metadata={"summary": findings.get("summary", "WARN"), "warning_count": len(findings.get("warnings", []))}
+            ))
+            Logger.info("   ⚠️  QA review found warnings.", "YELLOW")
         else:
             self.hooks.emit(Event(
                 EventType.QA_REVIEW_SUCCESS, phase="execute",
                 task_id=task['id'], task_description=task['description'],
                 metadata={"summary": findings.get("summary", "PASS")}
             ))
-            Logger.info("   ✅ QA review passed.", "GREEN")
+            Logger.info("   ✅ QA review passed with no issues.", "GREEN")
+
+        # Prompt for PRD generation if findings exist and not in strict mode (which already failed)
+        if has_any_findings and not self._qa_strict:
+            if self._prompt_for_prd_generation(findings):
+                self._generate_prd_from_qa_findings(task, findings)
+            else:
+                # User declined - display summary of findings and exit gracefully
+                total_issues = len(findings.get("critical_issues", [])) + len(findings.get("warnings", []))
+                Logger.info(f"   📋 QA review complete with {total_issues} finding(s). Continuing without PRD generation.", "CYAN")
 
         return True, findings
 
@@ -3543,6 +3562,71 @@ class RalphOrchestrator:
                                "Use --json for full details.", "CYAN")
 
         Logger.file_log(json.dumps(findings, indent=2), "QA_REVIEW", f"QA-{task['id']}")
+
+    def _prompt_for_prd_generation(self, findings: Dict[str, Any]) -> bool:
+        """Prompt user to generate a PRD to address QA findings.
+
+        Args:
+            findings: The QA findings dictionary
+
+        Returns:
+            True if user wants to generate PRD, False otherwise.
+            In non-interactive mode, returns False.
+        """
+        if self._non_interactive:
+            Logger.info("   ℹ️  Skipping PRD generation prompt (non-interactive mode)", "CYAN")
+            return False
+
+        total_issues = (
+            len(findings.get("critical_issues", [])) +
+            len(findings.get("warnings", []))
+        )
+
+        while True:
+            response = input(
+                f"{Logger.COLORS['YELLOW']}Generate a PRD to address {total_issues} QA finding(s)? (y/n): {Logger.COLORS['RESET']}"
+            ).strip().lower()
+
+            if response in ('y', 'yes'):
+                return True
+            elif response in ('n', 'no'):
+                return False
+            else:
+                Logger.info("   ⚠️  Invalid input. Please enter 'y' or 'n'.", "YELLOW")
+
+    def _generate_prd_from_qa_findings(self, task: Dict[str, Any], findings: Dict[str, Any]) -> None:
+        """Generate a PRD to address QA findings.
+
+        Creates a user intent from the QA findings and runs the planner
+        to generate a PRD for addressing the identified issues.
+
+        Args:
+            task: The task that was reviewed
+            findings: The QA findings dictionary
+        """
+        Logger.info("\n🔧 Generating PRD from QA findings...", "CYAN")
+
+        # Build a structured intent from the findings
+        issues = []
+        for issue in findings.get("critical_issues", []):
+            issues.append(f"- [{issue.get('category', 'unknown')}] {issue.get('description', 'No description')}")
+        for warning in findings.get("warnings", []):
+            issues.append(f"- [{warning.get('category', 'unknown')}] {warning.get('description', 'No description')}")
+
+        issues_text = "\n".join(issues) if issues else "No specific issues identified"
+
+        user_intent = (
+            f"Address the following QA issues found during review of task {task['id']}:\n\n"
+            f"{issues_text}\n\n"
+            f"Original task: {task.get('description', 'N/A')}"
+        )
+
+        # Enhance intent if enabled
+        if self._enhance_intent:
+            user_intent = self._enhance_intent_impl(user_intent)
+
+        # Run the planner to create the PRD
+        self.run_planner(user_intent)
 
     def _display_findings_by_file(self, findings: List['QAFinding'], color: Optional[str],
                                    max_per_file: int = 5, max_files: int = 10,
