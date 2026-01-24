@@ -270,8 +270,8 @@ class ExecutableHook(Hook):
             pass  # Timeout is handled by caller
         except (OSError, json.JSONDecodeError) as e:
             # Log hook execution errors for debugging, caller handles the None return
-            import sys
-            print(f"[DEBUG] Hook execution failed for {self._path}: {type(e).__name__}: {e}", file=sys.stderr)
+            from ralph import Logger
+            Logger.debug(f"Hook execution failed for {self._path}: {type(e).__name__}: {e}")
         return None
 
     @staticmethod

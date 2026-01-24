@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple, TYPE_CHECKING
 
+from ralph import Logger
+
 if TYPE_CHECKING:
     from hooks import HookManager
 
@@ -232,36 +234,36 @@ def main(args: Optional[List[str]] = None) -> int:
         try:
             config = generate_hook_config()
             config_path = register_hook(parsed_args.hooks_dir, config)
-            print(f"Hook registered successfully: {config_path}")
-            print(f"  Name: {config.name}")
-            print(f"  Events: {', '.join(config.events)}")
-            print(f"  Path: {config.path}")
+            Logger.info(f"Hook registered successfully: {config_path}")
+            Logger.info(f"  Name: {config.name}")
+            Logger.info(f"  Events: {', '.join(config.events)}")
+            Logger.info(f"  Path: {config.path}")
             return 0
         except HookRegistrationError as e:
-            print(f"Error: {e}", file=sys.stderr)
+            Logger.error(f"Error: {e}")
             return 1
 
     if parsed_args.verbose:
-        print(f"Label filter: {parsed_args.label}", file=sys.stderr)
-        print(f"Output format: {parsed_args.output_format}", file=sys.stderr)
+        Logger.debug(f"Label filter: {parsed_args.label}")
+        Logger.debug(f"Output format: {parsed_args.output_format}")
 
     if not parsed_args.no_check:
         if not check_gh_cli():
-            print("Error: gh CLI is not installed or not authenticated.", file=sys.stderr)
-            print("Please install gh CLI and run 'gh auth login'.", file=sys.stderr)
+            Logger.error("Error: gh CLI is not installed or not authenticated.")
+            Logger.error("Please install gh CLI and run 'gh auth login'.")
             return 1
 
     try:
         if parsed_args.verbose:
-            print(f"Fetching issues with label '{parsed_args.label}'...", file=sys.stderr)
+            Logger.debug(f"Fetching issues with label '{parsed_args.label}'...")
 
         issues = fetch_ready_issues(label=parsed_args.label)
 
         if not issues:
             if parsed_args.output_format == "json":
-                print(json.dumps({"count": 0, "issues": []}, indent=2))
+                Logger.info(json.dumps({"count": 0, "issues": []}, indent=2))
             else:
-                print(f"No open issues with '{parsed_args.label}' label found.")
+                Logger.info(f"No open issues with '{parsed_args.label}' label found.")
             return 0
 
         if parsed_args.output_format == "json":
@@ -269,14 +271,14 @@ def main(args: Optional[List[str]] = None) -> int:
                 "count": len(issues),
                 "issues": [issue.to_dict() for issue in issues]
             }
-            print(json.dumps(output, indent=2))
+            Logger.info(json.dumps(output, indent=2))
         else:
-            print(format_issues_as_text(issues))
+            Logger.info(format_issues_as_text(issues))
 
         return 0
 
     except GitHubCLIError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        Logger.error(f"Error: {e}")
         return 1
 
 
@@ -2890,23 +2892,23 @@ def _handle_start(args: argparse.Namespace) -> int:
     status = watcher.get_status()
 
     if status.running:
-        print(f"Watcher is already running (PID: {status.pid})")
+        Logger.warning(f"Watcher is already running (PID: {status.pid})")
         return 1
 
-    print(f"Starting watcher...")
-    print(f"  Label: {config.label}")
-    print(f"  Poll interval: {config.poll_interval}s")
-    print(f"  Agent: {config.agent_name}")
-    print(f"  Auto-process: {config.auto_process}")
+    Logger.info("Starting watcher...")
+    Logger.info(f"  Label: {config.label}")
+    Logger.info(f"  Poll interval: {config.poll_interval}s")
+    Logger.info(f"  Agent: {config.agent_name}")
+    Logger.info(f"  Auto-process: {config.auto_process}")
 
     try:
         watcher.start(foreground=True)
         return 0
     except IssueWatcherError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        Logger.error(f"Error: {e}")
         return 1
     except KeyboardInterrupt:
-        print("\nStopped.")
+        Logger.info("\nStopped.")
         return 0
 
 
@@ -2920,16 +2922,16 @@ def _handle_stop() -> int:
     status = watcher.get_status()
 
     if not status.running:
-        print("Watcher is not running")
+        Logger.warning("Watcher is not running")
         return 1
 
-    print(f"Stopping watcher (PID: {status.pid})...")
+    Logger.info(f"Stopping watcher (PID: {status.pid})...")
 
     if watcher.stop():
-        print("Stop signal sent")
+        Logger.info("Stop signal sent")
         return 0
     else:
-        print("Failed to stop watcher", file=sys.stderr)
+        Logger.error("Failed to stop watcher")
         return 1
 
 
@@ -2946,17 +2948,17 @@ def _handle_status(args: argparse.Namespace) -> int:
     status = watcher.get_status()
 
     if args.json_output:
-        print(json.dumps(status.to_dict(), indent=2))
+        Logger.info(json.dumps(status.to_dict(), indent=2))
     else:
         running_str = "running" if status.running else "stopped"
-        print(f"Watcher status: {running_str}")
+        Logger.info(f"Watcher status: {running_str}")
         if status.running:
-            print(f"  PID: {status.pid}")
-        print(f"  Issues stored: {status.issues_stored}")
-        print(f"  Queue pending: {status.issues_pending}")
-        print(f"  Queue processing: {status.issues_processing}")
-        print(f"  Queue completed: {status.issues_completed}")
-        print(f"  Queue failed: {status.issues_failed}")
+            Logger.info(f"  PID: {status.pid}")
+        Logger.info(f"  Issues stored: {status.issues_stored}")
+        Logger.info(f"  Queue pending: {status.issues_pending}")
+        Logger.info(f"  Queue processing: {status.issues_processing}")
+        Logger.info(f"  Queue completed: {status.issues_completed}")
+        Logger.info(f"  Queue failed: {status.issues_failed}")
 
     return 0
 
@@ -2973,19 +2975,19 @@ def _handle_poll(args: argparse.Namespace) -> int:
     config = WatcherConfig(label=args.label)
     watcher = IssueWatcher(config)
 
-    print(f"Polling for issues with label '{args.label}'...")
+    Logger.info(f"Polling for issues with label '{args.label}'...")
 
     try:
         new_issues = watcher.poll_once()
         if new_issues:
-            print(f"Found {len(new_issues)} new issue(s):")
+            Logger.info(f"Found {len(new_issues)} new issue(s):")
             for issue in new_issues:
-                print(f"  #{issue.number}: {issue.title}")
+                Logger.info(f"  #{issue.number}: {issue.title}")
         else:
-            print("No new issues found")
+            Logger.info("No new issues found")
         return 0
     except GitHubCLIError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        Logger.error(f"Error: {e}")
         return 1
 
 
@@ -3007,22 +3009,22 @@ def _handle_process(args: argparse.Namespace) -> int:
 
     pending_count = watcher.queue.count(status="pending")
     if pending_count == 0:
-        print("No pending issues to process")
+        Logger.info("No pending issues to process")
         return 0
 
-    print(f"Processing {pending_count} pending issue(s)...")
+    Logger.info(f"Processing {pending_count} pending issue(s)...")
 
     try:
         results, success_count, failure_count = watcher.process_all()
-        print(f"Processed {len(results)} issue(s): {success_count} succeeded, {failure_count} failed")
+        Logger.info(f"Processed {len(results)} issue(s): {success_count} succeeded, {failure_count} failed")
 
         for result in results:
             status_str = "SUCCESS" if result.success else f"FAILED: {result.error}"
-            print(f"  #{result.issue_number}: {status_str}")
+            Logger.info(f"  #{result.issue_number}: {status_str}")
 
         return 0 if failure_count == 0 else 1
     except PlannerError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        Logger.error(f"Error: {e}")
         return 1
 
 
