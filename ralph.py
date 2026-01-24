@@ -623,16 +623,13 @@ class RalphOrchestrator:
                  test_cmd: Optional[str] = None, skip_verify: bool = False, retries: Optional[int] = None,
                  timeout: Optional[int] = None, only: Optional[List[str]] = None, except_tasks: Optional[List[str]] = None,
                  resume: Optional[str] = None, include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
-                 context_limit: Optional[int] = None, write_allow: Optional[List[str]] = None,
-                 write_deny: Optional[List[str]] = None, dry_run: bool = False,
+                 context_limit: Optional[int] = None,
                  model: Optional[str] = None, temperature: Optional[float] = None,
                  max_tokens: Optional[int] = None, seed: Optional[int] = None,
                  log_file: Optional[str] = None, log_level: Optional[str] = None,
                  json_output: bool = False, ndjson_output: bool = False,
                  print_prd: bool = False, prd_out: Optional[str] = None, archive: bool = True,
                  non_interactive: bool = False, ci: bool = False, status_check: bool = False,
-                 concurrency: Optional[int] = None, rate_limit: Optional[float] = None,
-                 backoff: Optional[float] = None,
                  pre: Optional[List[str]] = None, post: Optional[List[str]] = None,
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
@@ -675,10 +672,6 @@ class RalphOrchestrator:
         self._include_patterns = include
         self._exclude_patterns = exclude
         self._context_limit = context_limit
-        # Store safety and isolation control flags
-        self._write_allow = write_allow
-        self._write_deny = write_deny
-        self._dry_run = dry_run
         # Store I/O, logging and output flags
         self._log_file = log_file
         self._log_level = log_level
@@ -691,10 +684,6 @@ class RalphOrchestrator:
         self._non_interactive = non_interactive
         self._ci = ci
         self._status_check = status_check
-        # Store performance and determinism flags
-        self._concurrency = concurrency
-        self._rate_limit = rate_limit
-        self._backoff = backoff
         # Store extensibility and hook flags
         self._pre_commands = pre or []
         self._post_commands = post or []
@@ -1407,7 +1396,7 @@ class RalphOrchestrator:
 
     def _archive_prd(self) -> None:
         if not CONF.PRD_FILE.exists(): return
-        # Respect --archive flag (default: True)
+        # Respect --no-archive flag (archive is default behavior)
         if not self._archive:
             Logger.debug("Skipping PRD archival (--no-archive)")
             return
@@ -1681,10 +1670,7 @@ def main() -> None:
     parser.add_argument("--accept-all", "-y", action="store_true", help="Skip prompts")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v, -vv, -vvv)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non-essential output")
-    # Color options (mutually exclusive)
-    color_group = parser.add_mutually_exclusive_group()
-    color_group.add_argument("--no-color", action="store_true", help="Disable colored output")
-    color_group.add_argument("--color", action="store_true", help="Force colored output")
+    parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     parser.add_argument("--no-emoji", action="store_true", help="Replace emojis with text equivalents")
     parser.add_argument("--no-hooks", action="store_true", help="Disable hook execution")
     parser.add_argument("--hooks", nargs="+", metavar="NAME", help="Enable only specified hooks by name")
@@ -1709,10 +1695,6 @@ def main() -> None:
     parser.add_argument("--include", nargs="+", metavar="PATTERN", help="Include only files matching these glob patterns in context")
     parser.add_argument("--exclude", nargs="+", metavar="PATTERN", help="Exclude files matching these glob patterns from context")
     parser.add_argument("--context-limit", type=int, metavar="N", help="Limit maximum number of context files considered")
-    # Safety and isolation control flags
-    parser.add_argument("--write-allow", nargs="+", metavar="PATTERN", help="Allow writes only to paths matching these glob patterns")
-    parser.add_argument("--write-deny", nargs="+", metavar="PATTERN", help="Deny writes to paths matching these glob patterns")
-    parser.add_argument("--dry-run", action="store_true", help="Simulate file writes without actually writing")
     # Model and prompting flags for LLM customization
     parser.add_argument("--model", type=str, metavar="MODEL", help="Model identifier for LLM requests (e.g., claude-3-opus)")
     parser.add_argument("--temperature", type=float, metavar="TEMP", help="Sampling temperature (0.0-1.0) for response generation")
@@ -1728,18 +1710,12 @@ def main() -> None:
     # PRD output flags
     parser.add_argument("--print-prd", action="store_true", help="Print PRD contents and exit without executing")
     parser.add_argument("--prd-out", type=str, metavar="FILE", help="Export PRD to specified file")
-    # Archive control flags (mutually exclusive)
-    archive_group = parser.add_mutually_exclusive_group()
-    archive_group.add_argument("--archive", action="store_true", dest="archive_enabled", default=True, help="Archive PRD after execution (default)")
-    archive_group.add_argument("--no-archive", action="store_false", dest="archive_enabled", help="Skip PRD archival after execution")
+    # Archive control flag
+    parser.add_argument("--no-archive", action="store_false", dest="archive_enabled", default=True, help="Skip PRD archival after execution")
     # Headless operation flags for CI/CD pipelines
     parser.add_argument("--non-interactive", action="store_true", help="Disable all interactive prompts (fails if input required)")
     parser.add_argument("--ci", action="store_true", help="CI mode: enables --non-interactive --no-color --no-emoji --json")
     parser.add_argument("--status-check", action="store_true", help="Check PRD status and exit with code (0=complete, 1=incomplete, 2=no PRD)")
-    # Performance and determinism flags for parallelization and API throttling
-    parser.add_argument("--concurrency", type=int, metavar="N", help="Maximum number of parallel tasks (default: 1, sequential)")
-    parser.add_argument("--rate-limit", type=float, metavar="RPS", help="Maximum API requests per second (default: unlimited)")
-    parser.add_argument("--backoff", type=float, metavar="SECS", help="Base backoff time in seconds for retries (default: 1.0)")
     # Extensibility and hook flags for custom commands and validators
     parser.add_argument("--pre", nargs="+", metavar="CMD", help="Shell command(s) to run before each phase (aborts on failure)")
     parser.add_argument("--post", nargs="+", metavar="CMD", help="Shell command(s) to run after each phase (receives RALPH_PHASE, RALPH_SUCCESS env vars)")
@@ -1765,12 +1741,9 @@ def main() -> None:
     Logger.set_quiet(args.quiet)
     Logger.set_no_emoji(args.no_emoji or ci_mode)
     Logger.set_non_interactive(non_interactive)
-    # Handle color: --no-color disables, --color forces enable, --ci disables (default: auto/enabled)
+    # Handle color: --no-color disables, --ci disables (default: colors enabled)
     if args.no_color or ci_mode:
         Logger.set_no_color(True)
-    elif args.color:
-        Logger.set_no_color(False)
-    # else: leave default (colors enabled)
     # Configure I/O and output format settings
     if args.log_file:
         Logger.set_log_file(args.log_file)
@@ -1821,9 +1794,6 @@ def main() -> None:
         include=args.include,
         exclude=args.exclude,
         context_limit=args.context_limit,
-        write_allow=args.write_allow,
-        write_deny=args.write_deny,
-        dry_run=args.dry_run,
         model=args.model,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
@@ -1838,9 +1808,6 @@ def main() -> None:
         non_interactive=non_interactive,
         ci=ci_mode,
         status_check=args.status_check,
-        concurrency=args.concurrency,
-        rate_limit=args.rate_limit,
-        backoff=args.backoff,
         pre=args.pre,
         post=args.post,
         plugin=args.plugin,

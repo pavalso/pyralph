@@ -567,14 +567,9 @@ class TestOrchestratorFlags(TempConfigTestCase):
         ('prompt_file', '_prompt_file_override', "/prompt", None),
         ('include', '_include_patterns', ["arch"], None),
         ('exclude', '_exclude_patterns', ["tasks"], None),
-        ('write_allow', '_write_allow', ["*.py"], None),
-        ('write_deny', '_write_deny', ["*.pyc"], None),
-        ('dry_run', '_dry_run', True, False),
         ('non_interactive', '_non_interactive', True, False),
         ('ci', '_ci', True, False),
         ('status_check', '_status_check', True, False),
-        ('concurrency', '_concurrency', 4, None),
-        ('rate_limit', '_rate_limit', 1.0, None),
         ('pre', '_pre_commands', ["echo"], []),
         ('post', '_post_commands', ["done"], []),
         ('plugin', '_plugin_paths', ["/p.py"], []),
@@ -592,7 +587,7 @@ class TestOrchestratorFlags(TempConfigTestCase):
     def test_flag_defaults(self):
         orch = self.create_mock_orchestrator()
         for kwarg, attr, value, default in self.FLAG_CASES:
-            if default is not None or attr in ('_tree_depth', '_skip_verify', '_git_enabled', '_dry_run',
+            if default is not None or attr in ('_tree_depth', '_skip_verify', '_git_enabled',
                                                 '_non_interactive', '_ci', '_status_check', '_labels',
                                                 '_pre_commands', '_post_commands', '_plugin_paths'):
                 with self.subTest(attr=attr):
@@ -731,9 +726,7 @@ class TestCliArguments(unittest.TestCase):
         self.parser.add_argument("--accept-all", "-y", action="store_true")
         self.parser.add_argument("-v", "--verbose", action="count", default=0)
         self.parser.add_argument("--quiet", "-q", action="store_true")
-        color = self.parser.add_mutually_exclusive_group()
-        color.add_argument("--no-color", action="store_true")
-        color.add_argument("--color", action="store_true")
+        self.parser.add_argument("--no-color", action="store_true")
         self.parser.add_argument("--no-emoji", action="store_true")
         self.parser.add_argument("--agent", choices=list_agents(), default=list_agents()[0])
         self.parser.add_argument("--no-hooks", action="store_true")
@@ -753,9 +746,6 @@ class TestCliArguments(unittest.TestCase):
         self.parser.add_argument("--resume", type=str)
         self.parser.add_argument("--include-memory", nargs="+")
         self.parser.add_argument("--exclude-memory", nargs="+")
-        self.parser.add_argument("--write-allow", nargs="+")
-        self.parser.add_argument("--write-deny", nargs="+")
-        self.parser.add_argument("--dry-run", action="store_true")
         self.parser.add_argument("--non-interactive", action="store_true")
         self.parser.add_argument("--ci", action="store_true")
         self.parser.add_argument("--status-check", action="store_true")
@@ -797,10 +787,6 @@ class TestCliArguments(unittest.TestCase):
         self.assertEqual(args.only, ["T-1", "T-2"])
         self.assertEqual(args.retries, 3)
 
-    def test_color_mutual_exclusion(self):
-        with self.assertRaises(SystemExit):
-            self.parser.parse_args(["--color", "--no-color"])
-
     def test_get_version_and_list_agents(self):
         self.assertIsInstance(get_version(), str)
         agents = list_agents()
@@ -830,7 +816,6 @@ class TestMainCLIPassthrough(unittest.TestCase):
         (['--timeout', '300'], {'timeout': 300}),
         (['--only', 'T-1', 'T-2'], {'only': ['T-1', 'T-2']}),
         (['--resume', 'T-3'], {'resume': 'T-3'}),
-        (['--dry-run'], {'dry_run': True}),
         (['--non-interactive'], {'non_interactive': True}),
         (['--ci'], {'ci': True}),
         (['--status-check'], {'status_check': True}),
@@ -1115,27 +1100,6 @@ class TestHeadlessMode(TempConfigTestCase):
     def test_status_check_flag(self):
         orch = self.create_mock_orchestrator(status_check=True)
         self.assertTrue(orch._status_check)
-
-
-# ==============================================================================
-# PERFORMANCE FLAGS TESTS
-# ==============================================================================
-
-
-class TestPerformanceFlags(TempConfigTestCase):
-    """Tests for performance flags."""
-
-    def test_concurrency_flag(self):
-        orch = self.create_mock_orchestrator(concurrency=4)
-        self.assertEqual(orch._concurrency, 4)
-
-    def test_rate_limit_flag(self):
-        orch = self.create_mock_orchestrator(rate_limit=1.5)
-        self.assertEqual(orch._rate_limit, 1.5)
-
-    def test_backoff_flag(self):
-        orch = self.create_mock_orchestrator(backoff=2.0)
-        self.assertEqual(orch._backoff, 2.0)
 
 
 # ==============================================================================
