@@ -7,6 +7,7 @@ name = "pyralph"
 version = "0.1.0"
 description = "Autonomous software development agent that iteratively builds projects"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.8"
 authors = [
     { name = "Ralph Agent" }
