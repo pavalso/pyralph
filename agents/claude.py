@@ -21,8 +21,6 @@ class ClaudeAgent(BaseAgent):
             cmd.extend(["--model", self.model])
         if self.max_tokens is not None:
             cmd.extend(["--max-tokens", str(self.max_tokens)])
-        # Note: Claude CLI does not support --temperature or --seed flags directly
-        # These are stored for potential future use or custom implementations
         return cmd
 
     def _prepare_input(self, prompt: str) -> Optional[str]:

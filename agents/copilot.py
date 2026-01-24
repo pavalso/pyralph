@@ -8,20 +8,15 @@ from .base import BaseAgent, AgentError
 class GithubAgent(BaseAgent):
     """Interface to the Copilot CLI agent."""
 
-    def __init__(self, timeout_seconds: int = 600, model: Optional[str] = None,
-                 temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-                 seed: Optional[int] = None) -> None:
+    def __init__(self, timeout_seconds: int = 600, model: Optional[str] = None) -> None:
         """
         Initialize the Copilot agent.
 
         Args:
             timeout_seconds: Maximum time to wait for Copilot to respond
             model: Model identifier to use for LLM requests
-            temperature: Sampling temperature for response generation (0.0-1.0)
-            max_tokens: Maximum number of tokens in the response
-            seed: Random seed for reproducible outputs
         """
-        super().__init__(timeout_seconds, model, temperature, max_tokens, seed)
+        super().__init__(timeout_seconds, model)
         self._temp_file_path: Optional[str] = None
 
     def get_name(self) -> str:
@@ -44,8 +39,6 @@ class GithubAgent(BaseAgent):
         ]
         if self.model:
             cmd.extend(["--model", self.model])
-        # Note: Copilot CLI does not support --temperature, --max-tokens, or --seed flags directly
-        # These are stored for potential future use or custom implementations
         return cmd
 
     def _prepare_input(self, prompt: str) -> Optional[str]:

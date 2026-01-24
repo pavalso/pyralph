@@ -26,23 +26,18 @@ class AgentError:
 
 class BaseAgent(ABC):
     def __init__(self, timeout_seconds: int = 600, model: Optional[str] = None,
-                 temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-                 seed: Optional[int] = None) -> None:
+                 max_tokens: Optional[int] = None) -> None:
         """
         Initialize the agent.
 
         Args:
             timeout_seconds: Maximum time to wait for the agent to respond
             model: Model identifier to use for LLM requests
-            temperature: Sampling temperature for response generation (0.0-1.0)
             max_tokens: Maximum number of tokens in the response
-            seed: Random seed for reproducible outputs
         """
         self.timeout_seconds = timeout_seconds
         self.model = model
-        self.temperature = temperature
         self.max_tokens = max_tokens
-        self.seed = seed
         self._logger: Any = None
         self._config: Any = None
 
