@@ -1066,7 +1066,8 @@ class TestTemplateManager(unittest.TestCase):
 
     def test_template_load(self):
         template = TemplateManager.load("developer.txt")
-        self.assertIn("ROLE: Developer", template)
+        self.assertIn("# ROLE", template)
+        self.assertIn("Developer", template)
         self.assertIn("{{task_id}}", template)
 
     def test_template_render(self):
@@ -1155,6 +1156,150 @@ class TestPlannerPromptStructure(unittest.TestCase):
         self.assertIn("architecture.md", rendered)
         self.assertNotIn("{{user_intent}}", rendered)
         self.assertNotIn("{{memory_map}}", rendered)
+
+
+class TestDeveloperPromptStructure(unittest.TestCase):
+    """Tests for developer prompt template structure and content (TASK-003)."""
+
+    def setUp(self):
+        self.template = TemplateManager.load("developer.txt")
+
+    def test_developer_has_role_section(self):
+        """Developer template should have a ROLE section."""
+        self.assertIn("# ROLE", self.template)
+        self.assertIn("Developer", self.template)
+
+    def test_developer_has_objective_section(self):
+        """Developer template should have an OBJECTIVE section."""
+        self.assertIn("# OBJECTIVE", self.template)
+        self.assertIn("acceptance criteria", self.template.lower())
+
+    def test_developer_has_task_context_section(self):
+        """Developer template should have structured task context."""
+        self.assertIn("# TASK CONTEXT", self.template)
+        self.assertIn("## Task ID", self.template)
+        self.assertIn("{{task_id}}", self.template)
+        self.assertIn("## Task Description", self.template)
+        self.assertIn("{{task_description}}", self.template)
+        self.assertIn("## Acceptance Criteria", self.template)
+        self.assertIn("{{acceptance_criteria}}", self.template)
+
+    def test_developer_has_mandatory_instructions_section(self):
+        """Developer template should have mandatory instructions section."""
+        self.assertIn("# MANDATORY INSTRUCTIONS", self.template)
+        self.assertIn("{{user_context}}", self.template)
+
+    def test_developer_has_available_context_section(self):
+        """Developer template should have available context section."""
+        self.assertIn("# AVAILABLE CONTEXT", self.template)
+        self.assertIn("## Memory Files", self.template)
+        self.assertIn("{{memory_tree}}", self.template)
+        self.assertIn("## Previous Errors", self.template)
+        self.assertIn("{{prev_errors}}", self.template)
+
+    def test_developer_has_execution_workflow(self):
+        """Developer template should have clear execution workflow phases."""
+        self.assertIn("# EXECUTION WORKFLOW", self.template)
+        self.assertIn("## Phase 1: Planning", self.template)
+        self.assertIn("## Phase 2: Implementation", self.template)
+        self.assertIn("## Phase 3: Verification", self.template)
+
+    def test_developer_has_verification_command_placeholder(self):
+        """Developer template should include verification command placeholder."""
+        self.assertIn("{{test_cmd}}", self.template)
+        self.assertIn("Run the verification command", self.template)
+
+    def test_developer_has_error_handling_guidance(self):
+        """Developer template should have error handling guidance."""
+        self.assertIn("# ERROR HANDLING GUIDANCE", self.template)
+        self.assertIn("## If Tests Fail", self.template)
+        self.assertIn("## Common Error Patterns", self.template)
+        self.assertIn("## Self-Correction Rules", self.template)
+
+    def test_developer_has_common_error_patterns_table(self):
+        """Developer template should have common error patterns table."""
+        error_types = ["Import error", "Syntax error", "Type error", "Test assertion", "File not found"]
+        for error_type in error_types:
+            self.assertIn(error_type, self.template)
+
+    def test_developer_has_self_correction_rules(self):
+        """Developer template should have self-correction rules."""
+        self.assertIn("same error twice", self.template)
+        self.assertIn("different approach", self.template)
+        self.assertIn("Do NOT modify test files", self.template)
+        self.assertIn("Do NOT skip or disable failing tests", self.template)
+
+    def test_developer_has_output_specification(self):
+        """Developer template should have output specification."""
+        self.assertIn("# OUTPUT SPECIFICATION", self.template)
+        self.assertIn("## On Success", self.template)
+        self.assertIn("STATUS: SUCCESS", self.template)
+        self.assertIn("## On Failure", self.template)
+        self.assertIn("STATUS: FAILURE", self.template)
+
+    def test_developer_has_constraints_section(self):
+        """Developer template should have constraints."""
+        self.assertIn("# CONSTRAINTS", self.template)
+        self.assertIn("MUST run verification", self.template)
+        self.assertIn("MUST NOT report SUCCESS if verification fails", self.template)
+
+    def test_developer_render_substitutes_variables(self):
+        """Developer template should correctly substitute variables."""
+        rendered = TemplateManager.render(
+            "developer.txt",
+            task_id="TASK-001",
+            task_description="Implement feature X",
+            acceptance_criteria="- Feature X works\n- Tests pass",
+            memory_tree="- .ralph/memory/architecture.md",
+            user_context="Follow gitflow",
+            test_cmd="pytest",
+            prev_errors="(No previous errors)"
+        )
+        self.assertIn("TASK-001", rendered)
+        self.assertIn("Implement feature X", rendered)
+        self.assertIn("Feature X works", rendered)
+        self.assertIn("Follow gitflow", rendered)
+        self.assertIn("pytest", rendered)
+        self.assertNotIn("{{task_id}}", rendered)
+        self.assertNotIn("{{task_description}}", rendered)
+
+
+class TestFormatAcceptanceCriteria(TempConfigTestCase):
+    """Tests for acceptance criteria formatting (TASK-003)."""
+
+    def test_format_acceptance_criteria_with_criteria(self):
+        """Should format acceptance criteria as bulleted list."""
+        orch = self.create_mock_orchestrator()
+        task = {
+            'id': 'TASK-001',
+            'description': 'Test task',
+            'acceptanceCriteria': ['Criterion 1', 'Criterion 2', 'Criterion 3']
+        }
+        result = orch._format_acceptance_criteria(task)
+        self.assertIn("- Criterion 1", result)
+        self.assertIn("- Criterion 2", result)
+        self.assertIn("- Criterion 3", result)
+
+    def test_format_acceptance_criteria_empty(self):
+        """Should return default message when no criteria."""
+        orch = self.create_mock_orchestrator()
+        task = {
+            'id': 'TASK-001',
+            'description': 'Test task',
+            'acceptanceCriteria': []
+        }
+        result = orch._format_acceptance_criteria(task)
+        self.assertIn("No acceptance criteria specified", result)
+
+    def test_format_acceptance_criteria_missing(self):
+        """Should return default message when criteria field missing."""
+        orch = self.create_mock_orchestrator()
+        task = {
+            'id': 'TASK-001',
+            'description': 'Test task'
+        }
+        result = orch._format_acceptance_criteria(task)
+        self.assertIn("No acceptance criteria specified", result)
 
 
 # ==============================================================================

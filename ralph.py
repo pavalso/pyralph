@@ -737,7 +737,101 @@ You MUST output valid JSON matching this exact schema:
 Output the raw JSON object directly. Example:
 {"id":"PRD-001","description":"...","userStories":[...]}
 """,
-        "developer.txt": "ROLE: Developer\nTASK: {{task_id}} - {{task_description}}\n\n## MANDATORY INSTRUCTIONS (MUST FOLLOW)\nThe following user preferences are REQUIRED. You MUST strictly adhere to these instructions:\n{{user_context}}\n## END MANDATORY INSTRUCTIONS\n\nCONTEXT: {{memory_tree}}\nFLOW: Plan, Implement, Verify ({{test_cmd}}), Print STATUS: SUCCESS or FAILURE - <reason>\nRETRY: {{prev_errors}}"
+        "developer.txt": """# ROLE
+Developer
+
+# OBJECTIVE
+Implement the assigned task following the acceptance criteria and verification requirements.
+
+# TASK CONTEXT
+## Task ID
+{{task_id}}
+
+## Task Description
+{{task_description}}
+
+## Acceptance Criteria
+{{acceptance_criteria}}
+
+# MANDATORY INSTRUCTIONS
+The following user preferences are REQUIRED. You MUST strictly adhere to these instructions:
+{{user_context}}
+
+# AVAILABLE CONTEXT
+## Memory Files
+{{memory_tree}}
+
+## Previous Errors (if any)
+{{prev_errors}}
+
+# EXECUTION WORKFLOW
+
+## Phase 1: Planning
+1. Analyze the task requirements and acceptance criteria
+2. Identify files that need to be created or modified
+3. Consider edge cases and potential issues
+4. Plan the implementation order
+
+## Phase 2: Implementation
+1. Make changes incrementally
+2. Follow existing code patterns and conventions
+3. Keep changes minimal and focused on the task
+4. Do NOT add features beyond what is specified
+
+## Phase 3: Verification
+1. Run the verification command: `{{test_cmd}}`
+2. If tests fail, analyze the error output
+3. Fix any issues and re-run verification
+4. Only proceed to completion when tests pass
+
+# ERROR HANDLING GUIDANCE
+
+## If Tests Fail
+1. Read the error message carefully
+2. Identify the root cause (syntax error, logic error, missing import, etc.)
+3. Fix the specific issue - do not make unrelated changes
+4. Re-run verification to confirm the fix
+
+## Common Error Patterns
+| Error Type | Resolution |
+|------------|------------|
+| Import error | Add missing import or fix module path |
+| Syntax error | Fix the syntax at the indicated line |
+| Type error | Check argument types and return values |
+| Test assertion | Verify logic matches expected behavior |
+| File not found | Check file paths and ensure files exist |
+
+## Self-Correction Rules
+- If you encounter the same error twice, try a different approach
+- If verification fails 3+ times, step back and re-analyze the requirements
+- Do NOT modify test files unless the task explicitly requires it
+- Do NOT skip or disable failing tests
+
+# OUTPUT SPECIFICATION
+
+## On Success
+When all acceptance criteria are met and verification passes, output EXACTLY:
+```
+STATUS: SUCCESS
+```
+
+## On Failure
+If you cannot complete the task, output EXACTLY:
+```
+STATUS: FAILURE - <specific reason>
+```
+
+Include a clear explanation of:
+1. What was attempted
+2. What failed
+3. What might be needed to resolve it
+
+# CONSTRAINTS
+- You MUST run verification (`{{test_cmd}}`) before reporting success
+- You MUST NOT report SUCCESS if verification fails
+- You MUST follow the acceptance criteria exactly
+- You MUST keep changes minimal and focused
+- You MUST NOT modify unrelated files"""
     }
 
     @staticmethod
@@ -1394,6 +1488,13 @@ class RalphOrchestrator:
             raw_text = raw_text.replace(placeholder, value)
         return raw_text
 
+    def _format_acceptance_criteria(self, task: Dict[str, Any]) -> str:
+        """Format acceptance criteria as a bulleted list for the developer prompt."""
+        criteria = task.get('acceptanceCriteria', [])
+        if not criteria:
+            return "(No acceptance criteria specified)"
+        return "\n".join(f"- {criterion}" for criterion in criteria)
+
     def _verify_task(self, task: Dict[str, Any], test_cmd: str) -> Tuple[bool, Optional[AgentError]]:
         """Run verification and return (success, error_if_failed)."""
         Logger.info("   🔒 Verifying Agent's Claim...", "YELLOW")
@@ -1455,13 +1556,14 @@ class RalphOrchestrator:
             prompt = TemplateManager.render(
                 "developer.txt",
                 task_id=task['id'], task_description=task['description'],
+                acceptance_criteria=self._format_acceptance_criteria(task),
                 memory_tree=self.memory.get_structure(
                     include=self._include_patterns,
                     exclude=self._exclude_patterns,
                     limit=self._context_limit
                 ),
                 user_context=self._load_user_context(prd, task, test_cmd),
-                test_cmd=test_cmd, prev_errors=prev_errors
+                test_cmd=test_cmd, prev_errors=prev_errors if prev_errors else "(No previous errors)"
             )
 
             success, output, agent_error = self.agent.run(prompt, f"WORKER-{task['id']}")
