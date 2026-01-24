@@ -1709,7 +1709,45 @@ Include a clear explanation of:
 - You MUST implement proper error handling with appropriate logging
 - You MUST follow existing project conventions detected from the codebase
 - You MUST write self-documenting code with meaningful names
-- You MUST consider performance implications for loops, I/O, and data structures"""
+- You MUST consider performance implications for loops, I/O, and data structures""",
+        "enhance_intent.txt": """# ROLE
+Intent Enhancement Specialist
+
+# OBJECTIVE
+Refine and clarify the user's initial intent to create a more precise, actionable, and well-structured description of what they want to build.
+
+# ORIGINAL USER INTENT
+<ORIGINAL_INTENT>
+{{original_intent}}
+</ORIGINAL_INTENT>
+
+# ENHANCEMENT GUIDELINES
+
+Your task is to enhance the user's intent by:
+
+1. **Clarifying Ambiguities**: Identify and resolve any vague or ambiguous parts of the intent
+2. **Adding Specificity**: Add concrete details where the intent is too general
+3. **Structuring Requirements**: Organize the intent into clear, logical components
+4. **Identifying Implicit Needs**: Surface any implicit requirements that are essential but not explicitly stated
+5. **Technical Translation**: Translate user-facing language into technical requirements where appropriate
+
+# CONSTRAINTS
+
+- PRESERVE the user's core intent - do not change what they fundamentally want to build
+- DO NOT add features or requirements the user did not mention or imply
+- KEEP the enhanced intent concise and focused
+- AVOID over-engineering or adding unnecessary complexity
+- MAINTAIN the user's tone and terminology where possible
+
+# OUTPUT FORMAT
+
+Provide your response in the following format:
+
+<ENHANCED_INTENT>
+[Your enhanced, refined version of the user's intent goes here. This should be a clear, well-structured description that can be directly passed to the architect phase.]
+</ENHANCED_INTENT>
+
+IMPORTANT: Output ONLY the enhanced intent within the tags. Do not include explanations, reasoning, or any other text outside the tags."""
     }
 
     @staticmethod
@@ -1743,6 +1781,7 @@ Include a clear explanation of:
 class RalphOrchestrator:
     def __init__(self, agent_name: str = "claude", enable_hooks: bool = True, enabled_hook_names: Optional[List[str]] = None,
                  intent: Optional[str] = None, intent_file: Optional[str] = None, prompt_file: Optional[str] = None,
+                 enhance_intent: bool = False, enhance_intent_strict: bool = False,
                  tree_depth: int = 2, tree_ignore: Optional[List[str]] = None, memory_out: Optional[str] = None,
                  test_cmd: Optional[str] = None, skip_verify: bool = False, retries: Optional[int] = None,
                  timeout: Optional[int] = None, only: Optional[List[str]] = None, except_tasks: Optional[List[str]] = None,
@@ -1783,6 +1822,8 @@ class RalphOrchestrator:
         self._intent = intent
         self._intent_file = intent_file
         self._prompt_file_override = prompt_file
+        self._enhance_intent = enhance_intent
+        self._enhance_intent_strict = enhance_intent_strict
         # Store architect control flags
         self._tree_depth = tree_depth
         self._tree_ignore = tree_ignore
@@ -2707,6 +2748,107 @@ class RalphOrchestrator:
             sys.exit(0)
         return intent
 
+    def _enhance_intent_impl(self, original_intent: str) -> str:
+        """Enhance user intent through the enhancement agent.
+
+        Args:
+            original_intent: The original user intent to enhance
+
+        Returns:
+            Enhanced intent string, or original intent on failure (unless strict mode)
+
+        Raises:
+            SystemExit: If strict mode is enabled and enhancement fails
+        """
+        # Validate input - empty or whitespace-only intent
+        if not original_intent or not original_intent.strip():
+            Logger.error("Cannot enhance empty or whitespace-only intent.")
+            sys.exit(1)
+
+        Logger.info("\n🔧 Enhancing intent...", "CYAN")
+        self.hooks.emit(Event(EventType.INTENT_ENHANCE_START, phase="enhance_intent"))
+
+        prompt = TemplateManager.render(
+            "enhance_intent.txt",
+            original_intent=original_intent
+        )
+
+        success, stdout, error = self.agent.run(prompt, "ENHANCE_INTENT")
+
+        if not success:
+            error_msg = error.message if error else "Unknown error"
+            Logger.warning(f"Intent enhancement failed: {error_msg}")
+            self.hooks.emit(Event(EventType.INTENT_ENHANCE_FAILURE, phase="enhance_intent"))
+
+            if self._enhance_intent_strict:
+                Logger.error("Intent enhancement failed in strict mode. Exiting.")
+                sys.exit(1)
+
+            Logger.warning("Falling back to original intent.")
+            return original_intent
+
+        # Extract enhanced intent from response
+        enhanced_intent = self._parse_enhanced_intent(stdout, original_intent)
+
+        # Validate enhanced intent is not empty
+        if not enhanced_intent or not enhanced_intent.strip():
+            Logger.warning("Enhancement agent returned empty response.")
+            self.hooks.emit(Event(EventType.INTENT_ENHANCE_FAILURE, phase="enhance_intent"))
+
+            if self._enhance_intent_strict:
+                Logger.error("Intent enhancement returned invalid response in strict mode. Exiting.")
+                sys.exit(1)
+
+            Logger.warning("Falling back to original intent.")
+            return original_intent
+
+        # Log both original and enhanced intent when verbose
+        Logger.debug(f"Original intent: {original_intent}", "CYAN")
+        Logger.debug(f"Enhanced intent: {enhanced_intent}", "GREEN")
+
+        Logger.info("✅ Intent enhanced.", "GREEN")
+        self.hooks.emit(Event(EventType.INTENT_ENHANCE_SUCCESS, phase="enhance_intent"))
+
+        return enhanced_intent
+
+    def _parse_enhanced_intent(self, response: str, fallback: str) -> str:
+        """Parse the enhanced intent from the agent response.
+
+        Args:
+            response: The raw response from the enhancement agent
+            fallback: The fallback value if parsing fails
+
+        Returns:
+            The parsed enhanced intent or fallback value
+        """
+        # Try to extract content between <ENHANCED_INTENT> tags
+        import re
+        pattern = r'<ENHANCED_INTENT>\s*(.*?)\s*</ENHANCED_INTENT>'
+        match = re.search(pattern, response, re.DOTALL)
+
+        if match:
+            return match.group(1).strip()
+
+        # If no tags found, log warning and return fallback
+        Logger.warning("Could not parse enhanced intent from response. Falling back to original.")
+        return fallback
+
+    def _get_and_enhance_intent(self, user_intent=None) -> str:
+        """Get intent and optionally enhance it based on --enhance-intent flag.
+
+        Args:
+            user_intent: Optional pre-provided intent
+
+        Returns:
+            The (possibly enhanced) intent string
+        """
+        intent = self._get_intent(user_intent)
+
+        if self._enhance_intent:
+            intent = self._enhance_intent_impl(intent)
+
+        return intent
+
     def _run_single_phase(self, phase: str) -> None:
         """Run a single specified phase with prerequisite checks."""
         Logger.info(f"📋 Phase: {phase} only", "YELLOW")
@@ -2721,7 +2863,7 @@ class RalphOrchestrator:
         if phase == "execute":
             self.execute_loop()
         else:
-            user_intent = self._get_intent()
+            user_intent = self._get_and_enhance_intent()
             if phase == "architect":
                 self.run_architect(user_intent)
             else:
@@ -2738,7 +2880,7 @@ class RalphOrchestrator:
         if any(CONF.MEMORY_DIR.iterdir()):
             Logger.info("📋 Memory exists, skipping architect.", "YELLOW")
         elif accept_all or self._prompt_user_for_phase("Architect"):
-            user_intent = self._get_intent()
+            user_intent = self._get_and_enhance_intent()
             self.run_architect(user_intent)
         else:
             Logger.info("⏭️ Skipping architect.", "YELLOW")
@@ -2747,7 +2889,7 @@ class RalphOrchestrator:
         if self._prd.exists():
             Logger.info("📋 PRD exists, skipping planner.", "YELLOW")
         elif accept_all or self._prompt_user_for_phase("Planner"):
-            user_intent = self._get_intent(user_intent)
+            user_intent = self._get_and_enhance_intent(user_intent)
             self.run_planner(user_intent)
         else:
             Logger.info("⏭️ Skipping planner.", "YELLOW")
@@ -2825,6 +2967,8 @@ def main() -> None:
     # Intent and input flags for non-interactive runs
     parser.add_argument("--intent", type=str, metavar="TEXT", help="Provide intent inline (what to build)")
     parser.add_argument("--intent-file", type=str, metavar="FILE", help="Load intent from a file")
+    parser.add_argument("--enhance-intent", action="store_true", help="Process intent through enhancement agent before architect phase")
+    parser.add_argument("--enhance-intent-strict", action="store_true", help="Exit on enhancement failure instead of falling back to original intent")
     parser.add_argument("--prompt-file", type=str, metavar="FILE", help="Override prompt.md path for user context")
     # Architect control flags for context generation
     parser.add_argument("--tree-depth", type=int, default=2, metavar="N", help="File tree depth for architect (default: 2)")
@@ -2928,6 +3072,8 @@ def main() -> None:
         intent=args.intent,
         intent_file=args.intent_file,
         prompt_file=args.prompt_file,
+        enhance_intent=args.enhance_intent,
+        enhance_intent_strict=args.enhance_intent_strict,
         tree_depth=args.tree_depth,
         tree_ignore=args.tree_ignore,
         memory_out=args.memory_out,

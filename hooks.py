@@ -68,6 +68,11 @@ class EventType(Enum):
     VERIFICATION_SUCCESS = auto()
     VERIFICATION_FAILURE = auto()
 
+    # Intent enhancement
+    INTENT_ENHANCE_START = auto()
+    INTENT_ENHANCE_SUCCESS = auto()
+    INTENT_ENHANCE_FAILURE = auto()
+
     # PRD events
     PRD_CREATED = auto()
     PRD_ARCHIVED = auto()
