@@ -4,6 +4,8 @@
 
 Based on [Ralph Wiggum as a "Software engineer"](https://ghuntley.com/ralph/).
 
+Yes. This is being developed using Ralph itself...
+
 ## Three-Phase Workflow
 
 Ralph operates through a continuous loop of three distinct phases:
