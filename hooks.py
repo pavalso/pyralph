@@ -25,14 +25,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import importlib.util
 import json
 import subprocess
 import threading
-
-if TYPE_CHECKING:
-    from agents.base import AgentError
 
 
 # ==============================================================================
