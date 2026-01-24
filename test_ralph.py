@@ -16,7 +16,7 @@ from agents.base import AgentError
 from agents.claude import ClaudeAgent
 from agents.copilot import GithubAgent
 from ralph import (
-    Config, CONF, JsonUtils, Logger, MemoryManager, RalphOrchestrator,
+    Config, CONF, JsonUtils, Logger, MemoryManager, PRDManager, RalphOrchestrator,
     Shell, TemplateManager, get_version, main,
 )
 from hooks import Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook
@@ -441,6 +441,128 @@ class TestJsonUtils(unittest.TestCase):
             with self.subTest(input=input_text):
                 with self.assertRaises(Exception):
                     JsonUtils.parse(input_text)
+
+
+# ==============================================================================
+# PRD MANAGER TESTS
+# ==============================================================================
+
+
+class TestPRDManager(TempConfigTestCase):
+    """Tests for PRDManager class."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        self.prd_path = CONF.PRD_FILE
+        self.manager = PRDManager(self.prd_path)
+
+    def test_exists_false_when_no_file(self):
+        self.assertFalse(self.manager.exists())
+
+    def test_exists_true_when_file_present(self):
+        self.prd_path.write_text('{"id": "PRD-001"}', encoding='utf-8')
+        self.assertTrue(self.manager.exists())
+
+    def test_load_parses_json(self):
+        prd_data = {"id": "PRD-001", "userStories": []}
+        self.prd_path.write_text(json.dumps(prd_data), encoding='utf-8')
+        loaded = self.manager.load()
+        self.assertEqual(loaded["id"], "PRD-001")
+        self.assertEqual(loaded["userStories"], [])
+
+    def test_load_caches_result(self):
+        prd_data = {"id": "PRD-001"}
+        self.prd_path.write_text(json.dumps(prd_data), encoding='utf-8')
+        first_load = self.manager.load()
+        # Modify file on disk
+        self.prd_path.write_text('{"id": "PRD-002"}', encoding='utf-8')
+        # Should still return cached data
+        second_load = self.manager.load()
+        self.assertEqual(first_load, second_load)
+        self.assertEqual(second_load["id"], "PRD-001")
+
+    def test_read_raw_returns_string(self):
+        content = '{"id": "PRD-001", "description": "Test"}'
+        self.prd_path.write_text(content, encoding='utf-8')
+        raw = self.manager.read_raw()
+        self.assertEqual(raw, content)
+
+    def test_read_raw_caches_result(self):
+        self.prd_path.write_text('{"id": "PRD-001"}', encoding='utf-8')
+        first_read = self.manager.read_raw()
+        self.prd_path.write_text('{"id": "PRD-002"}', encoding='utf-8')
+        second_read = self.manager.read_raw()
+        self.assertEqual(first_read, second_read)
+
+    def test_save_writes_to_disk(self):
+        prd_data = {"id": "PRD-001", "userStories": [{"id": "T-001"}]}
+        self.manager.save(prd_data)
+        content = self.prd_path.read_text(encoding='utf-8')
+        loaded = json.loads(content)
+        self.assertEqual(loaded["id"], "PRD-001")
+
+    def test_save_updates_cache(self):
+        prd_data = {"id": "PRD-001"}
+        self.manager.save(prd_data)
+        # Load should return cached data without reading disk
+        loaded = self.manager.load()
+        self.assertEqual(loaded["id"], "PRD-001")
+
+    def test_save_formats_with_indent(self):
+        prd_data = {"id": "PRD-001"}
+        self.manager.save(prd_data)
+        content = self.prd_path.read_text(encoding='utf-8')
+        # Check for indentation (pretty-printed JSON)
+        self.assertIn('\n', content)
+        self.assertIn('  ', content)
+
+    def test_invalidate_cache_clears_both_caches(self):
+        prd_data = {"id": "PRD-001"}
+        self.prd_path.write_text(json.dumps(prd_data), encoding='utf-8')
+        self.manager.load()
+        self.manager.read_raw()
+        self.assertIsNotNone(self.manager._cache)
+        self.assertIsNotNone(self.manager._raw_cache)
+        self.manager.invalidate_cache()
+        self.assertIsNone(self.manager._cache)
+        self.assertIsNone(self.manager._raw_cache)
+
+    def test_invalidate_cache_forces_disk_read(self):
+        self.prd_path.write_text('{"id": "PRD-001"}', encoding='utf-8')
+        first_load = self.manager.load()
+        self.prd_path.write_text('{"id": "PRD-002"}', encoding='utf-8')
+        self.manager.invalidate_cache()
+        second_load = self.manager.load()
+        self.assertEqual(first_load["id"], "PRD-001")
+        self.assertEqual(second_load["id"], "PRD-002")
+
+    def test_delete_removes_file(self):
+        self.prd_path.write_text('{"id": "PRD-001"}', encoding='utf-8')
+        self.assertTrue(self.manager.exists())
+        self.manager.delete()
+        self.assertFalse(self.manager.exists())
+
+    def test_delete_clears_cache(self):
+        self.prd_path.write_text('{"id": "PRD-001"}', encoding='utf-8')
+        self.manager.load()
+        self.manager.delete()
+        self.assertIsNone(self.manager._cache)
+        self.assertIsNone(self.manager._raw_cache)
+
+    def test_delete_no_error_when_file_missing(self):
+        self.assertFalse(self.manager.exists())
+        # Should not raise
+        self.manager.delete()
+
+    def test_load_raises_on_missing_file(self):
+        with self.assertRaises(FileNotFoundError):
+            self.manager.load()
+
+    def test_load_raises_on_invalid_json(self):
+        self.prd_path.write_text('not valid json', encoding='utf-8')
+        with self.assertRaises(json.JSONDecodeError):
+            self.manager.load()
 
 
 # ==============================================================================
