@@ -438,10 +438,13 @@ class MemoryManager:
     def _matches_pattern(path: Path, pattern: str) -> bool:
         """Check if a path matches a glob pattern."""
         from fnmatch import fnmatch
-        # Try matching against full path and just the filename
-        path_str = str(path)
+        # Use PurePosixPath for consistent cross-platform pattern matching
+        # This normalizes all paths to forward slashes for fnmatch comparison
+        from pathlib import PurePosixPath
+        path_posix = PurePosixPath(path.as_posix())
+        path_str = str(path_posix)
         name = path.name
-        return fnmatch(path_str, pattern) or fnmatch(name, pattern) or fnmatch(path_str, f"*/{pattern}") or fnmatch(path_str, f"*\\{pattern}")
+        return fnmatch(path_str, pattern) or fnmatch(name, pattern) or fnmatch(path_str, f"*/{pattern}")
 
     @staticmethod
     def get_filtered_files(include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,

@@ -365,7 +365,9 @@ class TestShell(unittest.TestCase):
         self.assertIsInstance(result, str)
         for excluded in [".git", ".ralph", "__pycache__"]:
             for line in result.split('\n'):
-                entry = line.split('/')[-1].split('\\')[-1].strip().lstrip('├─└│ ')
+                # Use Path.name for consistent cross-platform path parsing
+                cleaned = line.strip().lstrip('├─└│ ')
+                entry = Path(cleaned).name if cleaned else ''
                 self.assertNotEqual(entry, excluded)
 
     def test_get_file_tree_params(self):

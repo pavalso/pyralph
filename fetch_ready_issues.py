@@ -835,11 +835,9 @@ def generate_hook_config(script_path: Optional[str] = None) -> HookConfig:
     Returns:
         A HookConfig object configured for PLANNER_SUCCESS events.
     """
-    import os
-
     if script_path is None:
         # Use absolute path to the current script file
-        script_path = os.path.abspath(__file__)
+        script_path = str(Path(__file__).resolve())
 
     return HookConfig(
         name="fetch_ready_issues",
