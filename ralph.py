@@ -156,8 +156,8 @@ class Logger:
             if path.exists():
                 patterns = [line.strip() for line in path.read_text(encoding='utf-8').splitlines() if line.strip() and not line.strip().startswith('#')]
                 Logger.redact_patterns.extend(patterns)
-        except Exception:
-            pass  # Silently ignore errors reading redact file
+        except (OSError, UnicodeDecodeError) as e:
+            Logger.debug(f"Failed to load redact patterns from {file_path}: {type(e).__name__}: {e}")
 
     @staticmethod
     def set_no_log_prompts(enabled: bool) -> None:
@@ -324,7 +324,8 @@ class Logger:
         entry = f"\n{'='*60}\n{icons.get(type, '❓')} [{ts}] TYPE: {type} | TAG: {tag}\n{'='*60}\n{redacted_content}\n"
         try:
             with open(log_file, "a", encoding="utf-8") as f: f.write(entry)
-        except Exception: print(f"⚠️ Log Error")
+        except OSError as e:
+            print(f"⚠️ Log Error: {type(e).__name__}: {e}")
 
 class Shell:
     """Safe wrapper for subprocess calls."""
@@ -429,7 +430,7 @@ class MemoryManager:
             try:
                 if not path.read_text(encoding='utf-8').strip():
                     result['empty'].append(str(path.relative_to(CONF.BASE_DIR))); result['valid'] = False
-            except Exception:
+            except (OSError, UnicodeDecodeError):
                 result['corrupted'].append(str(path.relative_to(CONF.BASE_DIR))); result['valid'] = False
         return result
 
@@ -532,7 +533,8 @@ class MemoryManager:
             if path.suffix in ('.md', '.txt'):
                 try:
                     texts.append(path.read_text(encoding='utf-8'))
-                except Exception:
+                except (OSError, UnicodeDecodeError) as e:
+                    Logger.debug(f"Failed to read {path}: {type(e).__name__}: {e}")
                     continue
         full_text = ''.join(texts)
         match = re.search(r"Test Command.*?`([^`]+)`", full_text, re.IGNORECASE)
@@ -1623,12 +1625,13 @@ class RalphOrchestrator:
 
 def get_version() -> str:
     try:
-        with open(Path(__file__).parent / "pyproject.toml", "r") as f:
+        with open(Path(__file__).parent / "pyproject.toml", "r", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("version"):
                     match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
                     if match: return match.group(1)
-    except Exception: pass
+    except (OSError, UnicodeDecodeError):
+        pass  # Fall back to "unknown" if version file cannot be read
     return "unknown"
 
 def main() -> None:

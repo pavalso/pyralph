@@ -268,8 +268,10 @@ class ExecutableHook(Hook):
                 return self._parse_modified_event(result.stdout, event)
         except subprocess.TimeoutExpired:
             pass  # Timeout is handled by caller
-        except Exception:
-            pass  # Errors are handled by caller
+        except (OSError, json.JSONDecodeError) as e:
+            # Log hook execution errors for debugging, caller handles the None return
+            import sys
+            print(f"[DEBUG] Hook execution failed for {self._path}: {type(e).__name__}: {e}", file=sys.stderr)
         return None
 
     @staticmethod
