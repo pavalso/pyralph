@@ -191,7 +191,12 @@ class Logger(metaclass=_LoggerMeta):
         try:
             path = Path(file_path)
             if path.exists():
-                patterns = [line.strip() for line in path.read_text(encoding='utf-8').splitlines() if line.strip() and not line.strip().startswith('#')]
+                lines = path.read_text(encoding='utf-8').splitlines()
+                patterns = [
+                    line.strip()
+                    for line in lines
+                    if line.strip() and not line.strip().startswith('#')
+                ]
                 Logger.redact_patterns.extend(patterns)
         except (OSError, UnicodeDecodeError) as e:
             Logger.debug(f"Failed to load redact patterns from {file_path}: {type(e).__name__}: {e}")
@@ -238,7 +243,9 @@ class Logger(metaclass=_LoggerMeta):
     @staticmethod
     def get_log_file() -> Path:
         """Get the effective log file path (custom or default)."""
-        return Logger.custom_log_file if Logger.custom_log_file else CONF.LOG_FILE
+        if Logger.custom_log_file:
+            return Logger.custom_log_file
+        return CONF.LOG_FILE
 
     @staticmethod
     def _should_log(level: int) -> bool:
@@ -360,7 +367,8 @@ class Logger(metaclass=_LoggerMeta):
         log_file = Logger.get_log_file()
         entry = f"\n{'='*60}\n{icons.get(type, '❓')} [{ts}] TYPE: {type} | TAG: {tag}\n{'='*60}\n{redacted_content}\n"
         try:
-            with open(log_file, "a", encoding="utf-8") as f: f.write(entry)
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(entry)
         except OSError as e:
             print(f"⚠️ Log Error: {type(e).__name__}: {e}")
 
@@ -446,9 +454,11 @@ class JsonUtils:
             json.JSONDecodeError: If the text cannot be parsed as valid JSON
         """
         match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
-        if match: text = match.group(1)
+        if match:
+            text = match.group(1)
         start, end = text.find('{'), text.rfind('}')
-        if start != -1 and end != -1: text = text[start:end+1]
+        if start != -1 and end != -1:
+            text = text[start:end+1]
         text = re.sub(r"//.*", "", text)
         return json.loads(text)
 
@@ -460,15 +470,19 @@ class MemoryManager:
     @staticmethod
     def validate_memory() -> Dict[str, Any]:
         result = {'valid': True, 'corrupted': [], 'empty': [], 'total': 0}
-        if not CONF.MEMORY_DIR.exists(): return result
+        if not CONF.MEMORY_DIR.exists():
+            return result
         for path in CONF.MEMORY_DIR.rglob('*'):
-            if not path.is_file() or path.name.startswith('.'): continue
+            if not path.is_file() or path.name.startswith('.'):
+                continue
             result['total'] += 1
             try:
                 if not path.read_text(encoding='utf-8').strip():
-                    result['empty'].append(str(path.relative_to(CONF.BASE_DIR))); result['valid'] = False
+                    result['empty'].append(str(path.relative_to(CONF.BASE_DIR)))
+                    result['valid'] = False
             except (OSError, UnicodeDecodeError):
-                result['corrupted'].append(str(path.relative_to(CONF.BASE_DIR))); result['valid'] = False
+                result['corrupted'].append(str(path.relative_to(CONF.BASE_DIR)))
+                result['valid'] = False
         return result
 
     @staticmethod
@@ -564,7 +578,9 @@ class MemoryManager:
                 output.append(f"- {p.relative_to(CONF.BASE_DIR)}")
             except ValueError:
                 continue
-        return "\n".join(output) if output else "(No matching memory files)"
+        if output:
+            return "\n".join(output)
+        return "(No matching memory files)"
 
     @staticmethod
     def extract_test_command() -> str:
@@ -580,7 +596,9 @@ class MemoryManager:
         match = re.search(r"Test Command.*?`([^`]+)`", full_text, re.IGNORECASE)
         if match:
             return match.group(1)
-        return "npm test" if (CONF.BASE_DIR / "package.json").exists() else "pytest"
+        if (CONF.BASE_DIR / "package.json").exists():
+            return "npm test"
+        return "pytest"
 
 
 class TemplateManager:
@@ -601,14 +619,16 @@ class TemplateManager:
     def load(template_name: str) -> str:
         path = CONF.TEMPLATES_DIR / template_name
         if not path.exists():
-            if template_name in TemplateManager.DEFAULT_TEMPLATES: return TemplateManager.DEFAULT_TEMPLATES[template_name]
+            if template_name in TemplateManager.DEFAULT_TEMPLATES:
+                return TemplateManager.DEFAULT_TEMPLATES[template_name]
             raise FileNotFoundError(f"Template not found: {template_name}")
         return path.read_text(encoding='utf-8')
 
     @staticmethod
     def render(template_name: str, **variables) -> str:
         template = TemplateManager.load(template_name)
-        for key, value in variables.items(): template = template.replace("{{" + key + "}}", str(value))
+        for key, value in variables.items():
+            template = template.replace("{{" + key + "}}", str(value))
         return template
 
 
@@ -642,10 +662,13 @@ class RalphOrchestrator:
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
                                model=model, temperature=temperature,
                                max_tokens=max_tokens, seed=seed)
-        if hasattr(self.agent, 'set_logger'): self.agent.set_logger(Logger)
-        if hasattr(self.agent, 'set_config'): self.agent.set_config(CONF)
+        if hasattr(self.agent, 'set_logger'):
+            self.agent.set_logger(Logger)
+        if hasattr(self.agent, 'set_config'):
+            self.agent.set_config(CONF)
         if not self.agent.check_dependencies():
-            Logger.info(f"❌ Agent '{self.agent.get_name()}' dependencies not satisfied.", "RED"); sys.exit(1)
+            Logger.info(f"❌ Agent '{self.agent.get_name()}' dependencies not satisfied.", "RED")
+            sys.exit(1)
         self.memory = MemoryManager()
         CONF.ensure_directories()
         self._validate_memory_on_startup()
@@ -1406,7 +1429,8 @@ class RalphOrchestrator:
         ))
 
     def _archive_prd(self) -> None:
-        if not CONF.PRD_FILE.exists(): return
+        if not CONF.PRD_FILE.exists():
+            return
         # Respect --archive flag (default: True)
         if not self._archive:
             Logger.debug("Skipping PRD archival (--no-archive)")
@@ -1529,13 +1553,16 @@ class RalphOrchestrator:
             return 1
 
     def _validate_memory_on_startup(self) -> None:
-        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()): return
+        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
+            return
         result = self.memory.validate_memory()
-        if result['total'] == 0: return
+        if result['total'] == 0:
+            return
         for key, label in [('corrupted', 'corrupted'), ('empty', 'empty')]:
             if result[key]:
                 Logger.info(f"⚠️ Memory: {len(result[key])} {label} file(s): {', '.join(result[key])}", "YELLOW")
-        if result['valid']: Logger.debug(f"✅ Memory OK ({result['total']} files)", "GREEN")
+        if result['valid']:
+            Logger.debug(f"✅ Memory OK ({result['total']} files)", "GREEN")
 
     def _prompt_user_for_phase(self, phase_name: str) -> bool:
         """Prompt user to run a phase, or fail in non-interactive mode."""
@@ -1665,7 +1692,8 @@ def get_version() -> str:
             for line in f:
                 if line.startswith("version"):
                     match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
-                    if match: return match.group(1)
+                    if match:
+                        return match.group(1)
     except (OSError, UnicodeDecodeError):
         pass  # Fall back to "unknown" if version file cannot be read
     return "unknown"
