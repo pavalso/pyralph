@@ -436,6 +436,77 @@ class Shell:
                 lines.append(f"├── {path.name}")
         return "\n".join(lines)
 
+class PRDManager:
+    """Consolidated manager for PRD file operations.
+
+    Provides caching to avoid repeated disk reads and centralizes
+    all PRD read/write operations in one place.
+    """
+
+    def __init__(self, prd_path: Path):
+        """Initialize PRD manager with path to PRD file.
+
+        Args:
+            prd_path: Path to the PRD JSON file
+        """
+        self._path = prd_path
+        self._cache: Optional[Dict[str, Any]] = None
+        self._raw_cache: Optional[str] = None
+
+    def exists(self) -> bool:
+        """Check if PRD file exists on disk."""
+        return self._path.exists()
+
+    def invalidate_cache(self) -> None:
+        """Clear cached PRD data, forcing next read from disk."""
+        self._cache = None
+        self._raw_cache = None
+
+    def read_raw(self) -> str:
+        """Read raw PRD content as string.
+
+        Returns:
+            Raw JSON string from PRD file
+
+        Raises:
+            FileNotFoundError: If PRD file does not exist
+        """
+        if self._raw_cache is None:
+            self._raw_cache = self._path.read_text(encoding='utf-8')
+        return self._raw_cache
+
+    def load(self) -> Dict[str, Any]:
+        """Load and parse PRD from disk with caching.
+
+        Returns:
+            Parsed PRD data as dictionary
+
+        Raises:
+            FileNotFoundError: If PRD file does not exist
+            json.JSONDecodeError: If PRD contains invalid JSON
+        """
+        if self._cache is None:
+            self._cache = json.loads(self.read_raw())
+        return self._cache
+
+    def save(self, data: Dict[str, Any]) -> None:
+        """Save PRD data to disk and update cache.
+
+        Args:
+            data: PRD data to write
+        """
+        content = json.dumps(data, indent=2)
+        self._path.write_text(content, encoding='utf-8')
+        self._cache = data
+        self._raw_cache = content
+
+    def delete(self) -> None:
+        """Delete PRD file from disk and clear cache."""
+        if self._path.exists():
+            self._path.unlink()
+        self.invalidate_cache()
+
+
 class JsonUtils:
     """Robust JSON parsing for LLM outputs."""
 
@@ -825,6 +896,8 @@ class RalphOrchestrator:
         self._schema_path = schema
         self._min_criteria = min_criteria
         self._labels = label or []
+        # Initialize PRD manager for consolidated file operations
+        self._prd = PRDManager(CONF.PRD_FILE)
 
     def _load_plugins(self) -> None:
         """
@@ -1224,7 +1297,7 @@ class RalphOrchestrator:
                 # Apply labels if --label is specified
                 data = self._apply_labels(data)
 
-                CONF.PRD_FILE.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                self._prd.save(data)
                 Logger.info(f"✅ PRD Created ({len(data['userStories'])} stories).", "GREEN")
                 self.hooks.emit(Event(EventType.PRD_CREATED, phase="planner", prd_path=str(CONF.PRD_FILE)))
                 self.hooks.emit(Event(EventType.PLANNER_SUCCESS, phase="planner"))
@@ -1258,7 +1331,7 @@ class RalphOrchestrator:
         - --pre: Run pre-commands before phase execution
         - --post: Run post-commands after phase completion
         """
-        prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        prd = self._prd.load()
         # Use --test-cmd override if provided, otherwise extract from memory
         test_cmd = self._test_cmd_override if self._test_cmd_override else self.memory.extract_test_command()
 
@@ -1311,7 +1384,7 @@ class RalphOrchestrator:
             success = self._execute_task(prd, task, test_cmd)
 
             # Save state after each task attempt
-            CONF.PRD_FILE.write_text(json.dumps(prd, indent=2), encoding='utf-8')
+            self._prd.save(prd)
 
             if not success:
                 failed_tasks.append(task['id'])
@@ -1525,7 +1598,7 @@ class RalphOrchestrator:
         ))
 
     def _archive_prd(self) -> None:
-        if not CONF.PRD_FILE.exists():
+        if not self._prd.exists():
             return
         # Respect --no-archive flag (archive is default behavior)
         if not self._archive:
@@ -1534,6 +1607,7 @@ class RalphOrchestrator:
         ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         dest = CONF.ARCHIVE_DIR / f"prd_{ts}.json"
         shutil.move(str(CONF.PRD_FILE), str(dest))
+        self._prd.invalidate_cache()
         Logger.info(f"📦 PRD Archived to {dest}", "MAGENTA")
         self.hooks.emit(Event(EventType.PRD_ARCHIVED, prd_path=str(dest)))
 
@@ -1571,16 +1645,15 @@ class RalphOrchestrator:
 
         Outputs the PRD as formatted JSON for inspection without execution.
         """
-        if not CONF.PRD_FILE.exists():
+        if not self._prd.exists():
             Logger.error("No PRD file found. Run planner first.")
             sys.exit(1)
-        prd_content = CONF.PRD_FILE.read_text(encoding='utf-8')
         if self._json_output or self._ndjson_output:
             # For JSON/NDJSON mode, output as-is (already JSON)
-            print(prd_content)
+            print(self._prd.read_raw())
         else:
             # Pretty print with indentation
-            prd_data = json.loads(prd_content)
+            prd_data = self._prd.load()
             print(json.dumps(prd_data, indent=2))
 
     def _export_prd(self, output_path: str) -> None:
@@ -1590,13 +1663,12 @@ class RalphOrchestrator:
         Args:
             output_path: Path to write the PRD content
         """
-        if not CONF.PRD_FILE.exists():
+        if not self._prd.exists():
             Logger.error("No PRD file found. Run planner first.")
             sys.exit(1)
         out_path = Path(output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        prd_content = CONF.PRD_FILE.read_text(encoding='utf-8')
-        out_path.write_text(prd_content, encoding='utf-8')
+        out_path.write_text(self._prd.read_raw(), encoding='utf-8')
         Logger.info(f"📋 PRD exported to {out_path}", "MAGENTA")
 
     def _check_prd_status(self) -> int:
@@ -1606,14 +1678,14 @@ class RalphOrchestrator:
         Returns:
             0 if all tasks completed, 1 if tasks pending/failed, 2 if no PRD exists.
         """
-        if not CONF.PRD_FILE.exists():
+        if not self._prd.exists():
             if Logger.json_output or Logger.ndjson_output:
                 print(Logger._format_json_message("No PRD file found", "error", status="no_prd", exit_code=2))
             else:
                 Logger.error("No PRD file found. Run planner first.")
             return 2
 
-        prd = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
+        prd = self._prd.load()
         tasks = prd.get('userStories', [])
 
         if not tasks:
@@ -1702,7 +1774,7 @@ class RalphOrchestrator:
         if phase == "planner" and not any(CONF.MEMORY_DIR.iterdir()):
             Logger.info("❌ Memory missing. Run architect first.", "RED")
             sys.exit(1)
-        if phase == "execute" and not CONF.PRD_FILE.exists():
+        if phase == "execute" and not self._prd.exists():
             Logger.info("❌ PRD missing. Run planner first.", "RED")
             sys.exit(1)
 
@@ -1732,7 +1804,7 @@ class RalphOrchestrator:
             Logger.info("⏭️ Skipping architect.", "YELLOW")
 
         # Planner phase
-        if CONF.PRD_FILE.exists():
+        if self._prd.exists():
             Logger.info("📋 PRD exists, skipping planner.", "YELLOW")
         elif accept_all or self._prompt_user_for_phase("Planner"):
             user_intent = self._get_intent(user_intent)
