@@ -1,15 +1,49 @@
 # Ralph
 
-Autonomous software development agent that iteratively builds projects by following a structured loop of exploration, planning, and action.
+**Ralph** is an autonomous software development agent that iteratively builds projects through a structured three-phase loop. It acts as a self-directing AI assistant that can understand project requirements, create detailed plans, and execute development tasks with built-in verification and error recovery.
 
 Based on [Ralph Wiggum as a "Software engineer"](https://ghuntley.com/ralph/).
 
-## Features
+## Three-Phase Workflow
 
-- **File-based memory**: All context persisted to `.ralph/` for resumability
-- **Verification gate**: Agent claims validated by running actual tests
-- **Retry mechanism**: Failed tasks retry with error feedback
-- **Knowledge injection**: Drop `.md` files in `memory/` to teach the agent
+Ralph operates through a continuous loop of three distinct phases:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐         │
+│   │   ARCHITECT  │───▶│    PLANNER   │───▶│   EXECUTE    │         │
+│   │              │    │              │    │              │         │
+│   │ • Explore    │    │ • Generate   │    │ • Run tasks  │         │
+│   │   codebase   │    │   PRD with   │    │ • Verify via │         │
+│   │ • Initialize │    │   user       │    │   tests      │         │
+│   │   memory     │    │   stories    │    │ • Retry on   │         │
+│   │ • Build      │    │ • Define     │    │   failure    │         │
+│   │   context    │    │   acceptance │    │ • Commit on  │         │
+│   │              │    │   criteria   │    │   success    │         │
+│   └──────────────┘    └──────────────┘    └──────────────┘         │
+│                                                    │                │
+│                                                    ▼                │
+│                                          ┌──────────────┐          │
+│                                          │   Complete   │          │
+│                                          │   or retry   │          │
+│                                          └──────────────┘          │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Architect Phase**: Initializes memory with project context by exploring the codebase and building a knowledge base
+2. **Planner Phase**: Generates a Product Requirements Document (PRD) with user stories and acceptance criteria
+3. **Execute Phase**: Iterates through tasks, running verification tests after each, and retrying on failure until completion
+
+## Core Features
+
+- **File-based memory**: All context persisted to `.ralph/` directory for session resumability and crash recovery
+- **Verification gate**: Agent claims validated by running actual tests (`pytest` by default) before accepting task completion
+- **Retry mechanism**: Failed tasks automatically retry with error feedback injected into the next attempt
+- **Knowledge injection**: Drop `.md` files in `.ralph/memory/` to teach the agent project-specific context
+- **Hook system**: Extensible event system for custom integrations—subscribe to lifecycle events (task start/success/failure, verification, phase transitions) via Python modules or executables
+- **CI/CD support**: Headless mode with `--ci` flag, non-interactive execution, JSON/NDJSON output formats, and status checks for pipeline integration
 
 ## Installation
 
