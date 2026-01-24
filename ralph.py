@@ -386,9 +386,27 @@ class Shell:
 
         Returns:
             Tuple of (stdout, stderr, return_code)
+
+        Security Note:
+            This method uses shell=True which enables shell features (pipes,
+            wildcards, variable expansion) but introduces command injection
+            risks if `command` contains unsanitized user input.
+
+            Safe usage (internal/trusted sources):
+                - Hardcoded commands (e.g., "pytest", "tree -L 2")
+                - Commands from configuration files controlled by the user
+                - Agent-generated commands (trusted AI output)
+
+            Unsafe usage (AVOID):
+                - Commands built from external/untrusted input
+                - Commands containing unvalidated user data
+
+            This is acceptable here because:
+                1. Commands originate from trusted sources (config, agents)
+                2. The tool runs locally with user's own permissions
+                3. Shell features (pipes, globs) are required for functionality
         """
         try:
-            # shell=True defaults to CWD, which is what we want
             result = subprocess.run(
                 command, shell=True, capture_output=True,
                 text=True, encoding='utf-8', timeout=timeout
@@ -1240,6 +1258,13 @@ class RalphOrchestrator:
         Args:
             phase: The phase that just completed (architect, planner, execute)
             success: Whether the phase completed successfully
+
+        Security Note:
+            Uses shell=True for command execution. Commands are sourced from
+            user-controlled configuration (--post-command flag), so command
+            injection risk is accepted as the user controls their own config.
+            Environment variables RALPH_PHASE and RALPH_SUCCESS are set with
+            sanitized values (fixed strings and booleans only).
         """
         if not self._post_commands:
             return
