@@ -1081,8 +1081,8 @@ class TestEvent(unittest.TestCase):
     def test_event_types_exist(self):
         for name in self.EVENTS:
             self.assertTrue(hasattr(EventType, name))
-        # 20 original + 11 IssueWatcher events + 3 Intent Enhancement events + 3 PRD Revision events = 37
-        self.assertEqual(len(EventType), 37)
+        # 20 original + 11 IssueWatcher events + 3 Intent Enhancement events + 3 PRD Revision events + 4 QA Review events = 41
+        self.assertEqual(len(EventType), 41)
 
     def test_event_creation_serialization(self):
         event = Event(EventType.TASK_SUCCESS, phase="execute", task_id="T-001", metadata={"k": "v"})
@@ -2491,6 +2491,253 @@ class TestPrdReviseEventTypes(unittest.TestCase):
             "PRD_REVISE_START",
             "PRD_REVISE_SUCCESS",
             "PRD_REVISE_FAILURE"
+        ]
+        for event_name in expected_events:
+            self.assertTrue(
+                hasattr(EventType, event_name),
+                f"EventType.{event_name} should exist"
+            )
+
+
+# ==============================================================================
+# QA REVIEW TESTS
+# ==============================================================================
+
+
+class TestQAReviewCLI(unittest.TestCase):
+    """Tests for --qa-review CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("--qa-review", action="store_true")
+        self.parser.add_argument("--qa-strict", action="store_true")
+
+    def test_qa_review_flag_default(self):
+        args = self.parser.parse_args([])
+        self.assertFalse(args.qa_review)
+        self.assertFalse(args.qa_strict)
+
+    def test_qa_review_flag_enabled(self):
+        args = self.parser.parse_args(["--qa-review"])
+        self.assertTrue(args.qa_review)
+
+    def test_qa_strict_flag(self):
+        args = self.parser.parse_args(["--qa-review", "--qa-strict"])
+        self.assertTrue(args.qa_review)
+        self.assertTrue(args.qa_strict)
+
+
+class TestQAReviewCLIPassthrough(unittest.TestCase):
+    """Tests for --qa-review flags passed to orchestrator."""
+
+    def test_qa_review_passed(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--qa-review']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('qa_review'))
+
+    def test_qa_strict_passed(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--qa-review', '--qa-strict']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('qa_review'))
+            self.assertTrue(call_kwargs.get('qa_strict'))
+
+
+class TestQAReviewOrchestrator(TempConfigTestCase):
+    """Tests for QA review in RalphOrchestrator."""
+
+    def test_orchestrator_stores_qa_review_flag(self):
+        orch = self.create_mock_orchestrator(qa_review=True)
+        self.assertTrue(orch._qa_review)
+
+    def test_orchestrator_stores_qa_strict_flag(self):
+        orch = self.create_mock_orchestrator(qa_review=True, qa_strict=True)
+        self.assertTrue(orch._qa_review)
+        self.assertTrue(orch._qa_strict)
+
+    def test_orchestrator_defaults_to_no_qa_review(self):
+        orch = self.create_mock_orchestrator()
+        self.assertFalse(orch._qa_review)
+        self.assertFalse(orch._qa_strict)
+
+
+class TestQAReviewMethod(TempConfigTestCase):
+    """Tests for _run_qa_review method."""
+
+    def test_skips_when_disabled(self):
+        orch = self.create_mock_orchestrator(qa_review=False)
+        task = {"id": "TASK-001", "description": "Test task"}
+        passed, findings = orch._run_qa_review(task)
+        self.assertTrue(passed)
+        self.assertIsNone(findings)
+
+    def test_skips_when_no_code_changes(self):
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="(No code changes detected)"):
+            with patch('ralph.Logger.info'):
+                passed, findings = orch._run_qa_review(task)
+        self.assertTrue(passed)
+        self.assertIsNone(findings)
+        mock_agent.run.assert_not_called()
+
+    def test_passes_with_no_critical_issues(self):
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "PASS",
+  "critical_issues": [],
+  "warnings": [],
+  "suggestions": [],
+  "passed_checks": ["Error handling", "Security"]
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                passed, findings = orch._run_qa_review(task)
+        self.assertTrue(passed)
+        self.assertIsNotNone(findings)
+        self.assertEqual(findings["summary"], "PASS")
+
+    def test_passes_with_critical_issues_non_strict(self):
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "FAIL",
+  "critical_issues": [{"category": "security", "severity": "critical", "description": "SQL injection"}],
+  "warnings": [],
+  "suggestions": [],
+  "passed_checks": []
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_strict=False)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                passed, findings = orch._run_qa_review(task)
+        self.assertTrue(passed)  # Non-strict mode continues despite critical issues
+        self.assertIsNotNone(findings)
+        self.assertEqual(len(findings["critical_issues"]), 1)
+
+    def test_fails_with_critical_issues_strict(self):
+        mock_agent = self.create_mock_agent()
+        qa_response = """<QA_FINDINGS>
+{
+  "summary": "FAIL",
+  "critical_issues": [{"category": "security", "severity": "critical", "description": "SQL injection"}],
+  "warnings": [],
+  "suggestions": [],
+  "passed_checks": []
+}
+</QA_FINDINGS>"""
+        mock_agent.run.return_value = (True, qa_response, None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_strict=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.debug'):
+                passed, findings = orch._run_qa_review(task)
+        self.assertFalse(passed)  # Strict mode fails on critical issues
+        self.assertIsNotNone(findings)
+
+    def test_continues_on_agent_failure(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (False, "", AgentError("TestError", "test", "", "", "", ""))
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.warning'):
+                passed, findings = orch._run_qa_review(task)
+        self.assertTrue(passed)  # Continues despite agent failure
+        self.assertIsNone(findings)
+
+    def test_continues_on_parse_failure(self):
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "Invalid response without QA_FINDINGS tags", None)
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
+        task = {"id": "TASK-001", "description": "Test task"}
+        with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
+            with patch('ralph.Logger.info'), patch('ralph.Logger.warning'), patch('ralph.Logger.debug'):
+                passed, findings = orch._run_qa_review(task)
+        self.assertTrue(passed)  # Continues despite parse failure
+        self.assertIsNone(findings)
+
+
+class TestParseQAFindings(TempConfigTestCase):
+    """Tests for _parse_qa_findings method."""
+
+    def test_parses_valid_findings(self):
+        orch = self.create_mock_orchestrator()
+        response = """Some preamble text
+<QA_FINDINGS>
+{
+  "summary": "WARN",
+  "critical_issues": [],
+  "warnings": [{"category": "style", "severity": "warning", "description": "Long function"}],
+  "suggestions": [],
+  "passed_checks": ["Security"]
+}
+</QA_FINDINGS>
+Some trailing text"""
+        findings = orch._parse_qa_findings(response)
+        self.assertIsNotNone(findings)
+        self.assertEqual(findings["summary"], "WARN")
+        self.assertEqual(len(findings["warnings"]), 1)
+
+    def test_returns_none_for_missing_tags(self):
+        orch = self.create_mock_orchestrator()
+        response = "No tags here at all"
+        with patch('ralph.Logger.debug'):
+            findings = orch._parse_qa_findings(response)
+        self.assertIsNone(findings)
+
+    def test_returns_none_for_invalid_json(self):
+        orch = self.create_mock_orchestrator()
+        response = "<QA_FINDINGS>not valid json</QA_FINDINGS>"
+        with patch('ralph.Logger.debug'):
+            findings = orch._parse_qa_findings(response)
+        self.assertIsNone(findings)
+
+
+class TestQAReviewTemplate(unittest.TestCase):
+    """Tests for QA review template."""
+
+    def test_template_exists(self):
+        from ralph import TemplateManager
+        self.assertIn("qa_review.txt", TemplateManager.DEFAULT_TEMPLATES)
+
+    def test_template_has_required_placeholders(self):
+        from ralph import TemplateManager
+        template = TemplateManager.DEFAULT_TEMPLATES["qa_review.txt"]
+        required_placeholders = [
+            "{{task_id}}",
+            "{{task_description}}",
+            "{{acceptance_criteria}}",
+            "{{code_changes}}",
+            "{{memory_map}}"
+        ]
+        for placeholder in required_placeholders:
+            self.assertIn(placeholder, template)
+
+
+class TestQAReviewEventTypes(unittest.TestCase):
+    """Tests for QA review event type existence."""
+
+    def test_qa_review_event_types_exist(self):
+        expected_events = [
+            "QA_REVIEW_START",
+            "QA_REVIEW_SUCCESS",
+            "QA_REVIEW_FAILURE",
+            "QA_REVIEW_SKIPPED"
         ]
         for event_name in expected_events:
             self.assertTrue(

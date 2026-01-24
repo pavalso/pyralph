@@ -83,6 +83,12 @@ class EventType(Enum):
     # Error events
     ERROR = auto()
 
+    # QA review events
+    QA_REVIEW_START = auto()
+    QA_REVIEW_SUCCESS = auto()
+    QA_REVIEW_FAILURE = auto()
+    QA_REVIEW_SKIPPED = auto()
+
     # IssueWatcher events
     WATCHER_START = auto()
     WATCHER_STOP = auto()
