@@ -122,7 +122,9 @@ class Event:
         """Serialize error field for JSON export."""
         if self.error is None:
             return None
-        return self.error.format_log_entry() if hasattr(self.error, 'format_log_entry') else str(self.error)
+        if hasattr(self.error, 'format_log_entry'):
+            return self.error.format_log_entry()
+        return str(self.error)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize event to dictionary for JSON export."""
@@ -280,7 +282,9 @@ class ExecutableHook(Hook):
         if 'event_type' not in data:
             return original.event_type
         name = data['event_type']
-        return EventType[name.upper()] if hasattr(EventType, str(name).upper()) else original.event_type
+        if hasattr(EventType, str(name).upper()):
+            return EventType[name.upper()]
+        return original.event_type
 
     @staticmethod
     def _parse_modified_event(json_str: str, original: Event) -> Optional[Event]:

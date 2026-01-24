@@ -3022,7 +3022,9 @@ def _handle_process(args: argparse.Namespace) -> int:
             status_str = "SUCCESS" if result.success else f"FAILED: {result.error}"
             Logger.info(f"  #{result.issue_number}: {status_str}")
 
-        return 0 if failure_count == 0 else 1
+        if failure_count == 0:
+            return 0
+        return 1
     except PlannerError as e:
         Logger.error(f"Error: {e}")
         return 1
