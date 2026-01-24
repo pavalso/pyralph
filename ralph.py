@@ -47,12 +47,50 @@ CONF = Config()
 # UTILITIES & LOGGING
 # ==============================================================================
 
-class Logger:
+class _LoggerMeta(type):
+    """Metaclass for Logger to provide property-based synchronization of verbose/verbosity.
+
+    This metaclass enables class-level properties that keep Logger.verbose and
+    Logger.verbosity synchronized automatically, even with direct assignment.
+    """
+
+    @property
+    def verbosity(cls) -> int:
+        """Get verbosity level (0=normal, 1=verbose, 2=very verbose, 3=debug)."""
+        return cls._verbosity_value
+
+    @verbosity.setter
+    def verbosity(cls, value: int) -> None:
+        """Set verbosity level, clamping to [0, 3] and syncing verbose."""
+        clamped = max(0, min(3, value))
+        cls._verbosity_value = clamped
+        cls._verbose_value = clamped >= 1
+        # Auto-set log_level to debug when verbosity is enabled
+        if clamped >= 1:
+            cls.log_level = cls.LOG_LEVELS["debug"]
+
+    @property
+    def verbose(cls) -> bool:
+        """Get verbose mode (True if verbosity >= 1)."""
+        return cls._verbose_value
+
+    @verbose.setter
+    def verbose(cls, value: bool) -> None:
+        """Set verbose mode, syncing verbosity to 1 or 0."""
+        cls._verbose_value = bool(value)
+        cls._verbosity_value = 1 if value else 0
+        # Auto-set log_level to debug when verbose is enabled
+        if value:
+            cls.log_level = cls.LOG_LEVELS["debug"]
+
+
+class Logger(metaclass=_LoggerMeta):
     COLORS = {"RESET": "\033[0m", "GREEN": "\033[92m", "RED": "\033[91m",
               "CYAN": "\033[96m", "YELLOW": "\033[93m", "MAGENTA": "\033[95m"}
     # Verbosity levels: 0=normal, 1=verbose (-v), 2=very verbose (-vv), 3=debug (-vvv)
-    verbosity = 0
-    verbose = False  # Backwards compatibility (synced with verbosity >= 1)
+    # These are synchronized via metaclass properties - setting one updates the other
+    _verbosity_value = 0
+    _verbose_value = False
     no_color = False
     quiet = False
     no_emoji = False
@@ -78,12 +116,12 @@ class Logger:
 
     @staticmethod
     def set_verbose(enabled: bool) -> None:
-        """Set verbose mode (backwards compatible, sets verbosity to 1 or 0)."""
+        """Set verbose mode (backwards compatible, sets verbosity to 1 or 0).
+
+        This method is provided for backwards compatibility. The verbose and
+        verbosity attributes are automatically synchronized via descriptors.
+        """
         Logger.verbose = enabled
-        Logger.verbosity = 1 if enabled else 0
-        # Auto-set log_level to debug when verbose is enabled for backwards compat
-        if enabled:
-            Logger.log_level = Logger.LOG_LEVELS["debug"]
 
     @staticmethod
     def set_verbosity(level: int) -> None:
@@ -92,12 +130,11 @@ class Logger:
         When verbosity >= 1, log_level is automatically set to debug to allow
         debug/trace/ultra messages to appear. This maintains backwards compatibility
         with existing -v/-vv/-vvv behavior.
+
+        The verbose and verbosity attributes are automatically synchronized via
+        descriptors, so setting verbosity will update verbose accordingly.
         """
-        Logger.verbosity = max(0, min(3, level))
-        Logger.verbose = Logger.verbosity >= 1
-        # Auto-set log_level to debug when verbosity is enabled for backwards compat
-        if Logger.verbosity >= 1:
-            Logger.log_level = Logger.LOG_LEVELS["debug"]
+        Logger.verbosity = level
 
     @staticmethod
     def set_quiet(enabled: bool) -> None:

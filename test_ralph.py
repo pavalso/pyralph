@@ -83,15 +83,19 @@ class LoggerTestCase(unittest.TestCase):
     """Base test class for Logger tests with proper state reset."""
 
     def setUp(self):
+        # Store internal descriptor values for proper state save/restore
         self._logger_state = {
-            'no_color': Logger.no_color, 'verbose': Logger.verbose, 'verbosity': Logger.verbosity,
+            'no_color': Logger.no_color,
+            '_verbose_value': Logger._verbose_value,
+            '_verbosity_value': Logger._verbosity_value,
             'quiet': Logger.quiet, 'no_emoji': Logger.no_emoji, 'log_level': Logger.log_level,
             'json_output': Logger.json_output, 'ndjson_output': Logger.ndjson_output,
             'redact_patterns': Logger.redact_patterns.copy() if Logger.redact_patterns else [],
             'no_log_prompts': Logger.no_log_prompts, 'no_log_responses': Logger.no_log_responses,
         }
-        Logger.no_color = Logger.verbose = Logger.quiet = Logger.no_emoji = False
-        Logger.verbosity = 0
+        # Reset to defaults - use descriptors for verbose/verbosity to ensure sync
+        Logger.no_color = Logger.quiet = Logger.no_emoji = False
+        Logger.verbosity = 0  # This syncs verbose via descriptor
         Logger.log_level = 20
         Logger.json_output = Logger.ndjson_output = Logger.no_log_prompts = Logger.no_log_responses = False
         Logger.redact_patterns = []
@@ -104,6 +108,7 @@ class LoggerTestCase(unittest.TestCase):
 
     def tearDown(self):
         sys.stdout = self.original_stdout
+        # Restore internal descriptor values directly to avoid sync side-effects
         for attr, value in self._logger_state.items():
             setattr(Logger, attr, value)
         CONF.LOG_FILE = self._original_log_file
@@ -223,6 +228,35 @@ class TestLogger(LoggerTestCase):
         self.assertEqual(Logger.verbosity, 0)
         Logger.set_verbosity(10)
         self.assertEqual(Logger.verbosity, 3)
+
+    def test_verbosity_property_sync_direct_assignment(self):
+        """Test that direct assignment to verbose/verbosity stays synchronized."""
+        # Direct assignment to verbosity should sync verbose
+        Logger.verbosity = 0
+        self.assertFalse(Logger.verbose)
+        self.assertEqual(Logger.verbosity, 0)
+
+        Logger.verbosity = 2
+        self.assertTrue(Logger.verbose)
+        self.assertEqual(Logger.verbosity, 2)
+
+        # Direct assignment to verbose should sync verbosity
+        Logger.verbose = False
+        self.assertFalse(Logger.verbose)
+        self.assertEqual(Logger.verbosity, 0)
+
+        Logger.verbose = True
+        self.assertTrue(Logger.verbose)
+        self.assertEqual(Logger.verbosity, 1)
+
+        # Verify clamping works with direct assignment
+        Logger.verbosity = -10
+        self.assertEqual(Logger.verbosity, 0)
+        self.assertFalse(Logger.verbose)
+
+        Logger.verbosity = 100
+        self.assertEqual(Logger.verbosity, 3)
+        self.assertTrue(Logger.verbose)
 
     def test_quiet_mode(self):
         Logger.set_no_color(True)
