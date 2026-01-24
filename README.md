@@ -115,6 +115,10 @@ Ralph provides extensive command-line options organized into the following categ
 | `--only TASK_ID` | Execute only specified task(s) |
 | `--resume TASK_ID` | Resume from a specific task |
 | `--json` | Output in JSON format |
+| `--enhance-intent` | Enhance intent before architect phase |
+| `--revise-prd` | Revise PRD for quality improvements |
+| `--qa-review` | Review code quality after each task |
+| `--enhance-all` | Enable all enhancement features |
 
 ### Output/Verbosity
 
@@ -295,6 +299,209 @@ Validate and customize the generated Product Requirements Document.
 **Example**: Enforce PRD quality standards:
 ```bash
 ralph --schema prd-schema.json --min-criteria 3 --label team=backend priority=high planner
+```
+
+### Enhancement Features
+
+Ralph provides AI-powered enhancement agents that improve the quality of your inputs and outputs throughout the development workflow. These features can be enabled individually or all at once.
+
+#### Enhancement Flags Reference
+
+| Flag | Description |
+|------|-------------|
+| `--enhance-intent` | Process intent through enhancement agent before architect phase |
+| `--enhance-intent-strict` | Exit on enhancement failure instead of falling back to original intent |
+| `--no-enhance-intent` | Disable intent enhancement (overrides `--enhance-all`) |
+| `--revise-prd` | Pass PRD through revision agent for quality improvements |
+| `--no-revise-prd` | Disable PRD revision (overrides `--enhance-all`) |
+| `--qa-review` | Enable QA agent to review implemented code for quality issues after each task |
+| `--qa-strict` | Fail tasks when QA review finds critical issues (requires `--qa-review`) |
+| `--no-qa-review` | Disable QA review (overrides `--enhance-all`) |
+| `--enhance-all` | Enable all enhancement features at once |
+
+#### Intent Enhancement (`--enhance-intent`)
+
+The intent enhancement agent refines your initial project description to create a more precise, actionable, and well-structured description. This helps ensure the architect phase receives clear requirements.
+
+**What it does:**
+- Clarifies ambiguities in your intent
+- Adds specificity where the intent is too general
+- Structures requirements into clear, logical components
+- Surfaces implicit requirements that are essential but not explicitly stated
+- Translates user-facing language into technical requirements
+
+**Example**: Enhance intent before starting a project:
+```bash
+ralph --enhance-intent --intent "Build a todo app" architect
+```
+
+**With strict mode**: Exit if enhancement fails (instead of using original intent):
+```bash
+ralph --enhance-intent --enhance-intent-strict --intent "Build a todo app" architect
+```
+
+#### PRD Revision (`--revise-prd`)
+
+The PRD revision agent reviews and improves the generated Product Requirements Document for clarity, completeness, and quality while preserving the original intent.
+
+**What it does:**
+- Ensures each user story has clear, unambiguous descriptions
+- Verifies acceptance criteria are specific, measurable, and testable
+- Identifies missing edge cases or error handling scenarios
+- Ensures consistent terminology and formatting across all stories
+- Verifies technical requirements are correctly specified
+- Fixes any JSON formatting issues
+
+**Example**: Revise PRD after generation:
+```bash
+ralph --revise-prd planner
+```
+
+**Combined with schema validation**:
+```bash
+ralph --revise-prd --schema prd-schema.json --min-criteria 3 planner
+```
+
+#### QA Review (`--qa-review`)
+
+The QA review agent performs automated code quality review after each task is implemented. It checks for common issues including error handling, security vulnerabilities, code style, testing coverage, and documentation.
+
+**What it checks:**
+- **Error Handling**: Exception handling, informative error messages, resource cleanup
+- **Security Vulnerabilities**: Input validation, injection prevention, XSS prevention, authentication/authorization
+- **Code Style and Quality**: Project conventions, naming, DRY principles, readability
+- **Testing Coverage**: Tests for new functionality, edge cases, error scenarios
+- **Documentation**: Complex functions, public APIs, TODOs/FIXMEs
+
+**Example**: Enable QA review during execution:
+```bash
+ralph --qa-review execute
+```
+
+**With strict mode**: Fail tasks when QA finds critical issues:
+```bash
+ralph --qa-review --qa-strict execute
+```
+
+QA findings are logged to `.ralph/ralph_log.txt` with category `QA_REVIEW`.
+
+#### Using `--enhance-all`
+
+The `--enhance-all` flag enables all three enhancement features at once:
+- Intent enhancement (`--enhance-intent`)
+- PRD revision (`--revise-prd`)
+- QA review (`--qa-review`)
+
+**Example**: Enable all enhancements:
+```bash
+ralph --enhance-all all
+```
+
+**Selectively disable specific features** using `--no-*` flags:
+```bash
+# Enable all enhancements except QA review
+ralph --enhance-all --no-qa-review all
+
+# Enable all enhancements except intent enhancement
+ralph --enhance-all --no-enhance-intent planner
+
+# Enable only PRD revision (disable intent enhancement and QA review)
+ralph --enhance-all --no-enhance-intent --no-qa-review planner
+```
+
+#### Combining Enhancement Flags with Other Options
+
+Enhancement flags work seamlessly with other Ralph options including headless operation modes.
+
+**With CI mode**:
+```bash
+ralph --ci --enhance-all --intent-file requirements.txt all
+```
+
+**With non-interactive mode**:
+```bash
+ralph --non-interactive --enhance-intent --intent "Build an API" architect
+```
+
+**With quiet mode** (minimal output, but enhancements still run):
+```bash
+ralph --quiet --enhance-all execute
+```
+
+**Complete CI pipeline example**:
+```bash
+ralph --ci --enhance-all --intent-file requirements.txt --test-cmd "npm test" all
+```
+
+#### Fallback Behavior
+
+Enhancement agents are designed to gracefully handle failures without blocking your workflow:
+
+| Feature | Default Behavior | Strict Mode |
+|---------|------------------|-------------|
+| Intent Enhancement | Falls back to original intent | Exits with error (`--enhance-intent-strict`) |
+| PRD Revision | Falls back to original PRD | N/A |
+| QA Review | Continues without QA review | Fails the task (`--qa-strict`) |
+
+**When fallback occurs:**
+- A warning is logged explaining the failure
+- The original (unenhanced) content is used
+- Execution continues normally
+
+**Example fallback scenarios:**
+- Enhancement agent timeout or network error
+- Agent returns empty or unparseable response
+- Revised PRD fails schema validation (falls back to original PRD)
+- QA review cannot detect code changes (skipped)
+
+#### Error Messages and Resolutions
+
+| Error Message | Cause | Resolution |
+|--------------|-------|------------|
+| `Cannot enhance empty or whitespace-only intent.` | Empty intent provided with `--enhance-intent` | Provide a non-empty intent via `--intent` or `--intent-file` |
+| `Intent enhancement failed: <error>` | Agent failed to process the intent | Check agent connectivity; intent will use fallback unless `--enhance-intent-strict` |
+| `Intent enhancement failed in strict mode. Exiting.` | Agent failed with `--enhance-intent-strict` enabled | Fix the underlying issue or remove `--enhance-intent-strict` |
+| `Enhancement agent returned empty response.` | Agent returned empty content | Check agent connectivity; will use fallback unless strict mode |
+| `Could not parse enhanced intent from response.` | Agent response missing `<ENHANCED_INTENT>` tags | Will use fallback; check agent prompt compatibility |
+| `Could not parse revised PRD from response.` | Agent response missing `<REVISED_PRD>` tags | Will use original PRD; check agent prompt compatibility |
+| `Revised PRD failed schema validation: <error>` | Revised PRD doesn't match `--schema` file | Will use original PRD; review schema requirements |
+| `Invalid JSON in revised PRD: <error>` | Agent returned malformed JSON | Will use original PRD; check agent output |
+| `QA review agent failed: <error>` | Agent failed during QA review | Execution continues; check agent connectivity |
+| `Could not parse QA findings.` | Agent response missing `<QA_FINDINGS>` tags | Execution continues; check agent output |
+| `QA review found critical issues (--qa-strict mode)` | Critical issues detected with `--qa-strict` | Fix the reported issues or remove `--qa-strict` |
+
+#### Events Emitted by Enhancement Features
+
+Enhancement features emit events that can be subscribed to via hooks:
+
+| Event Type | Trigger |
+|-----------|---------|
+| `INTENT_ENHANCE_START` | Intent enhancement begins |
+| `INTENT_ENHANCE_SUCCESS` | Intent successfully enhanced |
+| `INTENT_ENHANCE_FAILURE` | Intent enhancement failed |
+| `PRD_REVISE_START` | PRD revision begins |
+| `PRD_REVISE_SUCCESS` | PRD successfully revised |
+| `PRD_REVISE_FAILURE` | PRD revision failed |
+| `QA_REVIEW_START` | QA review begins for a task |
+| `QA_REVIEW_SUCCESS` | QA review completed |
+| `QA_REVIEW_FAILURE` | QA review failed |
+| `QA_REVIEW_SKIPPED` | QA review skipped (no code changes detected) |
+
+**Example hook for enhancement events**:
+```python
+# .ralph/hooks/enhancement_monitor.py
+EVENTS = [
+    "INTENT_ENHANCE_SUCCESS",
+    "INTENT_ENHANCE_FAILURE",
+    "PRD_REVISE_SUCCESS",
+    "QA_REVIEW_SUCCESS"
+]
+
+def on_event(event):
+    if "FAILURE" in event.event_type.name:
+        print(f"Enhancement failed: {event.event_type.name}")
+    else:
+        print(f"Enhancement completed: {event.event_type.name}")
 ```
 
 ## How It Works
