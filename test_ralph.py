@@ -2001,6 +2001,7 @@ class TestIssueWatcherHooks(IssueWatcherTestCase):
 
 from fetch_ready_issues import (
     batch_process_issues, BatchProcessResult, PlannerResult,
+    OrchestrationResult, OrchestrationError,
     issue_to_prompt, PlannerError,
 )
 
@@ -2049,8 +2050,14 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         ]
         mock_process.return_value = (
             [
-                PlannerResult(issue_number=1, success=True),
-                PlannerResult(issue_number=2, success=True),
+                OrchestrationResult(
+                    issue_number=1, planner_success=True, execution_success=True,
+                    tasks_completed=2, tasks_failed=0, tasks_total=2
+                ),
+                OrchestrationResult(
+                    issue_number=2, planner_success=True, execution_success=True,
+                    tasks_completed=3, tasks_failed=0, tasks_total=3
+                ),
             ],
             2,  # success_count
             0,  # failure_count
@@ -2063,6 +2070,8 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         self.assertEqual(result.issues_failed, 0)
         self.assertEqual(len(result.results), 2)
         self.assertIn("Successfully processed all 2 issue(s)", result.message)
+        self.assertEqual(result.total_tasks_completed, 5)
+        self.assertEqual(result.total_tasks_failed, 0)
 
     @patch('fetch_ready_issues.process_ready_issues')
     @patch('fetch_ready_issues.fetch_ready_issues')
@@ -2077,9 +2086,19 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         ]
         mock_process.return_value = (
             [
-                PlannerResult(issue_number=1, success=True),
-                PlannerResult(issue_number=2, success=False, error="Planner failed"),
-                PlannerResult(issue_number=3, success=True),
+                OrchestrationResult(
+                    issue_number=1, planner_success=True, execution_success=True,
+                    tasks_completed=2, tasks_failed=0, tasks_total=2
+                ),
+                OrchestrationResult(
+                    issue_number=2, planner_success=True, execution_success=False,
+                    tasks_completed=1, tasks_failed=1, tasks_total=2,
+                    error="1 task(s) failed"
+                ),
+                OrchestrationResult(
+                    issue_number=3, planner_success=True, execution_success=True,
+                    tasks_completed=2, tasks_failed=0, tasks_total=2
+                ),
             ],
             2,  # success_count
             1,  # failure_count
@@ -2095,10 +2114,12 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         self.assertIn("1 failed", result.message)
 
         # Verify failure is recorded in results
-        failed_results = [r for r in result.results if not r.success]
+        failed_results = [r for r in result.results if not r.execution_success]
         self.assertEqual(len(failed_results), 1)
         self.assertEqual(failed_results[0].issue_number, 2)
-        self.assertEqual(failed_results[0].error, "Planner failed")
+        self.assertEqual(failed_results[0].error, "1 task(s) failed")
+        self.assertEqual(result.total_tasks_completed, 5)
+        self.assertEqual(result.total_tasks_failed, 1)
 
     @patch('fetch_ready_issues.process_ready_issues')
     @patch('fetch_ready_issues.fetch_ready_issues')
@@ -2112,8 +2133,14 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         ]
         mock_process.return_value = (
             [
-                PlannerResult(issue_number=1, success=False, error="Error 1"),
-                PlannerResult(issue_number=2, success=False, error="Error 2"),
+                OrchestrationResult(
+                    issue_number=1, planner_success=False, execution_success=False,
+                    error="Error 1"
+                ),
+                OrchestrationResult(
+                    issue_number=2, planner_success=False, execution_success=False,
+                    error="Error 2"
+                ),
             ],
             0,  # success_count
             2,  # failure_count
@@ -2152,7 +2179,13 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         mock_process.assert_called_once_with(
             issues=issues,
             agent_name="copilot",
-            enable_hooks=False
+            enable_hooks=False,
+            execute_orchestration=True,
+            mark_processed=True,
+            timeout=None,
+            retries=None,
+            skip_verify=False,
+            processed_issues=None
         )
 
 
@@ -2208,10 +2241,18 @@ class TestBatchProcessResult(unittest.TestCase):
             issues_processed=3,
             issues_failed=2,
             results=[
-                PlannerResult(issue_number=1, success=True),
-                PlannerResult(issue_number=2, success=False, error="Failed"),
+                OrchestrationResult(
+                    issue_number=1, planner_success=True, execution_success=True,
+                    tasks_completed=2, tasks_failed=0, tasks_total=2
+                ),
+                OrchestrationResult(
+                    issue_number=2, planner_success=False, execution_success=False,
+                    error="Failed"
+                ),
             ],
-            message="Test message"
+            message="Test message",
+            total_tasks_completed=2,
+            total_tasks_failed=0
         )
 
         self.assertEqual(result.issues_found, 5)
@@ -2219,6 +2260,341 @@ class TestBatchProcessResult(unittest.TestCase):
         self.assertEqual(result.issues_failed, 2)
         self.assertEqual(len(result.results), 2)
         self.assertEqual(result.message, "Test message")
+        self.assertEqual(result.total_tasks_completed, 2)
+        self.assertEqual(result.total_tasks_failed, 0)
+
+
+# ==============================================================================
+# ORCHESTRATION RESULT TESTS (PRD-001 TASK-002)
+# ==============================================================================
+
+
+class TestOrchestrationResult(unittest.TestCase):
+    """Tests for OrchestrationResult dataclass."""
+
+    def test_creation_with_defaults(self):
+        """OrchestrationResult can be created with minimal fields."""
+        result = OrchestrationResult(
+            issue_number=42,
+            planner_success=True,
+            execution_success=True
+        )
+
+        self.assertEqual(result.issue_number, 42)
+        self.assertTrue(result.planner_success)
+        self.assertTrue(result.execution_success)
+        self.assertEqual(result.tasks_completed, 0)
+        self.assertEqual(result.tasks_failed, 0)
+        self.assertEqual(result.tasks_total, 0)
+        self.assertFalse(result.marked_processed)
+        self.assertIsNone(result.error)
+        self.assertFalse(result.skipped_no_stories)
+
+    def test_creation_with_task_counts(self):
+        """OrchestrationResult tracks task completion counts."""
+        result = OrchestrationResult(
+            issue_number=1,
+            planner_success=True,
+            execution_success=True,
+            tasks_completed=5,
+            tasks_failed=0,
+            tasks_total=5
+        )
+
+        self.assertEqual(result.tasks_completed, 5)
+        self.assertEqual(result.tasks_failed, 0)
+        self.assertEqual(result.tasks_total, 5)
+
+    def test_creation_with_failure(self):
+        """OrchestrationResult can record failure details."""
+        result = OrchestrationResult(
+            issue_number=1,
+            planner_success=True,
+            execution_success=False,
+            tasks_completed=2,
+            tasks_failed=3,
+            tasks_total=5,
+            error="3 task(s) failed"
+        )
+
+        self.assertFalse(result.execution_success)
+        self.assertEqual(result.tasks_failed, 3)
+        self.assertEqual(result.error, "3 task(s) failed")
+
+    def test_skipped_no_stories_flag(self):
+        """OrchestrationResult can indicate skipped due to empty PRD."""
+        result = OrchestrationResult(
+            issue_number=1,
+            planner_success=True,
+            execution_success=True,
+            skipped_no_stories=True
+        )
+
+        self.assertTrue(result.skipped_no_stories)
+
+    def test_marked_processed_flag(self):
+        """OrchestrationResult can indicate issue was marked processed."""
+        result = OrchestrationResult(
+            issue_number=1,
+            planner_success=True,
+            execution_success=True,
+            marked_processed=True
+        )
+
+        self.assertTrue(result.marked_processed)
+
+
+class TestOrchestrationError(unittest.TestCase):
+    """Tests for OrchestrationError exception."""
+
+    def test_creation(self):
+        """OrchestrationError can be raised with a message."""
+        error = OrchestrationError("Test error message")
+        self.assertEqual(str(error), "Test error message")
+
+    def test_inherits_from_exception(self):
+        """OrchestrationError is a proper exception."""
+        error = OrchestrationError("Test")
+        self.assertIsInstance(error, Exception)
+
+
+class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
+    """Tests for process_ready_issues with orchestration (PRD-001 TASK-002)."""
+
+    @patch('fetch_ready_issues.invoke_orchestration')
+    def test_executes_orchestration_for_each_issue(self, mock_invoke):
+        """Each issue invokes orchestration sequentially."""
+        mock_invoke.return_value = (True, 2, 0, 2, False, None)
+
+        from fetch_ready_issues import process_ready_issues
+        issues = [
+            self.create_sample_issue(1, "Issue 1", "Body 1"),
+            self.create_sample_issue(2, "Issue 2", "Body 2"),
+        ]
+
+        results, success_count, failure_count = process_ready_issues(
+            issues=issues,
+            execute_orchestration=True
+        )
+
+        self.assertEqual(mock_invoke.call_count, 2)
+        self.assertEqual(success_count, 2)
+        self.assertEqual(failure_count, 0)
+
+    @patch('fetch_ready_issues.invoke_orchestration')
+    def test_skips_processed_issues_on_resume(self, mock_invoke):
+        """Issues in processed_issues set are skipped."""
+        mock_invoke.return_value = (True, 2, 0, 2, False, None)
+
+        from fetch_ready_issues import process_ready_issues
+        issues = [
+            self.create_sample_issue(1, "Issue 1", "Body 1"),
+            self.create_sample_issue(2, "Issue 2", "Body 2"),
+            self.create_sample_issue(3, "Issue 3", "Body 3"),
+        ]
+
+        results, success_count, failure_count = process_ready_issues(
+            issues=issues,
+            execute_orchestration=True,
+            processed_issues={1, 2}  # Skip issues 1 and 2
+        )
+
+        self.assertEqual(mock_invoke.call_count, 1)  # Only issue 3 processed
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].issue_number, 3)
+
+    @patch('fetch_ready_issues.invoke_orchestration')
+    def test_handles_empty_prd_no_stories(self, mock_invoke):
+        """Issues with PRDs containing no user stories are handled."""
+        mock_invoke.return_value = (True, 0, 0, 0, True, None)  # skipped_no_stories=True
+
+        from fetch_ready_issues import process_ready_issues
+        issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
+
+        results, success_count, failure_count = process_ready_issues(
+            issues=issues,
+            execute_orchestration=True
+        )
+
+        self.assertEqual(success_count, 1)
+        self.assertTrue(results[0].skipped_no_stories)
+
+    @patch('fetch_ready_issues.mark_issue_processed')
+    @patch('fetch_ready_issues.invoke_orchestration')
+    def test_marks_issue_processed_on_success(self, mock_invoke, mock_mark):
+        """Successful issues are marked with 'processed' label."""
+        mock_invoke.return_value = (True, 2, 0, 2, False, None)
+        mock_mark.return_value = True
+
+        from fetch_ready_issues import process_ready_issues
+        issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
+
+        results, _, _ = process_ready_issues(
+            issues=issues,
+            execute_orchestration=True,
+            mark_processed=True
+        )
+
+        mock_mark.assert_called_once_with(1)
+        self.assertTrue(results[0].marked_processed)
+
+    @patch('fetch_ready_issues.mark_issue_processed')
+    @patch('fetch_ready_issues.invoke_orchestration')
+    def test_skips_marking_on_failure(self, mock_invoke, mock_mark):
+        """Failed issues are not marked as processed."""
+        mock_invoke.return_value = (False, 1, 1, 2, False, "1 task(s) failed")
+
+        from fetch_ready_issues import process_ready_issues
+        issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
+
+        results, _, _ = process_ready_issues(
+            issues=issues,
+            execute_orchestration=True,
+            mark_processed=True
+        )
+
+        mock_mark.assert_not_called()
+        self.assertFalse(results[0].marked_processed)
+
+    @patch('fetch_ready_issues.invoke_orchestration')
+    def test_records_task_counts(self, mock_invoke):
+        """Task completion counts are recorded in results."""
+        mock_invoke.return_value = (True, 3, 1, 4, False, None)
+
+        from fetch_ready_issues import process_ready_issues
+        issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
+
+        results, _, _ = process_ready_issues(
+            issues=issues,
+            execute_orchestration=True
+        )
+
+        self.assertEqual(results[0].tasks_completed, 3)
+        self.assertEqual(results[0].tasks_failed, 1)
+        self.assertEqual(results[0].tasks_total, 4)
+
+    @patch('fetch_ready_issues.invoke_orchestration')
+    def test_continues_processing_after_failure(self, mock_invoke):
+        """Processing continues to next issue after one fails."""
+        mock_invoke.side_effect = [
+            (False, 0, 2, 2, False, "Agent timeout"),  # First issue fails
+            (True, 2, 0, 2, False, None),  # Second issue succeeds
+        ]
+
+        from fetch_ready_issues import process_ready_issues
+        issues = [
+            self.create_sample_issue(1, "Issue 1", "Body 1"),
+            self.create_sample_issue(2, "Issue 2", "Body 2"),
+        ]
+
+        results, success_count, failure_count = process_ready_issues(
+            issues=issues,
+            execute_orchestration=True
+        )
+
+        self.assertEqual(success_count, 1)
+        self.assertEqual(failure_count, 1)
+        self.assertFalse(results[0].execution_success)
+        self.assertTrue(results[1].execution_success)
+
+    @patch('fetch_ready_issues.invoke_orchestration')
+    def test_handles_orchestration_error(self, mock_invoke):
+        """OrchestrationError is caught and recorded."""
+        mock_invoke.side_effect = OrchestrationError("Memory missing")
+
+        from fetch_ready_issues import process_ready_issues
+        issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
+
+        results, success_count, failure_count = process_ready_issues(
+            issues=issues,
+            execute_orchestration=True
+        )
+
+        self.assertEqual(failure_count, 1)
+        self.assertFalse(results[0].planner_success)
+        self.assertEqual(results[0].error, "Memory missing")
+
+
+class TestBatchProcessIssuesOrchestration(IssueWatcherTestCase):
+    """Tests for batch_process_issues with full orchestration (PRD-001 TASK-002)."""
+
+    @patch('fetch_ready_issues.process_ready_issues')
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_passes_orchestration_parameters(self, mock_check, mock_fetch, mock_process):
+        """Orchestration parameters are passed to process_ready_issues."""
+        mock_check.return_value = True
+        mock_fetch.return_value = [self.create_sample_issue(1)]
+        mock_process.return_value = ([], 0, 0)
+
+        batch_process_issues(
+            label="ready",
+            execute_orchestration=True,
+            mark_processed=False,
+            timeout=300,
+            retries=5,
+            skip_verify=True,
+            processed_issues={1, 2, 3}
+        )
+
+        mock_process.assert_called_once()
+        call_kwargs = mock_process.call_args[1]
+        self.assertTrue(call_kwargs['execute_orchestration'])
+        self.assertFalse(call_kwargs['mark_processed'])
+        self.assertEqual(call_kwargs['timeout'], 300)
+        self.assertEqual(call_kwargs['retries'], 5)
+        self.assertTrue(call_kwargs['skip_verify'])
+        self.assertEqual(call_kwargs['processed_issues'], {1, 2, 3})
+
+    @patch('fetch_ready_issues.process_ready_issues')
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_calculates_total_task_counts(self, mock_check, mock_fetch, mock_process):
+        """Total task counts are calculated across all issues."""
+        mock_check.return_value = True
+        mock_fetch.return_value = [
+            self.create_sample_issue(1),
+            self.create_sample_issue(2),
+        ]
+        mock_process.return_value = (
+            [
+                OrchestrationResult(
+                    issue_number=1, planner_success=True, execution_success=True,
+                    tasks_completed=3, tasks_failed=0, tasks_total=3
+                ),
+                OrchestrationResult(
+                    issue_number=2, planner_success=True, execution_success=True,
+                    tasks_completed=2, tasks_failed=1, tasks_total=3
+                ),
+            ],
+            2, 0
+        )
+
+        result = batch_process_issues(label="ready")
+
+        self.assertEqual(result.total_tasks_completed, 5)
+        self.assertEqual(result.total_tasks_failed, 1)
+
+    @patch('fetch_ready_issues.process_ready_issues')
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_message_includes_task_counts(self, mock_check, mock_fetch, mock_process):
+        """Success message includes task completion counts."""
+        mock_check.return_value = True
+        mock_fetch.return_value = [self.create_sample_issue(1)]
+        mock_process.return_value = (
+            [
+                OrchestrationResult(
+                    issue_number=1, planner_success=True, execution_success=True,
+                    tasks_completed=5, tasks_failed=0, tasks_total=5
+                ),
+            ],
+            1, 0
+        )
+
+        result = batch_process_issues(label="ready")
+
+        self.assertIn("5 task(s) completed", result.message)
 
 
 # ==============================================================================

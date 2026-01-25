@@ -374,63 +374,313 @@ class PlannerResult:
     error: Optional[str] = None
 
 
-def process_ready_issues(
-    issues: List[Issue],
-    agent_name: str = "claude",
-    enable_hooks: bool = True
-) -> Tuple[List[PlannerResult], int, int]:
-    """Process a list of ready issues by invoking the planner for each.
+class OrchestrationError(Exception):
+    """Raised when the orchestration loop fails."""
+    pass
 
-    Iterates over the provided issues, transforms each to a prompt, and
-    invokes Ralph's planner phase. Processing continues even if individual
-    issues fail.
+
+@dataclass
+class OrchestrationResult:
+    """Result of orchestration loop execution for a single issue.
+
+    Attributes:
+        issue_number: The GitHub issue number that was processed.
+        planner_success: Whether the PRD generation (planner phase) succeeded.
+        execution_success: Whether the execute loop completed all tasks.
+        tasks_completed: Number of tasks that completed successfully.
+        tasks_failed: Number of tasks that failed.
+        tasks_total: Total number of tasks in the PRD.
+        marked_processed: Whether the issue was marked with 'processed' label.
+        error: Error message if orchestration failed.
+        skipped_no_stories: True if execution was skipped due to empty PRD.
+    """
+    issue_number: int
+    planner_success: bool
+    execution_success: bool
+    tasks_completed: int = 0
+    tasks_failed: int = 0
+    tasks_total: int = 0
+    marked_processed: bool = False
+    error: Optional[str] = None
+    skipped_no_stories: bool = False
+
+
+def invoke_orchestration(
+    user_intent: str,
+    agent_name: str = "claude",
+    enable_hooks: bool = True,
+    timeout: Optional[int] = None,
+    retries: Optional[int] = None,
+    skip_verify: bool = False
+) -> Tuple[bool, int, int, int, bool, Optional[str]]:
+    """Invoke Ralph's full orchestration loop (planner -> execute) for an issue.
+
+    This function runs the planner phase to generate a PRD, then executes all
+    tasks in the PRD sequentially. It handles edge cases like empty PRDs and
+    agent timeouts.
 
     Args:
-        issues: List of Issue objects to process.
-        agent_name: The AI agent to use for planning. Defaults to "claude".
+        user_intent: The description of what needs to be built (typically
+            a transformed issue prompt from issue_to_prompt).
+        agent_name: The AI agent to use. Defaults to "claude".
         enable_hooks: Whether to enable hook execution. Defaults to True.
+        timeout: Optional agent timeout in seconds.
+        retries: Optional max retries per task.
+        skip_verify: Whether to skip test verification. Defaults to False.
 
     Returns:
         A tuple containing:
-            - List of PlannerResult objects with status for each issue
+            - success: True if orchestration completed successfully
+            - tasks_completed: Number of tasks that completed
+            - tasks_failed: Number of tasks that failed
+            - tasks_total: Total number of tasks in the PRD
+            - skipped_no_stories: True if skipped due to empty PRD
+            - error: Error message if orchestration failed, None otherwise
+
+    Raises:
+        OrchestrationError: If critical setup fails (e.g., missing memory).
+    """
+    try:
+        from ralph import RalphOrchestrator, CONF, Logger
+    except ImportError as e:
+        raise OrchestrationError(f"Failed to import Ralph components: {e}")
+
+    # Check that memory exists (architect phase must have run)
+    if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
+        raise OrchestrationError(
+            "Memory directory is missing or empty. "
+            "Run the architect phase first."
+        )
+
+    try:
+        # Create orchestrator with appropriate settings
+        orchestrator = RalphOrchestrator(
+            agent_name=agent_name,
+            enable_hooks=enable_hooks,
+            timeout=timeout,
+            retries=retries,
+            skip_verify=skip_verify
+        )
+
+        # Run planner phase to generate PRD
+        try:
+            orchestrator.run_planner(user_intent)
+        except SystemExit:
+            return False, 0, 0, 0, False, "Planner phase failed"
+
+        # Load PRD and check for user stories
+        prd = orchestrator._prd.load()
+        user_stories = prd.get('userStories', [])
+
+        if not user_stories:
+            Logger.warning(
+                f"PRD contains no user stories - skipping execution"
+            )
+            return True, 0, 0, 0, True, None
+
+        tasks_total = len(user_stories)
+
+        # Run execute loop
+        orchestrator.execute_loop()
+
+        # Count completed and failed tasks from the PRD
+        prd = orchestrator._prd.load()  # Reload to get updated statuses
+        tasks_completed = sum(
+            1 for task in prd.get('userStories', [])
+            if task.get('status') == 'completed'
+        )
+        tasks_failed = sum(
+            1 for task in prd.get('userStories', [])
+            if task.get('status') == 'failed'
+        )
+
+        # Determine overall success
+        success = tasks_failed == 0 and tasks_completed == tasks_total
+        error = None if success else f"{tasks_failed} task(s) failed"
+
+        return success, tasks_completed, tasks_failed, tasks_total, False, error
+
+    except SystemExit:
+        return False, 0, 0, 0, False, "Orchestration aborted"
+    except Exception as e:
+        # Catch agent timeout and other errors
+        error_msg = str(e)
+        if "timeout" in error_msg.lower() or "TimeoutExpired" in type(e).__name__:
+            error_msg = f"Agent timeout: {error_msg}"
+        return False, 0, 0, 0, False, error_msg
+
+
+def process_ready_issues(
+    issues: List[Issue],
+    agent_name: str = "claude",
+    enable_hooks: bool = True,
+    execute_orchestration: bool = True,
+    mark_processed: bool = True,
+    timeout: Optional[int] = None,
+    retries: Optional[int] = None,
+    skip_verify: bool = False,
+    processed_issues: Optional[Set[int]] = None
+) -> Tuple[List[OrchestrationResult], int, int]:
+    """Process a list of ready issues by invoking the full orchestration loop.
+
+    For each issue, this function:
+    1. Transforms the issue into a prompt
+    2. Invokes Ralph's planner phase to generate a PRD
+    3. Executes all tasks in the PRD (if execute_orchestration=True)
+    4. Optionally marks the issue with 'processed' label on success
+
+    Processing continues sequentially even if individual issues fail, with
+    failures recorded in the results. Each issue's orchestration completes
+    fully before the next begins (no concurrency).
+
+    Args:
+        issues: List of Issue objects to process.
+        agent_name: The AI agent to use. Defaults to "claude".
+        enable_hooks: Whether to enable hook execution. Defaults to True.
+        execute_orchestration: Whether to run the full orchestration loop
+            (planner -> execute). If False, only runs the planner phase.
+            Defaults to True.
+        mark_processed: Whether to mark issues with 'processed' label on
+            successful completion. Defaults to True.
+        timeout: Optional agent timeout in seconds.
+        retries: Optional max retries per task.
+        skip_verify: Whether to skip test verification. Defaults to False.
+        processed_issues: Optional set of issue numbers to skip (for resume
+            after interruption). Issues in this set are skipped.
+
+    Returns:
+        A tuple containing:
+            - List of OrchestrationResult objects with status for each issue
             - Count of successfully processed issues
             - Count of failed issues
     """
-    results: List[PlannerResult] = []
+    from ralph import Logger
+
+    results: List[OrchestrationResult] = []
     success_count = 0
     failure_count = 0
 
     for issue in issues:
+        # Handle resume: skip already-processed issues
+        if processed_issues and issue.number in processed_issues:
+            Logger.info(
+                f"Skipping issue #{issue.number} (already processed)"
+            )
+            continue
+
         prompt = issue_to_prompt(issue)
 
+        if not execute_orchestration:
+            # Legacy mode: only run planner phase
+            try:
+                planner_success = invoke_planner(
+                    user_intent=prompt,
+                    agent_name=agent_name,
+                    enable_hooks=enable_hooks
+                )
+
+                if planner_success:
+                    results.append(OrchestrationResult(
+                        issue_number=issue.number,
+                        planner_success=True,
+                        execution_success=True  # No execution to fail
+                    ))
+                    success_count += 1
+                else:
+                    results.append(OrchestrationResult(
+                        issue_number=issue.number,
+                        planner_success=False,
+                        execution_success=False,
+                        error="Planner phase did not complete successfully"
+                    ))
+                    failure_count += 1
+
+            except PlannerError as e:
+                results.append(OrchestrationResult(
+                    issue_number=issue.number,
+                    planner_success=False,
+                    execution_success=False,
+                    error=str(e)
+                ))
+                failure_count += 1
+            continue
+
+        # Full orchestration mode
         try:
-            success = invoke_planner(
+            (
+                success,
+                tasks_completed,
+                tasks_failed,
+                tasks_total,
+                skipped_no_stories,
+                error
+            ) = invoke_orchestration(
                 user_intent=prompt,
                 agent_name=agent_name,
-                enable_hooks=enable_hooks
+                enable_hooks=enable_hooks,
+                timeout=timeout,
+                retries=retries,
+                skip_verify=skip_verify
+            )
+
+            # Handle edge case: PRD with no user stories
+            if skipped_no_stories:
+                Logger.warning(
+                    f"Issue #{issue.number}: PRD contains no user stories, "
+                    "execution skipped"
+                )
+                results.append(OrchestrationResult(
+                    issue_number=issue.number,
+                    planner_success=True,
+                    execution_success=True,  # No tasks to fail
+                    skipped_no_stories=True
+                ))
+                success_count += 1
+                continue
+
+            # Create result object
+            result = OrchestrationResult(
+                issue_number=issue.number,
+                planner_success=True,  # We got past planner if we're here
+                execution_success=success,
+                tasks_completed=tasks_completed,
+                tasks_failed=tasks_failed,
+                tasks_total=tasks_total,
+                error=error
             )
 
             if success:
-                results.append(PlannerResult(
-                    issue_number=issue.number,
-                    success=True
-                ))
+                # Optionally mark issue as processed
+                if mark_processed:
+                    try:
+                        mark_issue_processed(issue.number)
+                        result.marked_processed = True
+                        Logger.info(
+                            f"Issue #{issue.number}: Marked as processed"
+                        )
+                    except GitHubCLIError as e:
+                        Logger.warning(
+                            f"Issue #{issue.number}: Failed to mark as "
+                            f"processed: {e}"
+                        )
                 success_count += 1
             else:
-                results.append(PlannerResult(
-                    issue_number=issue.number,
-                    success=False,
-                    error="Planner phase did not complete successfully"
-                ))
                 failure_count += 1
+                Logger.warning(
+                    f"Issue #{issue.number}: Orchestration failed - {error}"
+                )
 
-        except PlannerError as e:
-            results.append(PlannerResult(
+            results.append(result)
+
+        except OrchestrationError as e:
+            results.append(OrchestrationResult(
                 issue_number=issue.number,
-                success=False,
+                planner_success=False,
+                execution_success=False,
                 error=str(e)
             ))
             failure_count += 1
+            Logger.error(f"Issue #{issue.number}: {e}")
 
     return results, success_count, failure_count
 
@@ -443,36 +693,59 @@ class BatchProcessResult:
         issues_found: Number of issues found with the specified label.
         issues_processed: Number of issues successfully processed.
         issues_failed: Number of issues that failed to process.
-        results: List of PlannerResult objects with status for each issue.
+        results: List of OrchestrationResult objects with status for each issue.
         message: Human-readable summary message.
+        total_tasks_completed: Total tasks completed across all issues.
+        total_tasks_failed: Total tasks that failed across all issues.
     """
     issues_found: int
     issues_processed: int
     issues_failed: int
-    results: List[PlannerResult]
+    results: List[OrchestrationResult]
     message: str
+    total_tasks_completed: int = 0
+    total_tasks_failed: int = 0
 
 
 def batch_process_issues(
     label: str = "ready",
     agent_name: str = "claude",
-    enable_hooks: bool = True
+    enable_hooks: bool = True,
+    execute_orchestration: bool = True,
+    mark_processed: bool = True,
+    timeout: Optional[int] = None,
+    retries: Optional[int] = None,
+    skip_verify: bool = False,
+    processed_issues: Optional[Set[int]] = None
 ) -> BatchProcessResult:
-    """Fetch all GitHub issues with the specified label and generate PRDs for each.
+    """Fetch GitHub issues and execute full orchestration loop for each.
 
     This function is the main entry point for batch processing GitHub issues.
-    It fetches all open issues with the specified label, transforms each into
-    a planner-compatible prompt, and invokes Ralph's planner phase to generate
-    PRDs (Product Requirements Documents).
+    For each issue with the specified label, it:
+    1. Transforms the issue into a planner prompt
+    2. Invokes Ralph's planner phase to generate a PRD
+    3. Executes all tasks in the PRD sequentially (architect -> planner -> execute)
+    4. Optionally marks the issue with 'processed' label on success
+
+    Processing is sequential - each issue's orchestration completes fully before
+    the next begins (no concurrency). This avoids resource contention.
 
     Processing continues even if individual issues fail, with failures recorded
-    in the results. The PRD for each issue is written to the configured output
-    location (.ralph/prd.json by default).
+    in the results. Failed issues remain in 'failed' state for later retry.
 
     Args:
         label: The label to filter issues by. Defaults to "ready".
-        agent_name: The AI agent to use for planning. Defaults to "claude".
+        agent_name: The AI agent to use. Defaults to "claude".
         enable_hooks: Whether to enable hook execution. Defaults to True.
+        execute_orchestration: Whether to run the full orchestration loop.
+            If False, only runs the planner phase. Defaults to True.
+        mark_processed: Whether to mark issues with 'processed' label on
+            successful completion. Defaults to True.
+        timeout: Optional agent timeout in seconds.
+        retries: Optional max retries per task.
+        skip_verify: Whether to skip test verification. Defaults to False.
+        processed_issues: Optional set of issue numbers to skip (for resume
+            after interruption). Issues in this set are skipped.
 
     Returns:
         A BatchProcessResult containing processing statistics and individual
@@ -485,8 +758,9 @@ def batch_process_issues(
     Example:
         >>> result = batch_process_issues(label="ready")
         >>> print(f"Processed {result.issues_processed} of {result.issues_found} issues")
+        >>> print(f"Tasks: {result.total_tasks_completed} completed, {result.total_tasks_failed} failed")
         >>> for r in result.results:
-        ...     if not r.success:
+        ...     if not r.execution_success:
         ...         print(f"Issue #{r.issue_number} failed: {r.error}")
     """
     # Check gh CLI authentication before proceeding
@@ -509,28 +783,48 @@ def batch_process_issues(
             message=f"No open issues with '{label}' label found."
         )
 
-    # Process each issue to generate PRDs
+    # Process each issue sequentially through full orchestration
     results, success_count, failure_count = process_ready_issues(
         issues=issues,
         agent_name=agent_name,
-        enable_hooks=enable_hooks
+        enable_hooks=enable_hooks,
+        execute_orchestration=execute_orchestration,
+        mark_processed=mark_processed,
+        timeout=timeout,
+        retries=retries,
+        skip_verify=skip_verify,
+        processed_issues=processed_issues
     )
+
+    # Calculate total tasks across all issues
+    total_tasks_completed = sum(r.tasks_completed for r in results)
+    total_tasks_failed = sum(r.tasks_failed for r in results)
 
     # Build summary message
     total = len(issues)
+    if processed_issues:
+        skipped = len(processed_issues & {i.number for i in issues})
+        total = total - skipped
+
     if failure_count == 0:
         message = f"Successfully processed all {total} issue(s)."
+        if total_tasks_completed > 0:
+            message += f" ({total_tasks_completed} task(s) completed)"
     elif success_count == 0:
         message = f"Failed to process all {total} issue(s)."
     else:
         message = f"Processed {success_count} of {total} issue(s). {failure_count} failed."
+        if total_tasks_completed > 0 or total_tasks_failed > 0:
+            message += f" ({total_tasks_completed} task(s) completed, {total_tasks_failed} failed)"
 
     return BatchProcessResult(
-        issues_found=total,
+        issues_found=len(issues),
         issues_processed=success_count,
         issues_failed=failure_count,
         results=results,
-        message=message
+        message=message,
+        total_tasks_completed=total_tasks_completed,
+        total_tasks_failed=total_tasks_failed
     )
 
 
