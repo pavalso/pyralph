@@ -1406,7 +1406,7 @@ from fetch_ready_issues import (
     PromptTransformer, PromptTransformerError, TransformedPrompt,
     IssueWatcher, WatcherConfig, WatcherStatus, IssueWatcherError,
     create_watcher_parser, watcher_main,
-    GitHubPoller, PollerConfig,
+    GitHubPoller, PollerConfig, GitHubCLIError,
 )
 
 
@@ -1993,6 +1993,232 @@ class TestIssueWatcherHooks(IssueWatcherTestCase):
                 hasattr(EventType, event_name),
                 f"EventType.{event_name} should exist"
             )
+
+
+# ==============================================================================
+# BATCH PROCESS ISSUES TESTS (PRD-001 TASK-001)
+# ==============================================================================
+
+from fetch_ready_issues import (
+    batch_process_issues, BatchProcessResult, PlannerResult,
+    issue_to_prompt, PlannerError,
+)
+
+
+class TestBatchProcessIssues(IssueWatcherTestCase):
+    """Tests for batch_process_issues function."""
+
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_raises_error_when_gh_cli_not_authenticated(self, mock_check):
+        """When gh CLI is not authenticated, raises GitHubCLIError with instructions."""
+        mock_check.return_value = False
+
+        with self.assertRaises(GitHubCLIError) as ctx:
+            batch_process_issues(label="ready")
+
+        error_message = str(ctx.exception)
+        self.assertIn("not installed or not authenticated", error_message)
+        self.assertIn("gh auth login", error_message)
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_returns_zero_issues_found_when_no_issues(self, mock_check, mock_fetch):
+        """When no issues with label exist, returns BatchProcessResult with zero issues."""
+        mock_check.return_value = True
+        mock_fetch.return_value = []
+
+        result = batch_process_issues(label="ready")
+
+        self.assertIsInstance(result, BatchProcessResult)
+        self.assertEqual(result.issues_found, 0)
+        self.assertEqual(result.issues_processed, 0)
+        self.assertEqual(result.issues_failed, 0)
+        self.assertEqual(result.results, [])
+        self.assertIn("No open issues", result.message)
+        self.assertIn("'ready'", result.message)
+
+    @patch('fetch_ready_issues.process_ready_issues')
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_processes_all_issues_successfully(self, mock_check, mock_fetch, mock_process):
+        """When all issues process successfully, returns correct counts."""
+        mock_check.return_value = True
+        mock_fetch.return_value = [
+            self.create_sample_issue(1, "Issue 1", "Body 1"),
+            self.create_sample_issue(2, "Issue 2", "Body 2"),
+        ]
+        mock_process.return_value = (
+            [
+                PlannerResult(issue_number=1, success=True),
+                PlannerResult(issue_number=2, success=True),
+            ],
+            2,  # success_count
+            0,  # failure_count
+        )
+
+        result = batch_process_issues(label="ready")
+
+        self.assertEqual(result.issues_found, 2)
+        self.assertEqual(result.issues_processed, 2)
+        self.assertEqual(result.issues_failed, 0)
+        self.assertEqual(len(result.results), 2)
+        self.assertIn("Successfully processed all 2 issue(s)", result.message)
+
+    @patch('fetch_ready_issues.process_ready_issues')
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_continues_processing_on_individual_failures(self, mock_check, mock_fetch, mock_process):
+        """When some issues fail, continues processing and records failures."""
+        mock_check.return_value = True
+        mock_fetch.return_value = [
+            self.create_sample_issue(1, "Issue 1", "Body 1"),
+            self.create_sample_issue(2, "Issue 2", "Body 2"),
+            self.create_sample_issue(3, "Issue 3", "Body 3"),
+        ]
+        mock_process.return_value = (
+            [
+                PlannerResult(issue_number=1, success=True),
+                PlannerResult(issue_number=2, success=False, error="Planner failed"),
+                PlannerResult(issue_number=3, success=True),
+            ],
+            2,  # success_count
+            1,  # failure_count
+        )
+
+        result = batch_process_issues(label="ready")
+
+        self.assertEqual(result.issues_found, 3)
+        self.assertEqual(result.issues_processed, 2)
+        self.assertEqual(result.issues_failed, 1)
+        self.assertEqual(len(result.results), 3)
+        self.assertIn("2 of 3", result.message)
+        self.assertIn("1 failed", result.message)
+
+        # Verify failure is recorded in results
+        failed_results = [r for r in result.results if not r.success]
+        self.assertEqual(len(failed_results), 1)
+        self.assertEqual(failed_results[0].issue_number, 2)
+        self.assertEqual(failed_results[0].error, "Planner failed")
+
+    @patch('fetch_ready_issues.process_ready_issues')
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_all_issues_fail(self, mock_check, mock_fetch, mock_process):
+        """When all issues fail, returns correct failure counts and message."""
+        mock_check.return_value = True
+        mock_fetch.return_value = [
+            self.create_sample_issue(1, "Issue 1", "Body 1"),
+            self.create_sample_issue(2, "Issue 2", "Body 2"),
+        ]
+        mock_process.return_value = (
+            [
+                PlannerResult(issue_number=1, success=False, error="Error 1"),
+                PlannerResult(issue_number=2, success=False, error="Error 2"),
+            ],
+            0,  # success_count
+            2,  # failure_count
+        )
+
+        result = batch_process_issues(label="ready")
+
+        self.assertEqual(result.issues_found, 2)
+        self.assertEqual(result.issues_processed, 0)
+        self.assertEqual(result.issues_failed, 2)
+        self.assertIn("Failed to process all 2 issue(s)", result.message)
+
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_passes_label_to_fetch(self, mock_check, mock_fetch):
+        """Passes the label parameter to fetch_ready_issues."""
+        mock_check.return_value = True
+        mock_fetch.return_value = []
+
+        batch_process_issues(label="custom-label")
+
+        mock_fetch.assert_called_once_with(label="custom-label")
+
+    @patch('fetch_ready_issues.process_ready_issues')
+    @patch('fetch_ready_issues.fetch_ready_issues')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_passes_agent_name_and_hooks_settings(self, mock_check, mock_fetch, mock_process):
+        """Passes agent_name and enable_hooks to process_ready_issues."""
+        mock_check.return_value = True
+        issues = [self.create_sample_issue(1)]
+        mock_fetch.return_value = issues
+        mock_process.return_value = ([], 0, 0)
+
+        batch_process_issues(label="ready", agent_name="copilot", enable_hooks=False)
+
+        mock_process.assert_called_once_with(
+            issues=issues,
+            agent_name="copilot",
+            enable_hooks=False
+        )
+
+
+class TestIssueToPromptEdgeCases(IssueWatcherTestCase):
+    """Tests for issue_to_prompt edge cases."""
+
+    def test_empty_body_uses_default_message(self):
+        """When issue body is empty, uses 'No description provided.' as body."""
+        issue = self.create_sample_issue(1, "Test Title", "")
+        prompt = issue_to_prompt(issue)
+
+        self.assertIn("No description provided.", prompt)
+        self.assertIn("TASK-001", prompt)
+        self.assertIn("Test Title", prompt)
+
+    def test_none_body_uses_default_message(self):
+        """When issue body is None, uses 'No description provided.' as body."""
+        issue = Issue(
+            number=42,
+            title="Test Title",
+            body=None,
+            url="https://github.com/test/repo/issues/42",
+            labels=["ready"]
+        )
+        prompt = issue_to_prompt(issue)
+
+        self.assertIn("No description provided.", prompt)
+        self.assertIn("TASK-042", prompt)
+
+    def test_whitespace_only_body_uses_default_message(self):
+        """When issue body is whitespace only, uses 'No description provided.' as body."""
+        issue = self.create_sample_issue(1, "Test Title", "   \n\t  ")
+        prompt = issue_to_prompt(issue)
+
+        self.assertIn("No description provided.", prompt)
+
+    def test_normal_body_is_included(self):
+        """When issue has normal body, includes it in prompt."""
+        issue = self.create_sample_issue(1, "Test Title", "This is the description.")
+        prompt = issue_to_prompt(issue)
+
+        self.assertIn("This is the description.", prompt)
+        self.assertNotIn("No description provided.", prompt)
+
+
+class TestBatchProcessResult(unittest.TestCase):
+    """Tests for BatchProcessResult dataclass."""
+
+    def test_creation(self):
+        """BatchProcessResult can be created with all fields."""
+        result = BatchProcessResult(
+            issues_found=5,
+            issues_processed=3,
+            issues_failed=2,
+            results=[
+                PlannerResult(issue_number=1, success=True),
+                PlannerResult(issue_number=2, success=False, error="Failed"),
+            ],
+            message="Test message"
+        )
+
+        self.assertEqual(result.issues_found, 5)
+        self.assertEqual(result.issues_processed, 3)
+        self.assertEqual(result.issues_failed, 2)
+        self.assertEqual(len(result.results), 2)
+        self.assertEqual(result.message, "Test message")
 
 
 # ==============================================================================
