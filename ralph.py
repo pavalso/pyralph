@@ -1696,42 +1696,6 @@ Review codebase at specified path for error handling, security, style, tests, an
             template = template.replace("{{" + key + "}}", str(value))
         return template
 
-    @staticmethod
-    def delete(template_name: str) -> None:
-        """Delete a template file from the templates directory.
-
-        Args:
-            template_name: Name of the template to delete (with or without extension)
-
-        Raises:
-            ValueError: If template_name is empty or invalid
-            FileNotFoundError: If templates directory doesn't exist or template not found
-            PermissionError: If permission denied when deleting
-        """
-        if not template_name or not template_name.strip():
-            raise ValueError("Invalid template name: template name cannot be empty")
-
-        template_name = template_name.strip()
-
-        if not CONF.TEMPLATES_DIR.exists():
-            raise FileNotFoundError("Templates directory not found.")
-
-        # Try exact match first
-        path = CONF.TEMPLATES_DIR / template_name
-        if path.exists() and path.is_file():
-            path.unlink()
-            return
-
-        # Try with .txt extension if no extension provided
-        if not Path(template_name).suffix:
-            path_with_ext = CONF.TEMPLATES_DIR / f"{template_name}.txt"
-            if path_with_ext.exists() and path_with_ext.is_file():
-                path_with_ext.unlink()
-                return
-
-        raise FileNotFoundError(f"Template {template_name} not found.")
-
-
 # ==============================================================================
 # ORCHESTRATOR
 # ==============================================================================
