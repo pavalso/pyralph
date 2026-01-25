@@ -48,7 +48,7 @@ Ralph is an autonomous software development agent that iteratively builds projec
 ## API Boundaries & Integration Points
 - **External Integrations**: Claude CLI (LLM queries), GitHub Copilot CLI (LLM queries), GitHub CLI (issue management), git (version control)
 - **Internal Interfaces**: BaseAgent (agent abstraction), HookManager (event system), PRDManager (PRD persistence), MemoryManager (context files)
-- **Data Formats**: JSON (PRD, QA findings, hook payloads), Markdown (memory files, templates), YAML (frontmatter)
+- **Data Formats**: JSON (PRD, hook payloads), Markdown (memory files, templates), YAML (frontmatter)
 - **Protocols**: CLI subprocess communication (stdin/stdout), file-based state persistence
 
 ## Error Handling & Logging
