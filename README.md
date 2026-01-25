@@ -490,6 +490,8 @@ Enhancement features emit events that can be subscribed to via hooks:
 **Example hook for enhancement events**:
 ```python
 # .ralph/hooks/enhancement_monitor.py
+from pyralph import Event  # Optional: for type hints
+
 EVENTS = [
     "INTENT_ENHANCE_SUCCESS",
     "INTENT_ENHANCE_FAILURE",
@@ -497,7 +499,7 @@ EVENTS = [
     "QA_REVIEW_SUCCESS"
 ]
 
-def on_event(event):
+def on_event(event: Event) -> None:
     if "FAILURE" in event.event_type.name:
         print(f"Enhancement failed: {event.event_type.name}")
     else:
@@ -660,13 +662,14 @@ Create a Python file in `.ralph/hooks/`:
 
 ```python
 # .ralph/hooks/my_hook.py
+from pyralph import Event, EventType  # Optional: for type hints
 
 EVENTS = ["TASK_SUCCESS", "TASK_FAILURE"]  # Required: events to subscribe to
 PRIORITY = 50                               # Optional: lower = earlier (default: 100)
 TIMEOUT = 10.0                              # Optional: max seconds (default: 5.0)
 MODIFIES_DATA = False                       # Optional: can modify events (default: False)
 
-def on_event(event):
+def on_event(event: Event) -> None:
     """Handle task completion events."""
     print(f"Task {event.task_id}: {event.event_type.name}")
     if event.error:
@@ -723,12 +726,13 @@ ralph --plugin /path/to/plugins/
 
 ```python
 # ~/my_plugins/monitoring.py
+from pyralph import Event, EventType  # Optional: for type hints
 
 EVENTS = ["PHASE_START", "PHASE_END", "TASK_SUCCESS", "TASK_FAILURE"]
 PRIORITY = 50
 TIMEOUT = 10.0
 
-def on_event(event):
+def on_event(event: Event) -> None:
     """Monitor Ralph lifecycle events."""
     if event.event_type.name == "TASK_SUCCESS":
         print(f"Task {event.task_id} completed")
@@ -884,14 +888,14 @@ ralph --ci --ndjson all | jq 'select(.event == "TASK_FAILURE")'
 
 ```python
 # .ralph/hooks/ci_notify.py
+import os
+import requests
+from pyralph import Event  # Optional: for type hints
 
 EVENTS = ["TASK_FAILURE", "PLANNER_SUCCESS", "EXECUTE_END"]
 
-def on_event(event):
+def on_event(event: Event) -> None:
     """Send notifications in CI environment."""
-    import os
-    import requests
-
     webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
     if not webhook_url:
         return
