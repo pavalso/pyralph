@@ -516,26 +516,41 @@ Each task is verified by running the test suite. On success, changes are committ
 
 ```
 pyralph/
-├── ralph.py              # Main entry point and orchestrator
-├── hooks.py              # Event/hook system for extensibility
-├── agents/               # Agent implementations
-│   ├── __init__.py       # Agent factory and registration
-│   ├── base.py           # Abstract BaseAgent interface
-│   ├── claude.py         # Claude CLI agent implementation
-│   └── copilot.py        # GitHub Copilot CLI agent implementation
-├── prompt.md             # Default user context prompt template
-├── fetch_ready_issues.py # GitHub issue fetcher utility
-├── test_ralph.py         # Comprehensive test suite
-├── pyproject.toml        # Build configuration
-├── ARCH.md               # Architecture decision record
-└── .ralph/               # Runtime state directory
-    ├── memory/           # Knowledge base (wiki files)
-    ├── archive/          # Completed PRD archives
-    ├── hooks/            # Custom hook scripts
-    ├── templates/        # Prompt templates
-    ├── prd.json          # Current project plan
-    ├── progress.txt      # Error state (if failing)
-    └── ralph_log.txt     # Audit trail
+├── src/pyralph/              # Main package
+│   ├── __init__.py           # Package initialization with re-exports
+│   ├── ralph.py              # Thin entry point (backward-compatible)
+│   ├── cli.py                # CLI argument parsing (~50 parameters)
+│   ├── orchestrator.py       # Central coordinator (three-phase workflow)
+│   ├── config.py             # Configuration dataclass and path constants
+│   ├── logger.py             # Logging with verbosity, color, JSON support
+│   ├── shell.py              # Shell command execution utilities
+│   ├── prd.py                # PRD dataclasses (UserStory, PRD)
+│   ├── memory.py             # Memory manager for .ralph/memory/
+│   ├── templates.py          # Prompt template management
+│   ├── hooks.py              # Event/hook system for extensibility
+│   ├── fetch_ready_issues.py # GitHub issue fetcher utility
+│   ├── agents/               # Agent implementations
+│   │   ├── __init__.py       # Agent factory and registration
+│   │   ├── base.py           # Abstract BaseAgent interface
+│   │   ├── claude.py         # Claude CLI agent implementation
+│   │   └── copilot.py        # GitHub Copilot CLI agent implementation
+│   └── qa/                   # QA review subsystem
+│       ├── __init__.py       # QA module exports
+│       ├── models.py         # QA data models (findings, severity)
+│       ├── checklist.py      # QA checklist management
+│       └── analyzer.py       # Code quality analyzer
+├── prompt.md                 # Default user context prompt template
+├── test_ralph.py             # Comprehensive test suite
+├── pyproject.toml            # Build configuration
+├── ARCH.md                   # Architecture decision record
+└── .ralph/                   # Runtime state directory
+    ├── memory/               # Knowledge base (wiki files)
+    ├── archive/              # Completed PRD archives
+    ├── hooks/                # Custom hook scripts
+    ├── templates/            # Prompt templates
+    ├── prd.json              # Current project plan
+    ├── progress.txt          # Error state (if failing)
+    └── ralph_log.txt         # Audit trail
 ```
 
 ## Architecture
@@ -546,12 +561,17 @@ Ralph follows a modular architecture with clear separation of concerns. For deta
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| **RalphOrchestrator** | `ralph.py` | Central coordinator managing the three-phase workflow (Architect → Planner → Execute). Handles CLI argument parsing (~50 parameters), phase transitions, and component integration. |
-| **Agent System** | `agents/` | Pluggable agent backends for LLM interaction. Includes `BaseAgent` abstract class and implementations for Claude CLI and GitHub Copilot CLI. Agents handle prompt execution with configurable timeout, model selection, and error recovery. |
-| **Hook System** | `hooks.py` | Event-driven extensibility layer. Supports Python module hooks and executable hooks with priority ordering, timeout protection, and optional data modification. Subscribes to lifecycle events (phase, task, verification, PRD). |
-| **Logger** | `ralph.py` | Static logging class with CLI-controlled verbosity levels, color output, JSON/NDJSON formats, sensitive data redaction, and both console and file output. |
-| **MemoryManager** | `ralph.py` | Manages the `.ralph/memory/` knowledge base. Handles memory validation, tag-based retrieval, file tree generation, and context injection for prompts. |
-| **Config** | `ralph.py` | Dataclass holding all path constants and default limits (retry count, timeout). Ensures required directories exist on startup. |
+| **RalphOrchestrator** | `src/pyralph/orchestrator.py` | Central coordinator managing the three-phase workflow (Architect → Planner → Execute). Handles phase transitions and component integration. |
+| **CLI** | `src/pyralph/cli.py` | CLI argument parsing (~50 parameters) and command-line interface. |
+| **Agent System** | `src/pyralph/agents/` | Pluggable agent backends for LLM interaction. Includes `BaseAgent` abstract class and implementations for Claude CLI and GitHub Copilot CLI. Agents handle prompt execution with configurable timeout, model selection, and error recovery. |
+| **Hook System** | `src/pyralph/hooks.py` | Event-driven extensibility layer. Supports Python module hooks and executable hooks with priority ordering, timeout protection, and optional data modification. Subscribes to lifecycle events (phase, task, verification, PRD). |
+| **Logger** | `src/pyralph/logger.py` | Static logging class with CLI-controlled verbosity levels, color output, JSON/NDJSON formats, sensitive data redaction, and both console and file output. |
+| **MemoryManager** | `src/pyralph/memory.py` | Manages the `.ralph/memory/` knowledge base. Handles memory validation, tag-based retrieval, file tree generation, and context injection for prompts. |
+| **Config** | `src/pyralph/config.py` | Dataclass holding all path constants and default limits (retry count, timeout). Ensures required directories exist on startup. |
+| **PRD** | `src/pyralph/prd.py` | Dataclasses for PRD and UserStory structures. |
+| **Templates** | `src/pyralph/templates.py` | Prompt template management and rendering. |
+| **Shell** | `src/pyralph/shell.py` | Shell command execution utilities. |
+| **QA System** | `src/pyralph/qa/` | QA review subsystem with models, checklist management, and code quality analyzer. |
 
 ### Agent Architecture
 
