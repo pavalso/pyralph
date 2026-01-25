@@ -2317,6 +2317,117 @@ Provide your review in the following format:
 - DO NOT duplicate task creation logic - focus solely on review
 - Be specific about issue locations and how to fix them
 - If no issues found, output summary as "PASS" with empty issue arrays
+- Output ONLY valid JSON within the <QA_FINDINGS> tags""",
+
+        "qa_standalone_review.txt": """# ROLE
+QA Code Review Agent (Standalone Mode)
+
+# OBJECTIVE
+Review existing codebase at the specified path for quality issues including missing error handling, security vulnerabilities, code style violations, missing tests, and documentation gaps.
+
+# CONTEXT
+
+## Review Target
+<REVIEW_PATH>{{review_path}}</REVIEW_PATH>
+
+## Codebase Files
+<CODEBASE_FILES>
+{{codebase_files}}
+</CODEBASE_FILES>
+
+## Project Memory
+<MEMORY>
+{{memory_map}}
+</MEMORY>
+
+# QA REVIEW CHECKLIST
+
+Review the codebase for the following quality issues:
+
+## 1. Error Handling
+- Are all potential exceptions properly caught and handled?
+- Are error messages informative and user-friendly?
+- Are resources properly cleaned up in error scenarios?
+- Is there appropriate use of try/except/finally or context managers?
+
+## 2. Security Vulnerabilities (OWASP Top 10)
+- Input validation: Is all user input validated before processing?
+- Injection prevention: Are parameterized queries/prepared statements used?
+- XSS prevention: Is output properly escaped/encoded?
+- Authentication/Authorization: Are access controls properly implemented?
+- Sensitive data exposure: Are secrets, credentials, or PII protected?
+- Security misconfiguration: Are debug modes disabled, defaults changed?
+
+## 3. Code Style and Quality
+- Does the code follow the project's existing conventions?
+- Are variable and function names descriptive and consistent?
+- Is the code DRY (Don't Repeat Yourself)?
+- Is the code readable and maintainable?
+- Are there any code smells or anti-patterns?
+
+## 4. Testing Coverage
+- Are there tests for the functionality?
+- Are edge cases covered by tests?
+- Are error scenarios tested?
+- Do tests follow the project's testing conventions?
+
+## 5. Documentation
+- Are complex functions documented?
+- Are public APIs documented?
+- Are any TODOs or FIXMEs addressed?
+- Is README or other user documentation present?
+
+# OUTPUT FORMAT
+
+Provide your review in the following format:
+
+<QA_FINDINGS>
+{
+  "summary": "[Overall assessment: PASS, WARN, or FAIL]",
+  "critical_issues": [
+    {
+      "category": "[error_handling|security|style|testing|documentation]",
+      "severity": "critical",
+      "description": "[description of the issue]",
+      "location": "[file:line or general location]",
+      "recommendation": "[how to fix]"
+    }
+  ],
+  "warnings": [
+    {
+      "category": "[error_handling|security|style|testing|documentation]",
+      "severity": "warning",
+      "description": "[description of the issue]",
+      "location": "[file:line or general location]",
+      "recommendation": "[how to fix]"
+    }
+  ],
+  "suggestions": [
+    {
+      "category": "[error_handling|security|style|testing|documentation]",
+      "severity": "suggestion",
+      "description": "[description of the improvement]",
+      "location": "[file:line or general location]",
+      "recommendation": "[suggested improvement]"
+    }
+  ],
+  "passed_checks": [
+    "[List of checks that passed without issues]"
+  ]
+}
+</QA_FINDINGS>
+
+# SEVERITY LEVELS
+
+- **critical**: Issues that must be fixed (security vulnerabilities, data loss risks, breaking bugs)
+- **warning**: Issues that should be addressed (error handling gaps, style violations, missing tests)
+- **suggestion**: Nice-to-have improvements (documentation, minor refactoring)
+
+# CONSTRAINTS
+
+- ONLY review code quality, DO NOT modify the code
+- Be specific about issue locations and how to fix them
+- If no issues found, output summary as "PASS" with empty issue arrays
 - Output ONLY valid JSON within the <QA_FINDINGS> tags"""
     }
 
@@ -2402,7 +2513,7 @@ class RalphOrchestrator:
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
                  label: Optional[List[str]] = None, revise_prd: bool = False,
-                 qa_review: bool = False, qa_strict: bool = False) -> None:
+                 qa_review: bool = False, qa_strict: bool = False, qa_path: Optional[str] = None) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -2472,6 +2583,7 @@ class RalphOrchestrator:
         # Store QA review flags
         self._qa_review = qa_review
         self._qa_strict = qa_strict
+        self._qa_path = qa_path
         # Initialize PRD manager for consolidated file operations
         self._prd = PRDManager(CONF.PRD_FILE)
 
@@ -3456,6 +3568,268 @@ class RalphOrchestrator:
 
         return True, findings
 
+    def _run_standalone_qa_review(self) -> None:
+        """Run standalone QA review workflow on the specified path.
+
+        This method reviews existing code (not task-based changes) at the path
+        specified by --qa-path. If issues are found, it optionally generates
+        a PRD to address them.
+
+        Respects the following flags:
+        - --qa-path: Path to review (required for this workflow)
+        - --prd-out: Where to save the generated PRD
+        - --non-interactive: Skip PRD generation prompt, just display findings
+        """
+        review_path = Path(self._qa_path)
+
+        Logger.info(f"🔍 Starting standalone QA review workflow...", "CYAN")
+        Logger.info(f"   📂 Review path: {review_path}", "CYAN")
+
+        self.hooks.emit(Event(
+            EventType.QA_REVIEW_START, phase="standalone_qa",
+            metadata={"review_path": str(review_path)}
+        ))
+
+        # Validate path exists
+        if not review_path.exists():
+            Logger.error(f"Review path does not exist: {review_path}")
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_FAILURE, phase="standalone_qa",
+                metadata={"reason": "path_not_found", "path": str(review_path)}
+            ))
+            sys.exit(1)
+
+        # Get codebase files from the specified path
+        codebase_files = self._get_codebase_files_for_review(review_path)
+        if not codebase_files:
+            Logger.warning(f"No files found to review at: {review_path}")
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_SKIPPED, phase="standalone_qa",
+                metadata={"reason": "no_files", "path": str(review_path)}
+            ))
+            return
+
+        Logger.info(f"   📄 Found {len(codebase_files.splitlines())} files to review", "CYAN")
+
+        # Render the standalone QA review template
+        prompt = TemplateManager.render(
+            "qa_standalone_review.txt",
+            review_path=str(review_path),
+            codebase_files=codebase_files,
+            memory_map=self.memory.get_structure(
+                include=self._include_patterns,
+                exclude=self._exclude_patterns,
+                limit=self._context_limit
+            )
+        )
+
+        # Run the QA agent
+        Logger.info("   🤖 Running QA agent...", "CYAN")
+        try:
+            success, output, agent_error = self.agent.run(prompt, "QA-STANDALONE")
+        except Exception as e:
+            Logger.error(f"QA review agent failed: {e}")
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_FAILURE, phase="standalone_qa",
+                metadata={"reason": "agent_exception", "error": str(e)}
+            ))
+            sys.exit(1)
+
+        if not success:
+            Logger.error(f"QA review agent failed to respond: {agent_error}")
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_FAILURE, phase="standalone_qa",
+                error=agent_error,
+                metadata={"reason": "agent_failure"}
+            ))
+            sys.exit(1)
+
+        # Parse the findings
+        findings = self._parse_qa_findings(output)
+        if findings is None:
+            Logger.error("Could not parse QA findings from agent response.")
+            self.hooks.emit(Event(
+                EventType.QA_REVIEW_FAILURE, phase="standalone_qa",
+                metadata={"reason": "parse_failure"}
+            ))
+            sys.exit(1)
+
+        # Report findings using a synthetic task for display purposes
+        synthetic_task = {
+            "id": "QA-STANDALONE",
+            "description": f"Standalone QA review of {review_path}"
+        }
+        self._report_qa_findings(synthetic_task, findings)
+
+        # Count findings
+        critical_count = len(findings.get("critical_issues", []))
+        warning_count = len(findings.get("warnings", []))
+        total_issues = critical_count + warning_count
+
+        # Emit success event
+        self.hooks.emit(Event(
+            EventType.QA_REVIEW_SUCCESS, phase="standalone_qa",
+            metadata={
+                "summary": findings.get("summary", "UNKNOWN"),
+                "critical_count": critical_count,
+                "warning_count": warning_count,
+                "path": str(review_path)
+            }
+        ))
+
+        if total_issues == 0:
+            Logger.info("✅ QA review passed with no issues.", "GREEN")
+            return
+
+        # Display summary
+        if critical_count > 0:
+            Logger.info(f"❌ QA review found {critical_count} critical issue(s) and {warning_count} warning(s).", "RED")
+        else:
+            Logger.info(f"⚠️  QA review found {warning_count} warning(s).", "YELLOW")
+
+        # Handle PRD generation
+        if self._non_interactive:
+            Logger.info("ℹ️  Skipping PRD generation (non-interactive mode).", "CYAN")
+            return
+
+        # Prompt for PRD generation
+        if self._prompt_for_prd_generation(findings):
+            self._generate_prd_from_standalone_qa(review_path, findings)
+        else:
+            Logger.info(f"📋 QA review complete with {total_issues} finding(s). No PRD generated.", "CYAN")
+
+    def _get_codebase_files_for_review(self, review_path: Path) -> str:
+        """Get codebase files from the specified path for QA review.
+
+        Args:
+            review_path: Path to scan for files
+
+        Returns:
+            String containing file contents or file listing for review
+        """
+        # Common patterns to exclude
+        exclude_patterns = [
+            "__pycache__", ".git", ".ralph", "node_modules", "venv",
+            ".env", "*.pyc", "*.pyo", "*.egg-info", ".tox", ".pytest_cache"
+        ]
+
+        if review_path.is_file():
+            # Single file review
+            try:
+                content = review_path.read_text(encoding='utf-8')
+                return f"# {review_path.name}\n```\n{content}\n```"
+            except (OSError, UnicodeDecodeError) as e:
+                Logger.warning(f"Could not read file {review_path}: {e}")
+                return ""
+
+        # Directory review - collect relevant files
+        files_content = []
+        file_count = 0
+        max_files = 50  # Limit to avoid overwhelming the agent
+        max_content_size = 100000  # 100KB limit
+
+        total_size = 0
+
+        for file_path in review_path.rglob("*"):
+            if file_count >= max_files or total_size >= max_content_size:
+                files_content.append(f"\n... (truncated, {file_count} files shown)")
+                break
+
+            # Skip excluded patterns
+            skip = False
+            for pattern in exclude_patterns:
+                if pattern.startswith("*"):
+                    if file_path.suffix == pattern[1:]:
+                        skip = True
+                        break
+                elif pattern in str(file_path):
+                    skip = True
+                    break
+            if skip:
+                continue
+
+            if not file_path.is_file():
+                continue
+
+            # Only include source code files
+            if file_path.suffix not in ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rs', '.rb', '.php', '.cs', '.cpp', '.c', '.h', '.hpp', '.sh', '.yaml', '.yml', '.json', '.toml', '.md', '.txt']:
+                continue
+
+            try:
+                content = file_path.read_text(encoding='utf-8')
+                relative_path = file_path.relative_to(review_path)
+                file_entry = f"\n# {relative_path}\n```\n{content}\n```"
+
+                if total_size + len(file_entry) > max_content_size:
+                    files_content.append(f"\n... (truncated due to size limit)")
+                    break
+
+                files_content.append(file_entry)
+                total_size += len(file_entry)
+                file_count += 1
+            except (OSError, UnicodeDecodeError):
+                continue
+
+        return "\n".join(files_content)
+
+    def _generate_prd_from_standalone_qa(self, review_path: Path, findings: Dict[str, Any]) -> None:
+        """Generate a PRD from standalone QA review findings.
+
+        Args:
+            review_path: Path that was reviewed
+            findings: The QA findings dictionary
+        """
+        Logger.info("\n🔧 Generating PRD from QA findings...", "CYAN")
+        self.hooks.emit(Event(EventType.PHASE_START, phase="prd_from_qa"))
+
+        # Create a synthetic task for PRD generation
+        synthetic_task = {
+            "id": "QA-STANDALONE",
+            "description": f"Address QA findings from review of {review_path}"
+        }
+
+        try:
+            prd_data = self._create_prd_from_findings(synthetic_task, findings)
+            # Update PRD ID to reflect standalone nature
+            prd_data["id"] = f"PRD-QA-{review_path.name}"
+            prd_data["description"] = f"Address QA findings from standalone review of {review_path}"
+        except (KeyError, TypeError, ValueError) as e:
+            error_msg = f"Invalid finding data: {type(e).__name__}: {e}"
+            Logger.error(f"PRD generation failed: {error_msg}")
+            self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa",
+                                  metadata={"success": False, "error": error_msg}))
+            return
+
+        # Validate against JSON schema if --schema is specified
+        if self._schema_path:
+            schema_valid, schema_error = self._validate_prd_schema(prd_data)
+            if not schema_valid:
+                Logger.error(f"Generated PRD failed schema validation: {schema_error}")
+                self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa",
+                                      metadata={"success": False, "error": f"schema_validation: {schema_error}"}))
+                return
+
+        # Validate minimum acceptance criteria if --min-criteria is specified
+        criteria_valid, criteria_error = self._validate_min_criteria(prd_data)
+        if not criteria_valid:
+            Logger.warning(f"Generated PRD criteria validation warning: {criteria_error}")
+
+        # Apply labels if --label is specified
+        prd_data = self._apply_labels(prd_data)
+
+        # Archive existing PRD if present
+        self._archive_prd()
+
+        # Save the generated PRD to file
+        story_count = len(prd_data.get('userStories', []))
+        output_path = self._save_generated_prd(prd_data)
+        if output_path:
+            Logger.info(f"✅ PRD Generated from QA findings ({story_count} stories).", "GREEN")
+            self.hooks.emit(Event(EventType.PRD_CREATED, phase="prd_from_qa", prd_path=str(output_path)))
+            self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa", metadata={"success": True}))
+        else:
+            self.hooks.emit(Event(EventType.PHASE_END, phase="prd_from_qa", metadata={"success": False, "reason": "save_aborted"}))
+
     def _parse_qa_findings(self, response: str) -> Optional[Dict[str, Any]]:
         """Parse QA findings from agent response.
 
@@ -4383,6 +4757,11 @@ class RalphOrchestrator:
             self._print_prd()
             return
 
+        # Handle standalone QA review workflow: --qa-review with --qa-path
+        if self._qa_review and self._qa_path is not None:
+            self._run_standalone_qa_review()
+            return
+
         # Handle --prd-out flag: export PRD to file
         if self._prd_out:
             self._export_prd(self._prd_out)
@@ -4482,9 +4861,10 @@ def main() -> None:
     parser.add_argument("--revise-prd", action="store_true", help="Pass PRD through revision agent for quality improvements before planner phase")
     parser.add_argument("--no-revise-prd", action="store_true", help="Disable PRD revision (overrides --enhance-all)")
     # QA review flags for automated code quality review
-    parser.add_argument("--qa-review", action="store_true", help="Enable QA agent to review implemented code for quality issues after each task")
+    parser.add_argument("--qa-review", action="store_true", help="Enable QA agent to review implemented code for quality issues after each task. When combined with --qa-path, runs standalone QA review workflow")
     parser.add_argument("--no-qa-review", action="store_true", help="Disable QA review (overrides --enhance-all)")
     parser.add_argument("--qa-strict", action="store_true", help="Fail tasks when QA review finds critical issues (requires --qa-review)")
+    parser.add_argument("--qa-path", type=str, metavar="PATH", help="Path to review for standalone QA workflow (requires --qa-review). If not specified with --qa-review, reviews the entire codebase")
     # Enhancement combination flag
     parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd, --qa-review). Individual --no-* flags can override specific features.")
     # Template management flags
@@ -4532,6 +4912,16 @@ def main() -> None:
     # Validate mutually exclusive intent options
     if args.intent and args.intent_file:
         Logger.error("Cannot use both --intent and --intent-file together.")
+        sys.exit(1)
+
+    # Validate --qa-path requires --qa-review
+    if args.qa_path and not args.qa_review:
+        Logger.error("--qa-path requires --qa-review flag to run standalone QA workflow.")
+        sys.exit(1)
+
+    # Validate --qa-path is incompatible with phase execution
+    if args.qa_path and args.phase != "all":
+        Logger.error(f"--qa-path cannot be combined with phase '{args.phase}'. Standalone QA workflow runs independently of task phases.")
         sys.exit(1)
 
     # Handle --template-delete flag: delete template and exit
@@ -4631,7 +5021,8 @@ def main() -> None:
         label=args.label,
         revise_prd=revise_prd,
         qa_review=qa_review,
-        qa_strict=args.qa_strict
+        qa_strict=args.qa_strict,
+        qa_path=args.qa_path
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

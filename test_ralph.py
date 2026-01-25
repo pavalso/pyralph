@@ -3348,6 +3348,293 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
         self.assertIn("Could Have", priorities)  # Suggestion
 
 
+# ==============================================================================
+# STANDALONE QA REVIEW WORKFLOW TESTS (TASK-006)
+# ==============================================================================
+
+
+class TestStandaloneQAReviewCLI(unittest.TestCase):
+    """Tests for --qa-path CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("--qa-review", action="store_true")
+        self.parser.add_argument("--qa-path", type=str)
+
+    def test_qa_path_flag_parses(self):
+        args = self.parser.parse_args(["--qa-review", "--qa-path", "/some/path"])
+        self.assertTrue(args.qa_review)
+        self.assertEqual(args.qa_path, "/some/path")
+
+    def test_qa_path_without_qa_review_parses(self):
+        """Test that --qa-path can be parsed without --qa-review (validation is in main)."""
+        args = self.parser.parse_args(["--qa-path", "/some/path"])
+        self.assertFalse(args.qa_review)
+        self.assertEqual(args.qa_path, "/some/path")
+
+
+class TestStandaloneQAReviewCLIValidation(unittest.TestCase):
+    """Tests for --qa-path CLI argument validation."""
+
+    def test_qa_path_requires_qa_review_flag(self):
+        """Test that --qa-path without --qa-review errors in main()."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--qa-path', '/some/path']):
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit) as ctx:
+                        main()
+                    self.assertEqual(ctx.exception.code, 1)
+                    mock_error.assert_called()
+                    # Verify the error message mentions --qa-review requirement
+                    call_args = mock_error.call_args[0][0]
+                    self.assertIn("--qa-review", call_args)
+
+    def test_qa_path_incompatible_with_phase(self):
+        """Test that --qa-path with phase argument errors in main()."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', 'execute', '--qa-review', '--qa-path', '/some/path']):
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit) as ctx:
+                        main()
+                    self.assertEqual(ctx.exception.code, 1)
+                    mock_error.assert_called()
+
+
+class TestStandaloneQAReviewCLIPassthrough(unittest.TestCase):
+    """Tests for --qa-path flag passed to orchestrator."""
+
+    def test_qa_path_passed_to_orchestrator(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--qa-review', '--qa-path', '/test/path']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertTrue(call_kwargs.get('qa_review'))
+            self.assertEqual(call_kwargs.get('qa_path'), '/test/path')
+
+
+class TestStandaloneQAReviewOrchestrator(TempConfigTestCase):
+    """Tests for standalone QA review in RalphOrchestrator."""
+
+    def test_orchestrator_stores_qa_path_flag(self):
+        orch = self.create_mock_orchestrator(qa_review=True, qa_path="/test/path")
+        self.assertTrue(orch._qa_review)
+        self.assertEqual(orch._qa_path, "/test/path")
+
+    def test_orchestrator_defaults_to_no_qa_path(self):
+        orch = self.create_mock_orchestrator()
+        self.assertIsNone(orch._qa_path)
+
+
+class TestStandaloneQAReviewMethod(TempConfigTestCase):
+    """Tests for _run_standalone_qa_review method."""
+
+    def test_review_path_not_exists_exits_with_error(self):
+        """Test that non-existent path causes exit with error."""
+        mock_agent = self.create_mock_agent()
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path="/nonexistent/path")
+        with patch('ralph.Logger.error') as mock_error:
+            with self.assertRaises(SystemExit) as ctx:
+                orch._run_standalone_qa_review()
+            self.assertEqual(ctx.exception.code, 1)
+            mock_error.assert_called()
+
+    def test_review_single_file(self):
+        """Test standalone QA review of a single file."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<QA_FINDINGS>{"summary": "PASS", "critical_issues": [], "warnings": [], "suggestions": [], "passed_checks": []}</QA_FINDINGS>', None)
+
+        # Create a test file
+        test_file = CONF.ROOT_DIR / "test_file.py"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("print('hello')", encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
+        with patch('ralph.Logger.info'):
+            orch._run_standalone_qa_review()
+
+        mock_agent.run.assert_called_once()
+
+    def test_review_directory(self):
+        """Test standalone QA review of a directory."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<QA_FINDINGS>{"summary": "PASS", "critical_issues": [], "warnings": [], "suggestions": [], "passed_checks": []}</QA_FINDINGS>', None)
+
+        # Create a test directory with files outside .ralph (which is excluded)
+        test_dir = CONF.BASE_DIR / "test_src"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        (test_dir / "file1.py").write_text("print('file1')", encoding='utf-8')
+        (test_dir / "file2.py").write_text("print('file2')", encoding='utf-8')
+
+        try:
+            orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_dir))
+            with patch('ralph.Logger.info'):
+                orch._run_standalone_qa_review()
+
+            mock_agent.run.assert_called_once()
+        finally:
+            # Cleanup
+            import shutil
+            if test_dir.exists():
+                shutil.rmtree(test_dir)
+
+    def test_non_interactive_skips_prd_prompt(self):
+        """Test that non-interactive mode skips PRD generation prompt."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<QA_FINDINGS>{"summary": "WARN", "critical_issues": [{"category": "security", "description": "test"}], "warnings": [], "suggestions": [], "passed_checks": []}</QA_FINDINGS>', None)
+
+        test_file = CONF.ROOT_DIR / "test_file.py"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("print('hello')", encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file), non_interactive=True)
+        with patch('ralph.Logger.info') as mock_info:
+            with patch.object(orch, '_prompt_for_prd_generation') as mock_prompt:
+                orch._run_standalone_qa_review()
+                # Should not call prompt in non-interactive mode
+                mock_prompt.assert_not_called()
+
+    def test_findings_trigger_prd_prompt(self):
+        """Test that findings in interactive mode trigger PRD generation prompt."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<QA_FINDINGS>{"summary": "WARN", "critical_issues": [{"category": "security", "description": "test"}], "warnings": [], "suggestions": [], "passed_checks": []}</QA_FINDINGS>', None)
+
+        test_file = CONF.ROOT_DIR / "test_file.py"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("print('hello')", encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
+        with patch('ralph.Logger.info'):
+            with patch.object(orch, '_prompt_for_prd_generation', return_value=False) as mock_prompt:
+                orch._run_standalone_qa_review()
+                mock_prompt.assert_called_once()
+
+    def test_agent_failure_exits_with_error(self):
+        """Test that agent failure causes exit with error."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (False, None, "Agent failed")
+
+        test_file = CONF.ROOT_DIR / "test_file.py"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("print('hello')", encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
+        with patch('ralph.Logger.error'):
+            with patch('ralph.Logger.info'):
+                with self.assertRaises(SystemExit) as ctx:
+                    orch._run_standalone_qa_review()
+                self.assertEqual(ctx.exception.code, 1)
+
+    def test_parse_failure_exits_with_error(self):
+        """Test that parse failure causes exit with error."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, "Invalid response without QA_FINDINGS tags", None)
+
+        test_file = CONF.ROOT_DIR / "test_file.py"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("print('hello')", encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
+        with patch('ralph.Logger.error'):
+            with patch('ralph.Logger.info'):
+                with self.assertRaises(SystemExit) as ctx:
+                    orch._run_standalone_qa_review()
+                self.assertEqual(ctx.exception.code, 1)
+
+
+class TestStandaloneQAReviewEvents(TempConfigTestCase):
+    """Tests for standalone QA review event emissions."""
+
+    def test_emits_start_event(self):
+        """Test that standalone QA review emits start event."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<QA_FINDINGS>{"summary": "PASS", "critical_issues": [], "warnings": [], "suggestions": [], "passed_checks": []}</QA_FINDINGS>', None)
+
+        test_file = CONF.ROOT_DIR / "test_file.py"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("print('hello')", encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        with patch('ralph.Logger.info'):
+            orch._run_standalone_qa_review()
+        self.assertIn(EventType.QA_REVIEW_START, events)
+
+    def test_emits_success_event(self):
+        """Test that standalone QA review emits success event."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<QA_FINDINGS>{"summary": "PASS", "critical_issues": [], "warnings": [], "suggestions": [], "passed_checks": []}</QA_FINDINGS>', None)
+
+        test_file = CONF.ROOT_DIR / "test_file.py"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("print('hello')", encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
+        events = []
+        orch.hooks.emit = lambda e: events.append(e.event_type)
+        with patch('ralph.Logger.info'):
+            orch._run_standalone_qa_review()
+        self.assertIn(EventType.QA_REVIEW_SUCCESS, events)
+
+
+class TestStandaloneQAReviewTemplate(unittest.TestCase):
+    """Tests for standalone QA review template."""
+
+    def test_template_exists(self):
+        from ralph import TemplateManager
+        self.assertIn("qa_standalone_review.txt", TemplateManager.DEFAULT_TEMPLATES)
+
+    def test_template_contains_required_variables(self):
+        from ralph import TemplateManager
+        template = TemplateManager.DEFAULT_TEMPLATES["qa_standalone_review.txt"]
+        self.assertIn("{{review_path}}", template)
+        self.assertIn("{{codebase_files}}", template)
+        self.assertIn("{{memory_map}}", template)
+
+
+class TestStandaloneQAReviewPRDGeneration(TempConfigTestCase):
+    """Tests for PRD generation from standalone QA review findings."""
+
+    def test_generates_prd_when_user_accepts(self):
+        """Test that PRD is generated when user accepts prompt."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<QA_FINDINGS>{"summary": "WARN", "critical_issues": [{"category": "security", "description": "test"}], "warnings": [], "suggestions": [], "passed_checks": []}</QA_FINDINGS>', None)
+
+        test_file = CONF.ROOT_DIR / "test_file.py"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("print('hello')", encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            with patch.object(orch, '_prompt_for_prd_generation', return_value=True):
+                orch._run_standalone_qa_review()
+
+        # Check that PRD was created
+        self.assertTrue(CONF.PRD_FILE.exists())
+
+    def test_prd_out_flag_saves_to_custom_location(self):
+        """Test that --prd-out saves PRD to specified location."""
+        mock_agent = self.create_mock_agent()
+        mock_agent.run.return_value = (True, '<QA_FINDINGS>{"summary": "WARN", "critical_issues": [{"category": "security", "description": "test"}], "warnings": [], "suggestions": [], "passed_checks": []}</QA_FINDINGS>', None)
+
+        test_file = CONF.ROOT_DIR / "test_file.py"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("print('hello')", encoding='utf-8')
+
+        custom_prd_path = CONF.ROOT_DIR / "custom_prd.json"
+        orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file), prd_out=str(custom_prd_path))
+        with patch('ralph.Logger.info'), patch('ralph.Logger.error'):
+            with patch.object(orch, '_prompt_for_prd_generation', return_value=True):
+                orch._run_standalone_qa_review()
+
+        # Check that PRD was saved to custom location
+        self.assertTrue(custom_prd_path.exists())
+
+
 class TestPRDFileSaving(TempConfigTestCase):
     """Tests for PRD file saving with overwrite protection and error handling."""
 
