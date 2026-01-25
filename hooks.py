@@ -1494,3 +1494,609 @@ class FinalQAValidator:
             self._log_warning(f"Final QA validation hook error: {e}")
 
         return None
+
+
+# ==============================================================================
+# UNFILLED REQUIREMENTS HANDLER
+# ==============================================================================
+
+
+class UserChoice:
+    """Constants for user choices when handling unfilled requirements."""
+    GENERATE_SUPPLEMENTARY = "generate_supplementary"
+    MARK_DEFERRED = "mark_deferred"
+    CONTINUE_WITH_GAPS = "continue_with_gaps"
+    FULL_REVISION = "full_revision"
+    QUICK_FIX = "quick_fix"
+
+
+@dataclass
+class UnfilledRequirementsResult:
+    """Result from handling unfilled requirements.
+
+    Attributes:
+        choice: The user's choice (UserChoice constant)
+        supplementary_prd_path: Path to generated supplementary PRD, if applicable
+        supplementary_prd_data: Generated PRD data, if applicable
+        deferred_requirements: List of requirement IDs marked as deferred
+        error: Error message if handling failed
+    """
+    choice: str
+    supplementary_prd_path: Optional[Path] = None
+    supplementary_prd_data: Optional[Dict[str, Any]] = None
+    deferred_requirements: List[str] = field(default_factory=list)
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert result to dictionary for JSON serialization."""
+        return {
+            "choice": self.choice,
+            "supplementary_prd_path": str(self.supplementary_prd_path) if self.supplementary_prd_path else None,
+            "supplementary_prd_data": self.supplementary_prd_data,
+            "deferred_requirements": self.deferred_requirements,
+            "error": self.error,
+        }
+
+
+class SupplementaryPRDGenerator:
+    """Generates supplementary PRDs to address unfilled requirements.
+
+    Creates a new PRD containing tasks derived from failed requirement
+    descriptions and validation reasoning.
+
+    Usage:
+        >>> generator = SupplementaryPRDGenerator(original_prd_id="PRD-001")
+        >>> prd_data = generator.generate(failed_requirements, output_path)
+    """
+
+    def __init__(
+        self,
+        original_prd_id: str,
+        original_prd_path: Optional[Path] = None,
+        logger: Optional[Any] = None
+    ):
+        """Initialize the supplementary PRD generator.
+
+        Args:
+            original_prd_id: ID of the original PRD being supplemented
+            original_prd_path: Path to the original PRD file
+            logger: Optional logger with info/warning/error methods
+        """
+        self._original_prd_id = original_prd_id
+        self._original_prd_path = original_prd_path
+        self._logger = logger
+
+    def _log_info(self, message: str) -> None:
+        """Log an info message if logger is available."""
+        if self._logger and hasattr(self._logger, 'info'):
+            self._logger.info(message)
+
+    def _log_warning(self, message: str) -> None:
+        """Log a warning message if logger is available."""
+        if self._logger and hasattr(self._logger, 'warning'):
+            self._logger.warning(message)
+
+    def _log_error(self, message: str) -> None:
+        """Log an error message if logger is available."""
+        if self._logger and hasattr(self._logger, 'error'):
+            self._logger.error(message)
+
+    def _generate_supplementary_id(self) -> str:
+        """Generate a unique ID for the supplementary PRD.
+
+        Returns:
+            Supplementary PRD ID in format PRD-XXX-SUPP-N
+        """
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        return f"{self._original_prd_id}-SUPP-{timestamp}"
+
+    def _create_user_story_from_requirement(
+        self,
+        requirement_id: str,
+        description: str,
+        task_number: int
+    ) -> Dict[str, Any]:
+        """Create a user story from a failed requirement.
+
+        Args:
+            requirement_id: ID of the failed requirement
+            description: Description of the requirement
+            task_number: Sequential task number for ID generation
+
+        Returns:
+            User story dictionary following PRD schema
+        """
+        task_id = f"TASK-{task_number:03d}"
+
+        # Create story description from requirement
+        story_description = (
+            f"As a developer, I want to fulfill the unfilled requirement "
+            f"'{requirement_id}' so that {description}"
+        )
+
+        # Build acceptance criteria based on the requirement
+        acceptance_criteria = [
+            f"Given the requirement '{requirement_id}', the implementation satisfies: {description}",
+            "Edge case: Implementation handles boundary conditions appropriately",
+            "Error handling: Implementation provides meaningful error messages for failure scenarios"
+        ]
+
+        # Definition of done
+        definition_of_done = [
+            f"Requirement {requirement_id} passes validation",
+            "Unit tests cover the new functionality",
+            "No regression in existing functionality"
+        ]
+
+        return {
+            "id": task_id,
+            "description": story_description,
+            "priority": "Must Have",
+            "acceptanceCriteria": acceptance_criteria,
+            "definitionOfDone": definition_of_done,
+            "risks": [],
+            "dependencies": [],
+            "status": "pending",
+            "originalRequirement": requirement_id
+        }
+
+    def generate(
+        self,
+        failed_requirements: List[Tuple[str, str]],
+        output_path: Optional[Path] = None
+    ) -> Tuple[Dict[str, Any], Optional[Path]]:
+        """Generate a supplementary PRD from failed requirements.
+
+        Args:
+            failed_requirements: List of (id, description) tuples for failed requirements
+            output_path: Optional path to write the PRD JSON file
+
+        Returns:
+            Tuple of (prd_data, output_path) where output_path is None if not written
+
+        Raises:
+            ValueError: If no failed requirements provided
+        """
+        if not failed_requirements:
+            raise ValueError("No failed requirements provided for supplementary PRD")
+
+        supplementary_id = self._generate_supplementary_id()
+
+        # Create user stories from each failed requirement
+        user_stories = []
+        addressed_requirements = []
+
+        for i, (req_id, description) in enumerate(failed_requirements, 1):
+            story = self._create_user_story_from_requirement(req_id, description, i)
+            user_stories.append(story)
+            addressed_requirements.append(req_id)
+
+        # Build the supplementary PRD
+        prd_data = {
+            "id": supplementary_id,
+            "description": f"Supplementary PRD to address unfilled requirements from {self._original_prd_id}",
+            "originalPrdId": self._original_prd_id,
+            "originalPrdPath": str(self._original_prd_path) if self._original_prd_path else None,
+            "addressedRequirements": addressed_requirements,
+            "userStories": user_stories
+        }
+
+        self._log_info(
+            f"Generated supplementary PRD '{supplementary_id}' with "
+            f"{len(user_stories)} tasks addressing {len(addressed_requirements)} requirements"
+        )
+
+        # Write to file if path provided
+        written_path = None
+        if output_path:
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(prd_data, indent=2), encoding='utf-8')
+                written_path = output_path
+                self._log_info(f"Supplementary PRD written to: {output_path}")
+            except OSError as e:
+                self._log_error(f"Failed to write supplementary PRD: {e}")
+
+        return prd_data, written_path
+
+
+class UnfilledRequirementsHandler:
+    """Handles unfilled requirements after final QA validation.
+
+    Prompts users with options when requirements remain unfilled:
+    1. Generate supplementary PRD
+    2. Mark requirements as deferred
+    3. Continue with gaps
+
+    Supports edge cases:
+    - Single unfilled requirement: offers quick-fix suggestions
+    - All requirements unfilled: suggests full PRD revision
+
+    In non-interactive mode, outputs to stderr and exits with code 2.
+
+    Usage:
+        >>> handler = UnfilledRequirementsHandler(
+        ...     prd_manager, checklist_manager, non_interactive=False
+        ... )
+        >>> result = handler.handle(report)
+    """
+
+    EXIT_CODE_UNFILLED = 2
+
+    def __init__(
+        self,
+        prd_manager: Any,
+        checklist_manager: Any,
+        non_interactive: bool = False,
+        output_dir: Optional[Path] = None,
+        logger: Optional[Any] = None
+    ):
+        """Initialize the unfilled requirements handler.
+
+        Args:
+            prd_manager: PRDManager instance for PRD operations
+            checklist_manager: QAChecklistManager for checklist operations
+            non_interactive: If True, skip prompts and output to stderr
+            output_dir: Directory for supplementary PRD output (defaults to .ralph/)
+            logger: Optional logger with info/warning/error methods
+        """
+        self._prd_manager = prd_manager
+        self._checklist_manager = checklist_manager
+        self._non_interactive = non_interactive
+        self._output_dir = output_dir
+        self._logger = logger
+        self._preserved_unfilled: List[Tuple[str, str]] = []
+
+    def _log_info(self, message: str) -> None:
+        """Log an info message if logger is available."""
+        if self._logger and hasattr(self._logger, 'info'):
+            self._logger.info(message)
+
+    def _log_warning(self, message: str) -> None:
+        """Log a warning message if logger is available."""
+        if self._logger and hasattr(self._logger, 'warning'):
+            self._logger.warning(message)
+
+    def _log_error(self, message: str) -> None:
+        """Log an error message if logger is available."""
+        if self._logger and hasattr(self._logger, 'error'):
+            self._logger.error(message)
+
+    def _get_original_prd_id(self) -> str:
+        """Get the ID of the original PRD.
+
+        Returns:
+            PRD ID string, or 'UNKNOWN' if not available
+        """
+        try:
+            if self._prd_manager and self._prd_manager.exists():
+                prd_data = self._prd_manager.load()
+                return prd_data.get("id", "UNKNOWN")
+        except Exception:
+            pass
+        return "UNKNOWN"
+
+    def _output_to_stderr(self, failed_requirements: List[Tuple[str, str]]) -> None:
+        """Output unfilled requirements to stderr for non-interactive mode.
+
+        Args:
+            failed_requirements: List of (id, description) tuples
+        """
+        import sys
+        sys.stderr.write("\n=== UNFILLED REQUIREMENTS ===\n")
+        sys.stderr.write(f"PRD: {self._get_original_prd_id()}\n")
+        sys.stderr.write(f"Total unfilled: {len(failed_requirements)}\n\n")
+
+        for req_id, description in failed_requirements:
+            sys.stderr.write(f"  [{req_id}] {description}\n")
+
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    def _is_single_requirement(self, report: FinalQAReport) -> bool:
+        """Check if only one requirement is unfilled.
+
+        Args:
+            report: Final QA validation report
+
+        Returns:
+            True if exactly one requirement is unfilled
+        """
+        return report.failed == 1
+
+    def _is_all_requirements_unfilled(self, report: FinalQAReport) -> bool:
+        """Check if all requirements are unfilled.
+
+        Args:
+            report: Final QA validation report
+
+        Returns:
+            True if all requirements are unfilled
+        """
+        return report.failed == report.total_requirements and report.total_requirements > 0
+
+    def _prompt_single_requirement(
+        self, requirement: Tuple[str, str]
+    ) -> UnfilledRequirementsResult:
+        """Handle single unfilled requirement with quick-fix option.
+
+        Args:
+            requirement: (id, description) tuple for the unfilled requirement
+
+        Returns:
+            UnfilledRequirementsResult with user's choice
+        """
+        req_id, description = requirement
+
+        print(f"\n{'='*60}")
+        print("SINGLE UNFILLED REQUIREMENT")
+        print(f"{'='*60}")
+        print(f"\n  [{req_id}] {description}\n")
+        print("\nQuick-fix suggestions:")
+        print(f"  - Review implementation for: {description}")
+        print(f"  - Check if acceptance criteria are fully addressed")
+        print(f"  - Ensure edge cases and error handling are covered\n")
+        print("Options:")
+        print("  [1] Apply quick-fix (mark as passed after manual review)")
+        print("  [2] Generate supplementary PRD for this requirement")
+        print("  [3] Mark as deferred")
+        print("  [4] Continue with gap")
+
+        while True:
+            try:
+                choice = input("\nSelect option [1-4]: ").strip()
+                if choice == "1":
+                    # Quick fix - mark as passed
+                    try:
+                        self._checklist_manager.update_requirement(req_id, status="passed")
+                        self._log_info(f"Marked {req_id} as passed after manual review")
+                        return UnfilledRequirementsResult(
+                            choice=UserChoice.QUICK_FIX,
+                            deferred_requirements=[]
+                        )
+                    except Exception as e:
+                        return UnfilledRequirementsResult(
+                            choice=UserChoice.QUICK_FIX,
+                            error=f"Failed to mark as passed: {e}"
+                        )
+                elif choice == "2":
+                    return self._generate_supplementary_prd([requirement])
+                elif choice == "3":
+                    return self._mark_as_deferred([requirement])
+                elif choice == "4":
+                    return UnfilledRequirementsResult(
+                        choice=UserChoice.CONTINUE_WITH_GAPS
+                    )
+                else:
+                    print("Invalid choice. Please select 1-4.")
+            except (EOFError, KeyboardInterrupt):
+                print("\nOperation cancelled.")
+                return UnfilledRequirementsResult(
+                    choice=UserChoice.CONTINUE_WITH_GAPS
+                )
+
+    def _prompt_all_unfilled(
+        self, failed_requirements: List[Tuple[str, str]]
+    ) -> UnfilledRequirementsResult:
+        """Handle case when all requirements are unfilled.
+
+        Suggests full PRD revision instead of supplement.
+
+        Args:
+            failed_requirements: List of all (id, description) tuples
+
+        Returns:
+            UnfilledRequirementsResult with user's choice
+        """
+        print(f"\n{'='*60}")
+        print("ALL REQUIREMENTS UNFILLED")
+        print(f"{'='*60}")
+        print(f"\nAll {len(failed_requirements)} requirements remain unfilled.")
+        print("This suggests the implementation may need a complete revision.\n")
+        print("Options:")
+        print("  [1] Request full PRD revision (recommended)")
+        print("  [2] Generate supplementary PRD for all requirements")
+        print("  [3] Mark all as deferred")
+        print("  [4] Continue with gaps")
+
+        while True:
+            try:
+                choice = input("\nSelect option [1-4]: ").strip()
+                if choice == "1":
+                    return UnfilledRequirementsResult(
+                        choice=UserChoice.FULL_REVISION
+                    )
+                elif choice == "2":
+                    return self._generate_supplementary_prd(failed_requirements)
+                elif choice == "3":
+                    return self._mark_as_deferred(failed_requirements)
+                elif choice == "4":
+                    return UnfilledRequirementsResult(
+                        choice=UserChoice.CONTINUE_WITH_GAPS
+                    )
+                else:
+                    print("Invalid choice. Please select 1-4.")
+            except (EOFError, KeyboardInterrupt):
+                print("\nOperation cancelled.")
+                return UnfilledRequirementsResult(
+                    choice=UserChoice.CONTINUE_WITH_GAPS
+                )
+
+    def _prompt_standard(
+        self, failed_requirements: List[Tuple[str, str]]
+    ) -> UnfilledRequirementsResult:
+        """Handle standard case with multiple (but not all) unfilled requirements.
+
+        Args:
+            failed_requirements: List of (id, description) tuples
+
+        Returns:
+            UnfilledRequirementsResult with user's choice
+        """
+        print(f"\n{'='*60}")
+        print("UNFILLED REQUIREMENTS")
+        print(f"{'='*60}")
+        print(f"\n{len(failed_requirements)} requirement(s) remain unfilled:\n")
+
+        for req_id, description in failed_requirements:
+            print(f"  [{req_id}] {description}")
+
+        print("\nOptions:")
+        print("  [1] Generate supplementary PRD to address unfilled requirements")
+        print("  [2] Mark requirements as deferred")
+        print("  [3] Continue with gaps")
+
+        while True:
+            try:
+                choice = input("\nSelect option [1-3]: ").strip()
+                if choice == "1":
+                    return self._generate_supplementary_prd(failed_requirements)
+                elif choice == "2":
+                    return self._mark_as_deferred(failed_requirements)
+                elif choice == "3":
+                    return UnfilledRequirementsResult(
+                        choice=UserChoice.CONTINUE_WITH_GAPS
+                    )
+                else:
+                    print("Invalid choice. Please select 1-3.")
+            except (EOFError, KeyboardInterrupt):
+                print("\nOperation cancelled.")
+                return UnfilledRequirementsResult(
+                    choice=UserChoice.CONTINUE_WITH_GAPS
+                )
+
+    def _generate_supplementary_prd(
+        self, failed_requirements: List[Tuple[str, str]]
+    ) -> UnfilledRequirementsResult:
+        """Generate a supplementary PRD for unfilled requirements.
+
+        Args:
+            failed_requirements: List of (id, description) tuples
+
+        Returns:
+            UnfilledRequirementsResult with generated PRD info
+        """
+        original_prd_id = self._get_original_prd_id()
+        original_prd_path = None
+
+        if self._prd_manager:
+            try:
+                original_prd_path = Path(self._prd_manager._path)
+            except Exception:
+                pass
+
+        generator = SupplementaryPRDGenerator(
+            original_prd_id=original_prd_id,
+            original_prd_path=original_prd_path,
+            logger=self._logger
+        )
+
+        # Determine output path
+        output_path = None
+        if self._output_dir:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"supplementary_prd_{timestamp}.json"
+            output_path = self._output_dir / filename
+        elif self._prd_manager:
+            try:
+                prd_dir = Path(self._prd_manager._path).parent
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"supplementary_prd_{timestamp}.json"
+                output_path = prd_dir / filename
+            except Exception:
+                pass
+
+        try:
+            prd_data, written_path = generator.generate(
+                failed_requirements, output_path
+            )
+
+            self._log_info(
+                f"Generated supplementary PRD addressing "
+                f"{len(failed_requirements)} unfilled requirements"
+            )
+
+            return UnfilledRequirementsResult(
+                choice=UserChoice.GENERATE_SUPPLEMENTARY,
+                supplementary_prd_path=written_path,
+                supplementary_prd_data=prd_data
+            )
+
+        except Exception as e:
+            self._log_error(f"Failed to generate supplementary PRD: {e}")
+            # Preserve the unfilled requirements list for manual follow-up
+            self._preserved_unfilled = failed_requirements
+            return UnfilledRequirementsResult(
+                choice=UserChoice.GENERATE_SUPPLEMENTARY,
+                error=f"PRD generation failed: {e}. Unfilled requirements preserved for manual follow-up."
+            )
+
+    def _mark_as_deferred(
+        self, failed_requirements: List[Tuple[str, str]]
+    ) -> UnfilledRequirementsResult:
+        """Mark requirements as deferred.
+
+        Note: This method records the deferral but doesn't change the
+        checklist status (which only supports pending/passed/failed).
+
+        Args:
+            failed_requirements: List of (id, description) tuples
+
+        Returns:
+            UnfilledRequirementsResult with deferred requirement IDs
+        """
+        deferred_ids = [req_id for req_id, _ in failed_requirements]
+
+        self._log_info(f"Marked {len(deferred_ids)} requirements as deferred")
+
+        return UnfilledRequirementsResult(
+            choice=UserChoice.MARK_DEFERRED,
+            deferred_requirements=deferred_ids
+        )
+
+    def get_preserved_unfilled(self) -> List[Tuple[str, str]]:
+        """Get unfilled requirements preserved after a failed PRD generation.
+
+        Returns:
+            List of (id, description) tuples for preserved requirements
+        """
+        return self._preserved_unfilled
+
+    def handle(self, report: FinalQAReport) -> UnfilledRequirementsResult:
+        """Handle unfilled requirements based on the final QA report.
+
+        In non-interactive mode, outputs to stderr and raises SystemExit(2).
+        In interactive mode, prompts user with appropriate options.
+
+        Args:
+            report: FinalQAReport from FinalQAValidator.validate()
+
+        Returns:
+            UnfilledRequirementsResult with the handling outcome
+
+        Raises:
+            SystemExit: With code 2 in non-interactive mode
+        """
+        failed_requirements = report.failed_requirements
+
+        if not failed_requirements:
+            # No unfilled requirements
+            return UnfilledRequirementsResult(
+                choice=UserChoice.CONTINUE_WITH_GAPS
+            )
+
+        # Non-interactive mode: output to stderr and exit
+        if self._non_interactive:
+            self._output_to_stderr(failed_requirements)
+            # Preserve for manual follow-up
+            self._preserved_unfilled = failed_requirements
+            import sys
+            sys.exit(self.EXIT_CODE_UNFILLED)
+
+        # Interactive mode: determine which prompt to show
+        if self._is_single_requirement(report):
+            return self._prompt_single_requirement(failed_requirements[0])
+        elif self._is_all_requirements_unfilled(report):
+            return self._prompt_all_unfilled(failed_requirements)
+        else:
+            return self._prompt_standard(failed_requirements)

@@ -21,7 +21,11 @@ from ralph import (
     QAFinding, QAFindingsAnalyzer, QAFindingType,
     RalphOrchestrator, Shell, TemplateManager, get_version, main,
 )
-from hooks import Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook, QAChecklistAgent, FinalQAValidator, FinalQAReport
+from hooks import (
+    Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook,
+    QAChecklistAgent, FinalQAValidator, FinalQAReport,
+    UnfilledRequirementsHandler, UnfilledRequirementsResult, SupplementaryPRDGenerator, UserChoice
+)
 
 
 # ==============================================================================
@@ -5766,6 +5770,666 @@ class TestFinalQAValidatorEventTypes(unittest.TestCase):
     def test_event_types_are_unique(self):
         """Test that PRD_COMPLETE and PRD_INCOMPLETE have different values."""
         self.assertNotEqual(EventType.PRD_COMPLETE, EventType.PRD_INCOMPLETE)
+
+
+# ==============================================================================
+# SUPPLEMENTARY PRD GENERATOR TESTS
+# ==============================================================================
+
+
+class TestSupplementaryPRDGenerator(TempConfigTestCase):
+    """Tests for SupplementaryPRDGenerator class."""
+
+    def test_generate_creates_valid_prd_structure(self):
+        """Test that generated PRD has correct structure."""
+        generator = SupplementaryPRDGenerator(
+            original_prd_id="PRD-001"
+        )
+
+        failed_requirements = [
+            ("TASK-001-AC01", "First requirement description"),
+            ("TASK-001-AC02", "Second requirement description"),
+        ]
+
+        prd_data, _ = generator.generate(failed_requirements)
+
+        self.assertIn("id", prd_data)
+        self.assertIn("PRD-001-SUPP-", prd_data["id"])
+        self.assertIn("description", prd_data)
+        self.assertEqual(prd_data["originalPrdId"], "PRD-001")
+        self.assertIn("addressedRequirements", prd_data)
+        self.assertEqual(len(prd_data["addressedRequirements"]), 2)
+        self.assertIn("userStories", prd_data)
+        self.assertEqual(len(prd_data["userStories"]), 2)
+
+    def test_generate_user_stories_have_correct_structure(self):
+        """Test that user stories follow PRD schema."""
+        generator = SupplementaryPRDGenerator(original_prd_id="PRD-001")
+
+        failed_requirements = [
+            ("TASK-001-AC01", "Test requirement"),
+        ]
+
+        prd_data, _ = generator.generate(failed_requirements)
+        story = prd_data["userStories"][0]
+
+        self.assertEqual(story["id"], "TASK-001")
+        self.assertIn("description", story)
+        self.assertEqual(story["priority"], "Must Have")
+        self.assertIn("acceptanceCriteria", story)
+        self.assertGreaterEqual(len(story["acceptanceCriteria"]), 3)
+        self.assertIn("definitionOfDone", story)
+        self.assertGreaterEqual(len(story["definitionOfDone"]), 3)
+        self.assertEqual(story["status"], "pending")
+        self.assertEqual(story["originalRequirement"], "TASK-001-AC01")
+
+    def test_generate_references_original_prd(self):
+        """Test that supplementary PRD references original."""
+        original_path = self.temp_path / ".ralph" / "prd.json"
+        generator = SupplementaryPRDGenerator(
+            original_prd_id="PRD-001",
+            original_prd_path=original_path
+        )
+
+        prd_data, _ = generator.generate([("REQ-01", "Description")])
+
+        self.assertEqual(prd_data["originalPrdId"], "PRD-001")
+        self.assertEqual(prd_data["originalPrdPath"], str(original_path))
+        self.assertEqual(prd_data["addressedRequirements"], ["REQ-01"])
+
+    def test_generate_writes_to_file_when_path_provided(self):
+        """Test that PRD is written to disk when output_path given."""
+        output_path = self.temp_path / "supplementary.json"
+        generator = SupplementaryPRDGenerator(original_prd_id="PRD-001")
+
+        prd_data, written_path = generator.generate(
+            [("REQ-01", "Description")],
+            output_path=output_path
+        )
+
+        self.assertEqual(written_path, output_path)
+        self.assertTrue(output_path.exists())
+
+        content = json.loads(output_path.read_text(encoding='utf-8'))
+        self.assertEqual(content["id"], prd_data["id"])
+
+    def test_generate_raises_on_empty_requirements(self):
+        """Test that ValueError raised when no requirements provided."""
+        generator = SupplementaryPRDGenerator(original_prd_id="PRD-001")
+
+        with self.assertRaises(ValueError) as ctx:
+            generator.generate([])
+
+        self.assertIn("No failed requirements", str(ctx.exception))
+
+    def test_generate_multiple_requirements_creates_sequential_tasks(self):
+        """Test that multiple requirements create sequential TASK IDs."""
+        generator = SupplementaryPRDGenerator(original_prd_id="PRD-001")
+
+        failed_requirements = [
+            ("REQ-01", "First"),
+            ("REQ-02", "Second"),
+            ("REQ-03", "Third"),
+        ]
+
+        prd_data, _ = generator.generate(failed_requirements)
+
+        task_ids = [story["id"] for story in prd_data["userStories"]]
+        self.assertEqual(task_ids, ["TASK-001", "TASK-002", "TASK-003"])
+
+
+# ==============================================================================
+# UNFILLED REQUIREMENTS RESULT TESTS
+# ==============================================================================
+
+
+class TestUnfilledRequirementsResult(unittest.TestCase):
+    """Tests for UnfilledRequirementsResult dataclass."""
+
+    def test_to_dict_serialization(self):
+        """Test that result serializes correctly."""
+        test_path = Path("/test/path.json")
+        result = UnfilledRequirementsResult(
+            choice=UserChoice.GENERATE_SUPPLEMENTARY,
+            supplementary_prd_path=test_path,
+            supplementary_prd_data={"id": "PRD-001"},
+            deferred_requirements=["REQ-01"]
+        )
+
+        data = result.to_dict()
+
+        self.assertEqual(data["choice"], UserChoice.GENERATE_SUPPLEMENTARY)
+        # Use str(Path) for cross-platform compatibility
+        self.assertEqual(data["supplementary_prd_path"], str(test_path))
+        self.assertEqual(data["supplementary_prd_data"], {"id": "PRD-001"})
+        self.assertEqual(data["deferred_requirements"], ["REQ-01"])
+
+    def test_to_dict_handles_none_path(self):
+        """Test serialization with None path."""
+        result = UnfilledRequirementsResult(
+            choice=UserChoice.CONTINUE_WITH_GAPS
+        )
+
+        data = result.to_dict()
+
+        self.assertIsNone(data["supplementary_prd_path"])
+
+
+# ==============================================================================
+# UNFILLED REQUIREMENTS HANDLER TESTS
+# ==============================================================================
+
+
+class TestUnfilledRequirementsHandler(TempConfigTestCase):
+    """Tests for UnfilledRequirementsHandler class."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_path = self.temp_path / ".ralph" / "prd.json"
+        self.prd_manager = PRDManager(self.prd_path)
+        self.checklist_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+
+    def _write_prd(self, data):
+        """Helper to write PRD JSON to disk."""
+        self.prd_path.parent.mkdir(parents=True, exist_ok=True)
+        self.prd_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def _write_checklist(self, data):
+        """Helper to write checklist JSON to disk."""
+        self.checklist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.checklist_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def test_handle_no_unfilled_requirements(self):
+        """Test handling when all requirements are fulfilled."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        report = FinalQAReport(
+            total_requirements=3,
+            passed=3,
+            failed=0,
+            coverage_percentage=100.0,
+            failed_requirements=[],
+            all_passed=True
+        )
+
+        result = handler.handle(report)
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_is_single_requirement(self):
+        """Test detection of single unfilled requirement."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        report_single = FinalQAReport(
+            total_requirements=3,
+            passed=2,
+            failed=1,
+            coverage_percentage=66.67,
+            failed_requirements=[("REQ-01", "Description")],
+            all_passed=False
+        )
+
+        self.assertTrue(handler._is_single_requirement(report_single))
+
+        report_multiple = FinalQAReport(
+            total_requirements=3,
+            passed=1,
+            failed=2,
+            coverage_percentage=33.33,
+            failed_requirements=[("REQ-01", "Desc1"), ("REQ-02", "Desc2")],
+            all_passed=False
+        )
+
+        self.assertFalse(handler._is_single_requirement(report_multiple))
+
+    def test_is_all_requirements_unfilled(self):
+        """Test detection of all requirements unfilled."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        report_all_failed = FinalQAReport(
+            total_requirements=3,
+            passed=0,
+            failed=3,
+            coverage_percentage=0.0,
+            failed_requirements=[
+                ("REQ-01", "Desc1"),
+                ("REQ-02", "Desc2"),
+                ("REQ-03", "Desc3")
+            ],
+            all_passed=False
+        )
+
+        self.assertTrue(handler._is_all_requirements_unfilled(report_all_failed))
+
+        report_some_passed = FinalQAReport(
+            total_requirements=3,
+            passed=1,
+            failed=2,
+            coverage_percentage=33.33,
+            failed_requirements=[("REQ-01", "Desc1"), ("REQ-02", "Desc2")],
+            all_passed=False
+        )
+
+        self.assertFalse(handler._is_all_requirements_unfilled(report_some_passed))
+
+    def test_non_interactive_exits_with_code_2(self):
+        """Test that non-interactive mode exits with code 2."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=True
+        )
+
+        report = FinalQAReport(
+            total_requirements=1,
+            passed=0,
+            failed=1,
+            coverage_percentage=0.0,
+            failed_requirements=[("REQ-01", "Description")],
+            all_passed=False
+        )
+
+        with self.assertRaises(SystemExit) as ctx:
+            handler.handle(report)
+
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_non_interactive_preserves_unfilled_requirements(self):
+        """Test that non-interactive mode preserves requirements list."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=True
+        )
+
+        failed_reqs = [("REQ-01", "Desc1"), ("REQ-02", "Desc2")]
+        report = FinalQAReport(
+            total_requirements=2,
+            passed=0,
+            failed=2,
+            coverage_percentage=0.0,
+            failed_requirements=failed_reqs,
+            all_passed=False
+        )
+
+        with self.assertRaises(SystemExit):
+            handler.handle(report)
+
+        self.assertEqual(handler.get_preserved_unfilled(), failed_reqs)
+
+    def test_non_interactive_outputs_to_stderr(self):
+        """Test that non-interactive mode writes to stderr."""
+        self._write_prd({"id": "PRD-001", "description": "Test", "userStories": []})
+
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=True
+        )
+
+        report = FinalQAReport(
+            total_requirements=1,
+            passed=0,
+            failed=1,
+            coverage_percentage=0.0,
+            failed_requirements=[("REQ-01", "Description")],
+            all_passed=False
+        )
+
+        import io
+        import sys
+
+        captured_stderr = io.StringIO()
+        original_stderr = sys.stderr
+        sys.stderr = captured_stderr
+
+        try:
+            with self.assertRaises(SystemExit):
+                handler.handle(report)
+        finally:
+            sys.stderr = original_stderr
+
+        stderr_output = captured_stderr.getvalue()
+        self.assertIn("UNFILLED REQUIREMENTS", stderr_output)
+        self.assertIn("PRD-001", stderr_output)
+        self.assertIn("REQ-01", stderr_output)
+
+    def test_generate_supplementary_prd(self):
+        """Test supplementary PRD generation via handler."""
+        output_dir = self.temp_path / ".ralph"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        self._write_prd({"id": "PRD-001", "description": "Test", "userStories": []})
+
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=output_dir
+        )
+
+        failed_reqs = [("REQ-01", "Requirement description")]
+        result = handler._generate_supplementary_prd(failed_reqs)
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+        self.assertIsNotNone(result.supplementary_prd_data)
+        self.assertEqual(result.supplementary_prd_data["originalPrdId"], "PRD-001")
+        self.assertIn("REQ-01", result.supplementary_prd_data["addressedRequirements"])
+
+    def test_generate_supplementary_prd_handles_write_error(self):
+        """Test that PRD generation preserves requirements on error."""
+        # Use a non-existent directory that can't be created
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=None
+        )
+        handler._prd_manager = None  # Force path determination failure
+
+        # Mock a generator that raises an exception
+        failed_reqs = [("REQ-01", "Description")]
+
+        with patch.object(SupplementaryPRDGenerator, 'generate', side_effect=Exception("Write failed")):
+            result = handler._generate_supplementary_prd(failed_reqs)
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+        self.assertIsNotNone(result.error)
+        self.assertIn("Write failed", result.error)
+        self.assertEqual(handler.get_preserved_unfilled(), failed_reqs)
+
+    def test_mark_as_deferred(self):
+        """Test marking requirements as deferred."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        failed_reqs = [("REQ-01", "Desc1"), ("REQ-02", "Desc2")]
+        result = handler._mark_as_deferred(failed_reqs)
+
+        self.assertEqual(result.choice, UserChoice.MARK_DEFERRED)
+        self.assertEqual(result.deferred_requirements, ["REQ-01", "REQ-02"])
+
+    def test_get_original_prd_id_returns_unknown_when_no_prd(self):
+        """Test that UNKNOWN is returned when PRD not available."""
+        handler = UnfilledRequirementsHandler(
+            None, self.checklist_manager, non_interactive=False
+        )
+
+        self.assertEqual(handler._get_original_prd_id(), "UNKNOWN")
+
+    def test_get_original_prd_id_returns_id_from_prd(self):
+        """Test that correct ID is returned from PRD."""
+        self._write_prd({
+            "id": "PRD-TEST-123",
+            "description": "Test PRD",
+            "userStories": []
+        })
+
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        self.assertEqual(handler._get_original_prd_id(), "PRD-TEST-123")
+
+
+# ==============================================================================
+# INTERACTIVE PROMPT TESTS (MOCKED)
+# ==============================================================================
+
+
+class TestUnfilledRequirementsHandlerPrompts(TempConfigTestCase):
+    """Tests for interactive prompts with mocked input."""
+
+    def setUp(self):
+        super().setUp()
+        self.prd_path = self.temp_path / ".ralph" / "prd.json"
+        self.prd_path.parent.mkdir(parents=True, exist_ok=True)
+        self.prd_path.write_text(json.dumps({
+            "id": "PRD-001",
+            "description": "Test",
+            "userStories": []
+        }), encoding='utf-8')
+
+        self.checklist_path = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.prd_manager = PRDManager(self.prd_path)
+        self.checklist_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+
+        self.handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=self.temp_path / ".ralph"
+        )
+
+    def test_prompt_single_requirement_option_1_quick_fix(self):
+        """Test quick-fix option for single requirement."""
+        # Create checklist with a requirement
+        self.checklist_path.write_text(json.dumps({
+            "requirements": [
+                {"id": "REQ-01", "description": "Test", "status": "failed"}
+            ]
+        }), encoding='utf-8')
+        self.checklist_manager.load()
+
+        with patch('builtins.input', return_value="1"):
+            result = self.handler._prompt_single_requirement(("REQ-01", "Description"))
+
+        self.assertEqual(result.choice, UserChoice.QUICK_FIX)
+
+    def test_prompt_single_requirement_option_2_supplementary(self):
+        """Test supplementary PRD option for single requirement."""
+        with patch('builtins.input', return_value="2"):
+            result = self.handler._prompt_single_requirement(("REQ-01", "Description"))
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+        self.assertIsNotNone(result.supplementary_prd_data)
+
+    def test_prompt_single_requirement_option_3_deferred(self):
+        """Test deferred option for single requirement."""
+        with patch('builtins.input', return_value="3"):
+            result = self.handler._prompt_single_requirement(("REQ-01", "Description"))
+
+        self.assertEqual(result.choice, UserChoice.MARK_DEFERRED)
+        self.assertEqual(result.deferred_requirements, ["REQ-01"])
+
+    def test_prompt_single_requirement_option_4_continue(self):
+        """Test continue option for single requirement."""
+        with patch('builtins.input', return_value="4"):
+            result = self.handler._prompt_single_requirement(("REQ-01", "Description"))
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_all_unfilled_option_1_revision(self):
+        """Test full revision option when all unfilled."""
+        with patch('builtins.input', return_value="1"):
+            result = self.handler._prompt_all_unfilled([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.FULL_REVISION)
+
+    def test_prompt_all_unfilled_option_2_supplementary(self):
+        """Test supplementary PRD option when all unfilled."""
+        with patch('builtins.input', return_value="2"):
+            result = self.handler._prompt_all_unfilled([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+
+    def test_prompt_all_unfilled_option_3_deferred(self):
+        """Test deferred option when all unfilled."""
+        with patch('builtins.input', return_value="3"):
+            result = self.handler._prompt_all_unfilled([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.MARK_DEFERRED)
+
+    def test_prompt_all_unfilled_option_4_continue(self):
+        """Test continue option when all unfilled."""
+        with patch('builtins.input', return_value="4"):
+            result = self.handler._prompt_all_unfilled([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_standard_option_1_supplementary(self):
+        """Test supplementary PRD option in standard prompt."""
+        with patch('builtins.input', return_value="1"):
+            result = self.handler._prompt_standard([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+
+    def test_prompt_standard_option_2_deferred(self):
+        """Test deferred option in standard prompt."""
+        with patch('builtins.input', return_value="2"):
+            result = self.handler._prompt_standard([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.MARK_DEFERRED)
+
+    def test_prompt_standard_option_3_continue(self):
+        """Test continue option in standard prompt."""
+        with patch('builtins.input', return_value="3"):
+            result = self.handler._prompt_standard([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_handles_keyboard_interrupt(self):
+        """Test that keyboard interrupt returns continue choice."""
+        with patch('builtins.input', side_effect=KeyboardInterrupt):
+            result = self.handler._prompt_standard([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_handles_eof(self):
+        """Test that EOF returns continue choice."""
+        with patch('builtins.input', side_effect=EOFError):
+            result = self.handler._prompt_standard([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_retries_on_invalid_input(self):
+        """Test that invalid input prompts retry."""
+        inputs = iter(["invalid", "5", "1"])
+
+        with patch('builtins.input', side_effect=lambda _: next(inputs)):
+            result = self.handler._prompt_standard([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+
+
+# ==============================================================================
+# INTEGRATION TESTS
+# ==============================================================================
+
+
+class TestUnfilledRequirementsIntegration(TempConfigTestCase):
+    """Integration tests for the unfilled requirements workflow."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_path = self.temp_path / ".ralph" / "prd.json"
+
+        # Create PRD
+        self.prd_path.parent.mkdir(parents=True, exist_ok=True)
+        self.prd_path.write_text(json.dumps({
+            "id": "PRD-001",
+            "description": "Integration test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }), encoding='utf-8')
+
+        self.prd_manager = PRDManager(self.prd_path)
+        self.checklist_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+
+    def test_full_workflow_generate_supplementary(self):
+        """Test complete workflow: failed validation -> generate supplementary."""
+        # Create checklist with failed requirements
+        self.checklist_path.write_text(json.dumps({
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+                {"id": "TASK-001-AC02", "description": "Criteria 2", "status": "failed"},
+                {"id": "TASK-001-AC03", "description": "Criteria 3", "status": "pending"},
+            ]
+        }), encoding='utf-8')
+
+        # Run validation
+        hooks_dir = self.temp_path / ".ralph" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook_manager = HookManager(hooks_dir)
+
+        validator = FinalQAValidator(
+            self.checklist_manager, self.prd_manager, hook_manager
+        )
+        report = validator.validate()
+
+        # Verify report has failed requirements
+        self.assertFalse(report.all_passed)
+        self.assertEqual(report.failed, 2)
+
+        # Handle with supplementary PRD generation
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=self.temp_path / ".ralph"
+        )
+
+        with patch('builtins.input', return_value="1"):
+            result = handler.handle(report)
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+        self.assertIsNotNone(result.supplementary_prd_path)
+        self.assertTrue(result.supplementary_prd_path.exists())
+
+        # Verify supplementary PRD content
+        supp_prd = json.loads(result.supplementary_prd_path.read_text(encoding='utf-8'))
+        self.assertEqual(supp_prd["originalPrdId"], "PRD-001")
+        self.assertEqual(len(supp_prd["userStories"]), 2)
+        self.assertIn("TASK-001-AC02", supp_prd["addressedRequirements"])
+        self.assertIn("TASK-001-AC03", supp_prd["addressedRequirements"])
+
+    def test_supplementary_prd_task_references_requirement(self):
+        """Test that supplementary PRD tasks reference their source requirement."""
+        # Use multiple failed requirements to trigger standard prompt (not single-requirement prompt)
+        self.checklist_path.write_text(json.dumps({
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Feature X works correctly", "status": "failed"},
+                {"id": "TASK-001-AC02", "description": "Feature Y works correctly", "status": "passed"},
+                {"id": "TASK-001-AC03", "description": "Feature Z works correctly", "status": "failed"},
+            ]
+        }), encoding='utf-8')
+
+        hooks_dir = self.temp_path / ".ralph" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook_manager = HookManager(hooks_dir)
+
+        validator = FinalQAValidator(
+            self.checklist_manager, self.prd_manager, hook_manager
+        )
+        report = validator.validate()
+
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=self.temp_path / ".ralph"
+        )
+
+        # Option 1 in standard prompt = Generate supplementary PRD
+        with patch('builtins.input', return_value="1"):
+            result = handler.handle(report)
+
+        task = result.supplementary_prd_data["userStories"][0]
+        self.assertEqual(task["originalRequirement"], "TASK-001-AC01")
+        self.assertIn("Feature X works correctly", task["acceptanceCriteria"][0])
+
+
+class TestUserChoiceConstants(unittest.TestCase):
+    """Tests for UserChoice constants."""
+
+    def test_all_choices_defined(self):
+        """Test that all expected choice constants are defined."""
+        self.assertEqual(UserChoice.GENERATE_SUPPLEMENTARY, "generate_supplementary")
+        self.assertEqual(UserChoice.MARK_DEFERRED, "mark_deferred")
+        self.assertEqual(UserChoice.CONTINUE_WITH_GAPS, "continue_with_gaps")
+        self.assertEqual(UserChoice.FULL_REVISION, "full_revision")
+        self.assertEqual(UserChoice.QUICK_FIX, "quick_fix")
 
 
 if __name__ == '__main__':
