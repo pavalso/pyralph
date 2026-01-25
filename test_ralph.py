@@ -6432,5 +6432,149 @@ class TestUserChoiceConstants(unittest.TestCase):
         self.assertEqual(UserChoice.QUICK_FIX, "quick_fix")
 
 
+# ==============================================================================
+# QA CHECKLIST CLI TESTS
+# ==============================================================================
+
+
+class TestQAChecklistCLI(unittest.TestCase):
+    """Tests for --qa-checklist CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("--qa-checklist", type=str)
+
+    def test_qa_checklist_flag_parses(self):
+        args = self.parser.parse_args(["--qa-checklist", "/path/to/checklist.json"])
+        self.assertEqual(args.qa_checklist, "/path/to/checklist.json")
+
+    def test_qa_checklist_default_is_none(self):
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.qa_checklist)
+
+
+class TestQAChecklistCLIValidation(TempConfigTestCase):
+    """Tests for --qa-checklist CLI argument validation."""
+
+    def test_qa_checklist_file_not_found(self):
+        """Test that non-existent checklist file errors in main()."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--qa-checklist', '/nonexistent/checklist.json']):
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit) as ctx:
+                        main()
+                    self.assertEqual(ctx.exception.code, 1)
+                    mock_error.assert_called()
+                    call_args = mock_error.call_args[0][0]
+                    self.assertIn("not found", call_args.lower())
+
+    def test_qa_checklist_invalid_json(self):
+        """Test that invalid JSON checklist file errors in main()."""
+        # Create temp file with invalid JSON
+        invalid_file = self.temp_path / "invalid.json"
+        invalid_file.write_text("{ not valid json }", encoding='utf-8')
+
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--qa-checklist', str(invalid_file)]):
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit) as ctx:
+                        main()
+                    self.assertEqual(ctx.exception.code, 1)
+                    # Should have been called at least twice (invalid JSON + parse error details)
+                    self.assertGreaterEqual(mock_error.call_count, 2)
+
+    def test_qa_checklist_valid_json_accepted(self):
+        """Test that valid JSON checklist file is accepted."""
+        valid_file = self.temp_path / "valid.json"
+        valid_file.write_text('{"requirements": []}', encoding='utf-8')
+
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--qa-checklist', str(valid_file)]):
+                main()
+            # Verify orchestrator was called (not exit with error)
+            mock_orch.assert_called_once()
+
+    def test_qa_checklist_relative_path_resolved(self):
+        """Test that relative paths are resolved from current working directory."""
+        # Create valid checklist in temp dir
+        valid_file = self.temp_path / "relative_checklist.json"
+        valid_file.write_text('{"requirements": []}', encoding='utf-8')
+
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            # Use relative path
+            with patch('sys.argv', ['ralph', '--qa-checklist', 'relative_checklist.json']):
+                # Change to temp directory
+                original_cwd = Path.cwd()
+                import os
+                os.chdir(self.temp_path)
+                try:
+                    main()
+                finally:
+                    os.chdir(original_cwd)
+            # Verify it was called
+            mock_orch.assert_called_once()
+            # Verify the path was resolved (absolute)
+            call_kwargs = mock_orch.call_args[1]
+            qa_checklist = call_kwargs.get('qa_checklist')
+            self.assertIsNotNone(qa_checklist)
+            self.assertTrue(qa_checklist.is_absolute())
+
+
+class TestQAChecklistCLIPassthrough(unittest.TestCase):
+    """Tests for --qa-checklist flag passed to orchestrator."""
+
+    def test_qa_checklist_passed_to_orchestrator(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checklist_file = Path(temp_dir) / "test-checklist.json"
+            checklist_file.write_text('{"requirements": []}', encoding='utf-8')
+
+            with patch('ralph.RalphOrchestrator') as mock_orch:
+                mock_instance = MagicMock()
+                mock_orch.return_value = mock_instance
+                with patch('sys.argv', ['ralph', '--qa-checklist', str(checklist_file)]):
+                    main()
+                call_kwargs = mock_orch.call_args[1]
+                qa_checklist = call_kwargs.get('qa_checklist')
+                self.assertIsNotNone(qa_checklist)
+                self.assertEqual(qa_checklist.name, "test-checklist.json")
+
+    def test_qa_checklist_none_when_not_provided(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertIsNone(call_kwargs.get('qa_checklist'))
+
+
+class TestQAChecklistOrchestrator(TempConfigTestCase):
+    """Tests for QA checklist in RalphOrchestrator."""
+
+    def test_orchestrator_stores_qa_checklist_path(self):
+        custom_path = self.temp_path / "custom-checklist.json"
+        orch = self.create_mock_orchestrator(qa_checklist=custom_path)
+        self.assertEqual(orch._qa_checklist_path, custom_path)
+
+    def test_orchestrator_defaults_to_no_qa_checklist(self):
+        orch = self.create_mock_orchestrator()
+        self.assertIsNone(orch._qa_checklist_path)
+
+    def test_qa_checklist_path_property_returns_custom(self):
+        custom_path = self.temp_path / "custom-checklist.json"
+        orch = self.create_mock_orchestrator(qa_checklist=custom_path)
+        self.assertEqual(orch.qa_checklist_path, custom_path)
+
+    def test_qa_checklist_path_property_returns_default_when_none(self):
+        orch = self.create_mock_orchestrator()
+        self.assertEqual(orch.qa_checklist_path, CONF.QA_CHECKLIST_FILE)
+
+
 if __name__ == '__main__':
     unittest.main()

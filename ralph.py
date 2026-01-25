@@ -2057,7 +2057,8 @@ class RalphOrchestrator:
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
                  label: Optional[List[str]] = None, revise_prd: bool = False,
-                 qa_review: bool = False, qa_strict: bool = False, qa_path: Optional[str] = None) -> None:
+                 qa_review: bool = False, qa_strict: bool = False, qa_path: Optional[str] = None,
+                 qa_checklist: Optional[Path] = None) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -2128,8 +2129,18 @@ class RalphOrchestrator:
         self._qa_review = qa_review
         self._qa_strict = qa_strict
         self._qa_path = qa_path
+        self._qa_checklist_path = qa_checklist
         # Initialize PRD manager for consolidated file operations
         self._prd = PRDManager(CONF.PRD_FILE)
+
+    @property
+    def qa_checklist_path(self) -> Path:
+        """Get the effective QA checklist path.
+
+        Returns the custom path if provided via --qa-checklist, otherwise
+        returns the default path from CONF.QA_CHECKLIST_FILE.
+        """
+        return self._qa_checklist_path if self._qa_checklist_path else CONF.QA_CHECKLIST_FILE
 
     def _load_plugins(self) -> None:
         """
@@ -4409,6 +4420,7 @@ def main() -> None:
     parser.add_argument("--no-qa-review", action="store_true", help="Disable QA review (overrides --enhance-all)")
     parser.add_argument("--qa-strict", action="store_true", help="Fail tasks when QA review finds critical issues (requires --qa-review)")
     parser.add_argument("--qa-path", type=str, metavar="PATH", help="Path to review for standalone QA workflow (requires --qa-review). If not specified with --qa-review, reviews the entire codebase")
+    parser.add_argument("--qa-checklist", type=str, metavar="FILE", help="Path to custom QA checklist JSON file (default: .ralph/qa-checklist.json)")
     # Enhancement combination flag
     parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd, --qa-review). Individual --no-* flags can override specific features.")
     args = parser.parse_args()
@@ -4465,6 +4477,32 @@ def main() -> None:
     if args.qa_path and args.phase != "all":
         Logger.error(f"--qa-path cannot be combined with phase '{args.phase}'. Standalone QA workflow runs independently of task phases.")
         sys.exit(1)
+
+    # Validate --qa-checklist file exists and is valid JSON
+    qa_checklist_path = None
+    if args.qa_checklist:
+        # Resolve relative paths from current working directory
+        qa_checklist_path = Path(args.qa_checklist)
+        if not qa_checklist_path.is_absolute():
+            qa_checklist_path = Path.cwd() / qa_checklist_path
+        qa_checklist_path = qa_checklist_path.resolve()
+
+        if not qa_checklist_path.exists():
+            Logger.error(f"QA checklist file not found: {qa_checklist_path}")
+            sys.exit(1)
+
+        # Validate JSON format
+        try:
+            content = qa_checklist_path.read_text(encoding='utf-8')
+            json.loads(content)
+        except json.JSONDecodeError as e:
+            Logger.error(f"Invalid JSON in QA checklist file: {qa_checklist_path}")
+            Logger.error(f"  Parse error: {e.msg} at line {e.lineno}, column {e.colno}")
+            sys.exit(1)
+        except OSError as e:
+            Logger.error(f"Cannot read QA checklist file: {qa_checklist_path}")
+            Logger.error(f"  Error: {e}")
+            sys.exit(1)
 
     # Handle --enhance-all flag: apply enhancement defaults with explicit overrides
     # --enhance-all enables: --enhance-intent, --revise-prd, --qa-review
@@ -4548,7 +4586,8 @@ def main() -> None:
         revise_prd=revise_prd,
         qa_review=qa_review,
         qa_strict=args.qa_strict,
-        qa_path=args.qa_path
+        qa_path=args.qa_path,
+        qa_checklist=qa_checklist_path
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":
