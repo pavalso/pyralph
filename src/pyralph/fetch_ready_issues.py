@@ -349,8 +349,8 @@ def invoke_planner(
     # Import here to avoid circular dependencies and allow the module
     # to be used without ralph.py being available
     try:
-        from orchestrator import RalphOrchestrator
-        from config import CONF
+        from .orchestrator import RalphOrchestrator
+        from .config import CONF
     except ImportError as e:
         raise PlannerError(f"Failed to import Ralph components: {e}")
 
@@ -448,9 +448,9 @@ def invoke_orchestration(
         OrchestrationError: If critical setup fails (e.g., missing memory).
     """
     try:
-        from orchestrator import RalphOrchestrator
-        from config import CONF
-        from logger import Logger
+        from .orchestrator import RalphOrchestrator
+        from .config import CONF
+        from .logger import Logger
     except ImportError as e:
         raise OrchestrationError(f"Failed to import Ralph components: {e}")
 
@@ -563,7 +563,7 @@ def process_ready_issues(
             - Count of successfully processed issues
             - Count of failed issues
     """
-    from logger import Logger
+    from .logger import Logger
 
     results: List[OrchestrationResult] = []
     success_count = 0
@@ -2721,7 +2721,7 @@ class IssueWatcher:
         if hooks is not None:
             self._hooks = hooks
         elif self._config.enable_hooks:
-            from hooks import HookManager
+            from .hooks import HookManager
             self._hooks = HookManager(Path(self._config.hooks_dir))
         else:
             self._hooks = None
@@ -2836,7 +2836,7 @@ class IssueWatcher:
         Args:
             issues: List of newly detected Issue objects.
         """
-        from hooks import Event, EventType
+        from .hooks import Event, EventType
 
         self._log(f"Detected {len(issues)} new issue(s)")
 
@@ -2889,7 +2889,7 @@ class IssueWatcher:
         Args:
             error: The exception that occurred.
         """
-        from hooks import Event, EventType
+        from .hooks import Event, EventType
 
         self._log(f"Polling error: {error}")
         self._emit(Event(
@@ -2899,7 +2899,7 @@ class IssueWatcher:
 
     def _process_pending(self) -> None:
         """Process all pending issues in the queue."""
-        from hooks import Event, EventType
+        from .hooks import Event, EventType
 
         self._log("Processing pending issues...")
 
@@ -2972,7 +2972,7 @@ class IssueWatcher:
         Raises:
             IssueWatcherError: If starting the watcher fails.
         """
-        from hooks import Event, EventType
+        from .hooks import Event, EventType
 
         # Check if already running
         status = self.get_status()
@@ -3031,7 +3031,7 @@ class IssueWatcher:
 
     def _cleanup(self) -> None:
         """Clean up resources when stopping."""
-        from hooks import Event, EventType
+        from .hooks import Event, EventType
 
         if self._poller is not None:
             self._poller.stop(timeout=5.0)
@@ -3086,7 +3086,7 @@ class IssueWatcher:
         Returns:
             List of new issues that were detected and stored.
         """
-        from hooks import Event, EventType
+        from .hooks import Event, EventType
 
         # Emit POLL_START event
         self._emit(Event(EventType.POLL_START))
@@ -3521,7 +3521,7 @@ def batch_main(args: Optional[List[str]] = None) -> int:
 
     # Check memory directory exists (architect phase must have run)
     try:
-        from config import CONF
+        from .config import CONF
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
             raise PlannerError(
                 "Memory directory is missing or empty. "

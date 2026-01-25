@@ -11,23 +11,23 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agents import get_agent, list_agents
-from agents.base import AgentError
-from agents.claude import ClaudeAgent
-from agents.copilot import GithubAgent
-from config import Config, CONF
-from logger import Logger
-from shell import Shell
-from prd import PRDManager, JsonUtils
-from memory import MemoryManager
-from templates import PromptFormatter, TemplateManager
-from qa import (
+from pyralph.agents import get_agent, list_agents
+from pyralph.agents.base import AgentError
+from pyralph.agents.claude import ClaudeAgent
+from pyralph.agents.copilot import GithubAgent
+from pyralph.config import Config, CONF
+from pyralph.logger import Logger
+from pyralph.shell import Shell
+from pyralph.prd import PRDManager, JsonUtils
+from pyralph.memory import MemoryManager
+from pyralph.templates import PromptFormatter, TemplateManager
+from pyralph.qa import (
     QAChecklistCorruptedError, QAChecklistError, QAChecklistManager,
     QARequirement, QAFinding, QAFindingsAnalyzer, QAFindingType,
 )
-from orchestrator import RalphOrchestrator
-from ralph import get_version, main
-from hooks import (
+from pyralph.orchestrator import RalphOrchestrator
+from pyralph.cli import get_version, main
+from pyralph.hooks import (
     Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook,
     QAChecklistAgent, FinalQAValidator, FinalQAReport,
     UnfilledRequirementsHandler, UnfilledRequirementsResult, SupplementaryPRDGenerator, UserChoice
@@ -69,7 +69,7 @@ class TempConfigTestCase(unittest.TestCase):
     def create_mock_orchestrator(self, agent_name="mock", mock_agent=None, **kwargs):
         if mock_agent is None:
             mock_agent = self.create_mock_agent()
-        with patch('orchestrator.get_agent', return_value=mock_agent):
+        with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
             return RalphOrchestrator(agent_name=agent_name, **kwargs)
 
 
@@ -402,7 +402,7 @@ class TestShell(unittest.TestCase):
         self.assertEqual(code, 1)
 
     def test_run_timeout(self):
-        with patch('shell.subprocess.run', side_effect=subprocess.TimeoutExpired(cmd="t", timeout=1)):
+        with patch('pyralph.shell.subprocess.run', side_effect=subprocess.TimeoutExpired(cmd="t", timeout=1)):
             stdout, stderr, code = Shell.run("cmd", timeout=1)
         self.assertEqual(stdout, "")
         self.assertIn("Timed Out", stderr)
@@ -418,7 +418,7 @@ class TestShell(unittest.TestCase):
                 self.assertNotEqual(entry, excluded)
 
     def test_get_file_tree_params(self):
-        with patch('shell.Shell.run', return_value=("out", "", 0)) as mock:
+        with patch('pyralph.shell.Shell.run', return_value=("out", "", 0)) as mock:
             Shell.get_file_tree(depth=5, ignore=['build'])
             call_args = mock.call_args[0][0]
             self.assertIn("-L 5", call_args)
@@ -1401,7 +1401,7 @@ class TestRalphOrchestrator(TempConfigTestCase):
 
     def test_init(self):
         mock_agent = self.create_mock_agent()
-        with patch('orchestrator.get_agent', return_value=mock_agent):
+        with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
             orch = RalphOrchestrator(agent_name="mock")
             self.assertIsNotNone(orch.agent)
             self.assertIsInstance(orch.memory, MemoryManager)
@@ -1411,14 +1411,14 @@ class TestRalphOrchestrator(TempConfigTestCase):
 
     def test_init_deps_fail_exits(self):
         mock_agent = self.create_mock_agent(check_deps=False)
-        with patch('orchestrator.get_agent', return_value=mock_agent):
-            with patch('orchestrator.sys.exit') as mock_exit:
+        with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
+            with patch('pyralph.orchestrator.sys.exit') as mock_exit:
                 RalphOrchestrator(agent_name="mock")
                 mock_exit.assert_called_once_with(1)
 
     def test_init_ensures_directories(self):
         self.assertFalse(CONF.ROOT_DIR.exists())
-        with patch('orchestrator.get_agent', return_value=self.create_mock_agent()):
+        with patch('pyralph.orchestrator.get_agent', return_value=self.create_mock_agent()):
             RalphOrchestrator(agent_name="mock")
             for p in [CONF.ROOT_DIR, CONF.MEMORY_DIR, CONF.ARCHIVE_DIR]:
                 self.assertTrue(p.exists())
@@ -1443,11 +1443,11 @@ class TestRalphOrchestrator(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent)
         CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         (CONF.MEMORY_DIR / "arch.md").write_text("c", encoding="utf-8")
-        with patch('orchestrator.sys.exit') as mock_exit, patch('logger.Logger.info'):
+        with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.info'):
             orch.run_architect("test")
             mock_exit.assert_called_once_with(1)
         (CONF.BASE_DIR / "ARCH.md").write_text("# Arch", encoding="utf-8")
-        with patch('orchestrator.sys.exit') as mock_exit, patch('logger.Logger.info'):
+        with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.info'):
             orch.run_architect("test")
             mock_exit.assert_not_called()
 
@@ -1514,7 +1514,7 @@ class TestOrchestratorIntentHandling(TempConfigTestCase):
 
     def test_get_intent_file_not_found_exits(self):
         orch = self.create_mock_orchestrator(intent_file="/nonexistent")
-        with patch('orchestrator.sys.exit', side_effect=SystemExit(1)), patch('logger.Logger.error'):
+        with patch('pyralph.orchestrator.sys.exit', side_effect=SystemExit(1)), patch('pyralph.logger.Logger.error'):
             with self.assertRaises(SystemExit):
                 orch._get_intent()
 
@@ -1522,7 +1522,7 @@ class TestOrchestratorIntentHandling(TempConfigTestCase):
         intent_file = self.temp_path / "empty.txt"
         intent_file.write_text("", encoding='utf-8')
         orch = self.create_mock_orchestrator(intent_file=str(intent_file))
-        with patch('orchestrator.sys.exit', side_effect=SystemExit(1)), patch('logger.Logger.error'):
+        with patch('pyralph.orchestrator.sys.exit', side_effect=SystemExit(1)), patch('pyralph.logger.Logger.error'):
             with self.assertRaises(SystemExit):
                 orch._get_intent()
 
@@ -1546,7 +1546,7 @@ class TestOrchestratorExportMemory(TempConfigTestCase):
     def test_export_memory_empty_warns(self):
         CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         orch = self.create_mock_orchestrator()
-        with patch('logger.Logger.warning') as mock_warn:
+        with patch('pyralph.logger.Logger.warning') as mock_warn:
             orch._export_memory(str(self.temp_path / "out.md"))
             mock_warn.assert_called_with("No memory files to export.")
 
@@ -1675,7 +1675,7 @@ class TestMainIntentValidation(unittest.TestCase):
 
     def test_rejects_both_intent_flags(self):
         with patch('sys.argv', ['ralph', '--intent', 'Test', '--intent-file', 'f.txt']):
-            with patch('orchestrator.sys.exit') as mock_exit, patch('logger.Logger.error'), patch('ralph.RalphOrchestrator'):
+            with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.error'), patch('pyralph.RalphOrchestrator'):
                 main()
                 mock_exit.assert_called_with(1)
 
@@ -1705,7 +1705,7 @@ class TestMainCLIPassthrough(unittest.TestCase):
     def test_cli_passes_flags(self):
         for cli_args, expected_kwargs in self.FLAG_TESTS:
             with self.subTest(args=cli_args):
-                with patch('ralph.RalphOrchestrator') as mock_orch:
+                with patch('pyralph.RalphOrchestrator') as mock_orch:
                     mock_orch.return_value = MagicMock()
                     with patch('sys.argv', ['ralph'] + cli_args):
                         main()
@@ -1854,7 +1854,7 @@ class TestHookModification(TempHooksTestCase):
 
     def test_modifying_hook(self):
         self.create_hook_file("mod.py", '''
-from hooks import Event
+from pyralph.hooks import Event
 EVENTS = ["TASK_START"]
 MODIFIES_DATA = True
 def on_event(e):
@@ -1866,7 +1866,7 @@ def on_event(e):
 
     def test_non_modifying_ignored(self):
         self.create_hook_file("obs.py", '''
-from hooks import Event
+from pyralph.hooks import Event
 EVENTS = ["TASK_START"]
 def on_event(e):
     return Event(event_type=e.event_type, task_id="IGNORED")
@@ -2079,7 +2079,7 @@ class TestEventLifecycle(TempConfigTestCase):
         CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         (CONF.MEMORY_DIR / "arch.md").write_text("c", encoding="utf-8")
         (CONF.BASE_DIR / "ARCH.md").write_text("# Arch", encoding="utf-8")
-        with patch('logger.Logger.info'), patch('shell.Shell.get_file_tree', return_value="tree"):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.shell.Shell.get_file_tree', return_value="tree"):
             orch.run_architect("test")
         self.assertIn(EventType.PHASE_START, events)
         self.assertIn(EventType.PHASE_END, events)
@@ -2089,7 +2089,7 @@ class TestEventLifecycle(TempConfigTestCase):
 # ISSUE WATCHER TESTS (TASK-006)
 # ==============================================================================
 
-from fetch_ready_issues import (
+from pyralph.fetch_ready_issues import (
     Issue, IssueStore, IssueStoreError, StoredIssue,
     ProcessingQueue, ProcessingQueueError, QueueItem,
     PromptTransformer, PromptTransformerError, TransformedPrompt,
@@ -2537,7 +2537,7 @@ class TestIssueWatcherHooks(IssueWatcherTestCase):
         self.emitted_events = []
 
         # Create a mock HookManager that records emitted events
-        from hooks import HookManager, Event, EventType
+        from pyralph.hooks import HookManager, Event, EventType
         self.hook_manager = HookManager(Path(self.hooks_dir))
 
         # Register a function hook to capture events
@@ -2591,7 +2591,7 @@ class TestIssueWatcherHooks(IssueWatcherTestCase):
 
     def test_on_new_issues_emits_events(self):
         """_on_new_issues should emit ISSUE_DETECTED, ISSUE_STORED, ISSUE_QUEUED events."""
-        from hooks import EventType
+        from pyralph.hooks import EventType
 
         config = WatcherConfig(
             store_dir=self.store_dir,
@@ -2618,7 +2618,7 @@ class TestIssueWatcherHooks(IssueWatcherTestCase):
 
     def test_on_poll_error_emits_event(self):
         """_on_poll_error should emit POLL_ERROR event."""
-        from hooks import EventType
+        from pyralph.hooks import EventType
 
         config = WatcherConfig(
             store_dir=self.store_dir,
@@ -2646,12 +2646,12 @@ class TestIssueWatcherHooks(IssueWatcherTestCase):
         watcher = IssueWatcher(config)
 
         # This should not raise
-        from hooks import Event, EventType
+        from pyralph.hooks import Event, EventType
         watcher._emit(Event(EventType.WATCHER_START))
 
     def test_event_has_issue_fields(self):
         """Events should include issue-related fields."""
-        from hooks import Event, EventType
+        from pyralph.hooks import Event, EventType
 
         event = Event(
             EventType.ISSUE_DETECTED,
@@ -2669,7 +2669,7 @@ class TestIssueWatcherHooks(IssueWatcherTestCase):
 
     def test_watcher_event_types_exist(self):
         """All IssueWatcher event types should exist in EventType enum."""
-        from hooks import EventType
+        from pyralph.hooks import EventType
 
         expected_events = [
             "WATCHER_START", "WATCHER_STOP",
@@ -2689,7 +2689,7 @@ class TestIssueWatcherHooks(IssueWatcherTestCase):
 # BATCH PROCESS ISSUES TESTS (PRD-001 TASK-001)
 # ==============================================================================
 
-from fetch_ready_issues import (
+from pyralph.fetch_ready_issues import (
     batch_process_issues, BatchProcessResult, PlannerResult,
     OrchestrationResult, OrchestrationError,
     issue_to_prompt, PlannerError,
@@ -2699,7 +2699,7 @@ from fetch_ready_issues import (
 class TestBatchProcessIssues(IssueWatcherTestCase):
     """Tests for batch_process_issues function."""
 
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_raises_error_when_gh_cli_not_authenticated(self, mock_check):
         """When gh CLI is not authenticated, raises GitHubCLIError with instructions."""
         mock_check.return_value = False
@@ -2711,8 +2711,8 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         self.assertIn("not installed or not authenticated", error_message)
         self.assertIn("gh auth login", error_message)
 
-    @patch('fetch_ready_issues.fetch_ready_issues')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.fetch_ready_issues')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_returns_zero_issues_found_when_no_issues(self, mock_check, mock_fetch):
         """When no issues with label exist, returns BatchProcessResult with zero issues."""
         mock_check.return_value = True
@@ -2728,9 +2728,9 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         self.assertIn("No open issues", result.message)
         self.assertIn("'ready'", result.message)
 
-    @patch('fetch_ready_issues.process_ready_issues')
-    @patch('fetch_ready_issues.fetch_ready_issues')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.process_ready_issues')
+    @patch('pyralph.fetch_ready_issues.fetch_ready_issues')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_processes_all_issues_successfully(self, mock_check, mock_fetch, mock_process):
         """When all issues process successfully, returns correct counts."""
         mock_check.return_value = True
@@ -2763,9 +2763,9 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         self.assertEqual(result.total_tasks_completed, 5)
         self.assertEqual(result.total_tasks_failed, 0)
 
-    @patch('fetch_ready_issues.process_ready_issues')
-    @patch('fetch_ready_issues.fetch_ready_issues')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.process_ready_issues')
+    @patch('pyralph.fetch_ready_issues.fetch_ready_issues')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_continues_processing_on_individual_failures(self, mock_check, mock_fetch, mock_process):
         """When some issues fail, continues processing and records failures."""
         mock_check.return_value = True
@@ -2811,9 +2811,9 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         self.assertEqual(result.total_tasks_completed, 5)
         self.assertEqual(result.total_tasks_failed, 1)
 
-    @patch('fetch_ready_issues.process_ready_issues')
-    @patch('fetch_ready_issues.fetch_ready_issues')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.process_ready_issues')
+    @patch('pyralph.fetch_ready_issues.fetch_ready_issues')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_all_issues_fail(self, mock_check, mock_fetch, mock_process):
         """When all issues fail, returns correct failure counts and message."""
         mock_check.return_value = True
@@ -2843,8 +2843,8 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
         self.assertEqual(result.issues_failed, 2)
         self.assertIn("Failed to process all 2 issue(s)", result.message)
 
-    @patch('fetch_ready_issues.fetch_ready_issues')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.fetch_ready_issues')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_passes_label_to_fetch(self, mock_check, mock_fetch):
         """Passes the label parameter to fetch_ready_issues."""
         mock_check.return_value = True
@@ -2854,9 +2854,9 @@ class TestBatchProcessIssues(IssueWatcherTestCase):
 
         mock_fetch.assert_called_once_with(label="custom-label")
 
-    @patch('fetch_ready_issues.process_ready_issues')
-    @patch('fetch_ready_issues.fetch_ready_issues')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.process_ready_issues')
+    @patch('pyralph.fetch_ready_issues.fetch_ready_issues')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_passes_agent_name_and_hooks_settings(self, mock_check, mock_fetch, mock_process):
         """Passes agent_name and enable_hooks to process_ready_issues."""
         mock_check.return_value = True
@@ -3051,12 +3051,12 @@ class TestOrchestrationError(unittest.TestCase):
 class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
     """Tests for process_ready_issues with orchestration (PRD-001 TASK-002)."""
 
-    @patch('fetch_ready_issues.invoke_orchestration')
+    @patch('pyralph.fetch_ready_issues.invoke_orchestration')
     def test_executes_orchestration_for_each_issue(self, mock_invoke):
         """Each issue invokes orchestration sequentially."""
         mock_invoke.return_value = (True, 2, 0, 2, False, None)
 
-        from fetch_ready_issues import process_ready_issues
+        from pyralph.fetch_ready_issues import process_ready_issues
         issues = [
             self.create_sample_issue(1, "Issue 1", "Body 1"),
             self.create_sample_issue(2, "Issue 2", "Body 2"),
@@ -3071,12 +3071,12 @@ class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
         self.assertEqual(success_count, 2)
         self.assertEqual(failure_count, 0)
 
-    @patch('fetch_ready_issues.invoke_orchestration')
+    @patch('pyralph.fetch_ready_issues.invoke_orchestration')
     def test_skips_processed_issues_on_resume(self, mock_invoke):
         """Issues in processed_issues set are skipped."""
         mock_invoke.return_value = (True, 2, 0, 2, False, None)
 
-        from fetch_ready_issues import process_ready_issues
+        from pyralph.fetch_ready_issues import process_ready_issues
         issues = [
             self.create_sample_issue(1, "Issue 1", "Body 1"),
             self.create_sample_issue(2, "Issue 2", "Body 2"),
@@ -3093,12 +3093,12 @@ class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].issue_number, 3)
 
-    @patch('fetch_ready_issues.invoke_orchestration')
+    @patch('pyralph.fetch_ready_issues.invoke_orchestration')
     def test_handles_empty_prd_no_stories(self, mock_invoke):
         """Issues with PRDs containing no user stories are handled."""
         mock_invoke.return_value = (True, 0, 0, 0, True, None)  # skipped_no_stories=True
 
-        from fetch_ready_issues import process_ready_issues
+        from pyralph.fetch_ready_issues import process_ready_issues
         issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
 
         results, success_count, failure_count = process_ready_issues(
@@ -3109,14 +3109,14 @@ class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
         self.assertEqual(success_count, 1)
         self.assertTrue(results[0].skipped_no_stories)
 
-    @patch('fetch_ready_issues.mark_issue_processed')
-    @patch('fetch_ready_issues.invoke_orchestration')
+    @patch('pyralph.fetch_ready_issues.mark_issue_processed')
+    @patch('pyralph.fetch_ready_issues.invoke_orchestration')
     def test_marks_issue_processed_on_success(self, mock_invoke, mock_mark):
         """Successful issues are marked with 'processed' label."""
         mock_invoke.return_value = (True, 2, 0, 2, False, None)
         mock_mark.return_value = True
 
-        from fetch_ready_issues import process_ready_issues
+        from pyralph.fetch_ready_issues import process_ready_issues
         issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
 
         results, _, _ = process_ready_issues(
@@ -3128,13 +3128,13 @@ class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
         mock_mark.assert_called_once_with(1)
         self.assertTrue(results[0].marked_processed)
 
-    @patch('fetch_ready_issues.mark_issue_processed')
-    @patch('fetch_ready_issues.invoke_orchestration')
+    @patch('pyralph.fetch_ready_issues.mark_issue_processed')
+    @patch('pyralph.fetch_ready_issues.invoke_orchestration')
     def test_skips_marking_on_failure(self, mock_invoke, mock_mark):
         """Failed issues are not marked as processed."""
         mock_invoke.return_value = (False, 1, 1, 2, False, "1 task(s) failed")
 
-        from fetch_ready_issues import process_ready_issues
+        from pyralph.fetch_ready_issues import process_ready_issues
         issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
 
         results, _, _ = process_ready_issues(
@@ -3146,12 +3146,12 @@ class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
         mock_mark.assert_not_called()
         self.assertFalse(results[0].marked_processed)
 
-    @patch('fetch_ready_issues.invoke_orchestration')
+    @patch('pyralph.fetch_ready_issues.invoke_orchestration')
     def test_records_task_counts(self, mock_invoke):
         """Task completion counts are recorded in results."""
         mock_invoke.return_value = (True, 3, 1, 4, False, None)
 
-        from fetch_ready_issues import process_ready_issues
+        from pyralph.fetch_ready_issues import process_ready_issues
         issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
 
         results, _, _ = process_ready_issues(
@@ -3163,7 +3163,7 @@ class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
         self.assertEqual(results[0].tasks_failed, 1)
         self.assertEqual(results[0].tasks_total, 4)
 
-    @patch('fetch_ready_issues.invoke_orchestration')
+    @patch('pyralph.fetch_ready_issues.invoke_orchestration')
     def test_continues_processing_after_failure(self, mock_invoke):
         """Processing continues to next issue after one fails."""
         mock_invoke.side_effect = [
@@ -3171,7 +3171,7 @@ class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
             (True, 2, 0, 2, False, None),  # Second issue succeeds
         ]
 
-        from fetch_ready_issues import process_ready_issues
+        from pyralph.fetch_ready_issues import process_ready_issues
         issues = [
             self.create_sample_issue(1, "Issue 1", "Body 1"),
             self.create_sample_issue(2, "Issue 2", "Body 2"),
@@ -3187,12 +3187,12 @@ class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
         self.assertFalse(results[0].execution_success)
         self.assertTrue(results[1].execution_success)
 
-    @patch('fetch_ready_issues.invoke_orchestration')
+    @patch('pyralph.fetch_ready_issues.invoke_orchestration')
     def test_handles_orchestration_error(self, mock_invoke):
         """OrchestrationError is caught and recorded."""
         mock_invoke.side_effect = OrchestrationError("Memory missing")
 
-        from fetch_ready_issues import process_ready_issues
+        from pyralph.fetch_ready_issues import process_ready_issues
         issues = [self.create_sample_issue(1, "Issue 1", "Body 1")]
 
         results, success_count, failure_count = process_ready_issues(
@@ -3208,9 +3208,9 @@ class TestProcessReadyIssuesOrchestration(IssueWatcherTestCase):
 class TestBatchProcessIssuesOrchestration(IssueWatcherTestCase):
     """Tests for batch_process_issues with full orchestration (PRD-001 TASK-002)."""
 
-    @patch('fetch_ready_issues.process_ready_issues')
-    @patch('fetch_ready_issues.fetch_ready_issues')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.process_ready_issues')
+    @patch('pyralph.fetch_ready_issues.fetch_ready_issues')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_passes_orchestration_parameters(self, mock_check, mock_fetch, mock_process):
         """Orchestration parameters are passed to process_ready_issues."""
         mock_check.return_value = True
@@ -3236,9 +3236,9 @@ class TestBatchProcessIssuesOrchestration(IssueWatcherTestCase):
         self.assertTrue(call_kwargs['skip_verify'])
         self.assertEqual(call_kwargs['processed_issues'], {1, 2, 3})
 
-    @patch('fetch_ready_issues.process_ready_issues')
-    @patch('fetch_ready_issues.fetch_ready_issues')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.process_ready_issues')
+    @patch('pyralph.fetch_ready_issues.fetch_ready_issues')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_calculates_total_task_counts(self, mock_check, mock_fetch, mock_process):
         """Total task counts are calculated across all issues."""
         mock_check.return_value = True
@@ -3265,9 +3265,9 @@ class TestBatchProcessIssuesOrchestration(IssueWatcherTestCase):
         self.assertEqual(result.total_tasks_completed, 5)
         self.assertEqual(result.total_tasks_failed, 1)
 
-    @patch('fetch_ready_issues.process_ready_issues')
-    @patch('fetch_ready_issues.fetch_ready_issues')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.process_ready_issues')
+    @patch('pyralph.fetch_ready_issues.fetch_ready_issues')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_message_includes_task_counts(self, mock_check, mock_fetch, mock_process):
         """Success message includes task completion counts."""
         mock_check.return_value = True
@@ -3325,7 +3325,7 @@ class TestEnhanceIntentCLIPassthrough(unittest.TestCase):
     """Tests for --enhance-intent flags passed to orchestrator."""
 
     def test_enhance_intent_passed(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--enhance-intent']):
                 main()
@@ -3333,7 +3333,7 @@ class TestEnhanceIntentCLIPassthrough(unittest.TestCase):
             self.assertTrue(call_kwargs.get('enhance_intent'))
 
     def test_enhance_intent_strict_passed(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--enhance-intent', '--enhance-intent-strict']):
                 main()
@@ -3365,14 +3365,14 @@ class TestEnhanceIntentMethod(TempConfigTestCase):
 
     def test_empty_intent_exits(self):
         orch = self.create_mock_orchestrator(enhance_intent=True)
-        with patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.error'):
             with self.assertRaises(SystemExit) as cm:
                 orch._enhance_intent_impl("")
             self.assertEqual(cm.exception.code, 1)
 
     def test_whitespace_intent_exits(self):
         orch = self.create_mock_orchestrator(enhance_intent=True)
-        with patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.error'):
             with self.assertRaises(SystemExit) as cm:
                 orch._enhance_intent_impl("   ")
             self.assertEqual(cm.exception.code, 1)
@@ -3381,27 +3381,27 @@ class TestEnhanceIntentMethod(TempConfigTestCase):
         mock_agent = self.create_mock_agent()
         mock_agent.run.return_value = (True, "<ENHANCED_INTENT>Enhanced version</ENHANCED_INTENT>", None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
-        with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
             result = orch._enhance_intent_impl("original")
         self.assertEqual(result, "Enhanced version")
 
     def test_failure_falls_back_to_original(self):
         mock_agent = self.create_mock_agent()
-        from agents.base import AgentError
+        from pyralph.agents.base import AgentError
         error = AgentError("TestError", "test message", "", "", "", "")
         mock_agent.run.return_value = (False, "", error)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
             result = orch._enhance_intent_impl("original")
         self.assertEqual(result, "original")
 
     def test_failure_strict_mode_exits(self):
         mock_agent = self.create_mock_agent()
-        from agents.base import AgentError
+        from pyralph.agents.base import AgentError
         error = AgentError("TestError", "test message", "", "", "", "")
         mock_agent.run.return_value = (False, "", error)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True, enhance_intent_strict=True)
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'), patch('pyralph.logger.Logger.error'):
             with self.assertRaises(SystemExit) as cm:
                 orch._enhance_intent_impl("original")
             self.assertEqual(cm.exception.code, 1)
@@ -3410,7 +3410,7 @@ class TestEnhanceIntentMethod(TempConfigTestCase):
         mock_agent = self.create_mock_agent()
         mock_agent.run.return_value = (True, "<ENHANCED_INTENT>   </ENHANCED_INTENT>", None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
             result = orch._enhance_intent_impl("original")
         self.assertEqual(result, "original")
 
@@ -3418,7 +3418,7 @@ class TestEnhanceIntentMethod(TempConfigTestCase):
         mock_agent = self.create_mock_agent()
         mock_agent.run.return_value = (True, "<ENHANCED_INTENT>   </ENHANCED_INTENT>", None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True, enhance_intent_strict=True)
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'), patch('pyralph.logger.Logger.error'):
             with self.assertRaises(SystemExit) as cm:
                 orch._enhance_intent_impl("original")
             self.assertEqual(cm.exception.code, 1)
@@ -3445,7 +3445,7 @@ class TestParseEnhancedIntent(TempConfigTestCase):
 
     def test_falls_back_on_missing_tags(self):
         orch = self.create_mock_orchestrator()
-        with patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.warning'):
             result = orch._parse_enhanced_intent("No tags here", "fallback")
         self.assertEqual(result, "fallback")
 
@@ -3463,7 +3463,7 @@ class TestGetAndEnhanceIntent(TempConfigTestCase):
 
     def test_without_enhance_flag_returns_original(self):
         orch = self.create_mock_orchestrator(intent="original intent", enhance_intent=False)
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             result = orch._get_and_enhance_intent()
         self.assertEqual(result, "original intent")
 
@@ -3471,13 +3471,13 @@ class TestGetAndEnhanceIntent(TempConfigTestCase):
         mock_agent = self.create_mock_agent()
         mock_agent.run.return_value = (True, "<ENHANCED_INTENT>enhanced</ENHANCED_INTENT>", None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, intent="original", enhance_intent=True)
-        with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
             result = orch._get_and_enhance_intent()
         self.assertEqual(result, "enhanced")
 
     def test_uses_provided_intent(self):
         orch = self.create_mock_orchestrator(enhance_intent=False)
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             result = orch._get_and_enhance_intent("passed intent")
         self.assertEqual(result, "passed intent")
 
@@ -3491,7 +3491,7 @@ class TestEnhanceIntentEvents(TempConfigTestCase):
         mock_agent.run.return_value = (True, "<ENHANCED_INTENT>enhanced</ENHANCED_INTENT>", None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
         orch.hooks.register_hook("capture", lambda e: events.append(e.event_type), ["INTENT_ENHANCE_START"])
-        with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
             orch._enhance_intent_impl("original")
         self.assertIn(EventType.INTENT_ENHANCE_START, events)
 
@@ -3501,19 +3501,19 @@ class TestEnhanceIntentEvents(TempConfigTestCase):
         mock_agent.run.return_value = (True, "<ENHANCED_INTENT>enhanced</ENHANCED_INTENT>", None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
         orch.hooks.register_hook("capture", lambda e: events.append(e.event_type), ["INTENT_ENHANCE_SUCCESS"])
-        with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
             orch._enhance_intent_impl("original")
         self.assertIn(EventType.INTENT_ENHANCE_SUCCESS, events)
 
     def test_emits_failure_event_on_agent_error(self):
         events = []
         mock_agent = self.create_mock_agent()
-        from agents.base import AgentError
+        from pyralph.agents.base import AgentError
         error = AgentError("TestError", "test message", "", "", "", "")
         mock_agent.run.return_value = (False, "", error)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, enhance_intent=True)
         orch.hooks.register_hook("capture", lambda e: events.append(e.event_type), ["INTENT_ENHANCE_FAILURE"])
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
             orch._enhance_intent_impl("original")
         self.assertIn(EventType.INTENT_ENHANCE_FAILURE, events)
 
@@ -3572,7 +3572,7 @@ class TestRevisePrdCLIPassthrough(unittest.TestCase):
     """Tests for --revise-prd flag passed to orchestrator."""
 
     def test_revise_prd_passed(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--revise-prd']):
                 main()
@@ -3604,7 +3604,7 @@ class TestRevisePrdMethod(TempConfigTestCase):
             None
         )
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
-        with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
             result = orch._revise_prd_impl({"userStories": []})
         self.assertEqual(result["userStories"][0]["id"], "TASK-001")
 
@@ -3614,7 +3614,7 @@ class TestRevisePrdMethod(TempConfigTestCase):
         mock_agent.run.return_value = (False, "", error)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
         original_prd = {"userStories": [{"id": "TASK-001"}]}
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
             result = orch._revise_prd_impl(original_prd)
         self.assertEqual(result, original_prd)
 
@@ -3623,7 +3623,7 @@ class TestRevisePrdMethod(TempConfigTestCase):
         mock_agent.run.return_value = (True, "<REVISED_PRD>invalid json</REVISED_PRD>", None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
         original_prd = {"userStories": [{"id": "TASK-001"}]}
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
             result = orch._revise_prd_impl(original_prd)
         self.assertEqual(result, original_prd)
 
@@ -3632,7 +3632,7 @@ class TestRevisePrdMethod(TempConfigTestCase):
         mock_agent.run.return_value = (True, '<REVISED_PRD>{"invalid": "prd"}</REVISED_PRD>', None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
         original_prd = {"userStories": [{"id": "TASK-001"}]}
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
             result = orch._revise_prd_impl(original_prd)
         self.assertEqual(result, original_prd)
 
@@ -3645,7 +3645,7 @@ class TestRevisePrdMethod(TempConfigTestCase):
             None
         )
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
-        with patch('logger.Logger.info') as mock_info:
+        with patch('pyralph.logger.Logger.info') as mock_info:
             result = orch._revise_prd_impl(original_prd)
         # Check that the "already optimal" message was logged
         info_calls = [str(c) for c in mock_info.call_args_list]
@@ -3659,7 +3659,7 @@ class TestParseRevisedPrd(TempConfigTestCase):
         orch = self.create_mock_orchestrator()
         prd = {"userStories": [{"id": "TASK-001"}]}
         response = f'<REVISED_PRD>{json.dumps(prd)}</REVISED_PRD><REVISION_SUMMARY>Changes made</REVISION_SUMMARY>'
-        with patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.warning'):
             result, summary = orch._parse_revised_prd(response, {})
         self.assertIsNotNone(result)
         self.assertEqual(result["userStories"][0]["id"], "TASK-001")
@@ -3668,14 +3668,14 @@ class TestParseRevisedPrd(TempConfigTestCase):
     def test_returns_none_for_missing_tags(self):
         orch = self.create_mock_orchestrator()
         response = 'No tags here'
-        with patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.warning'):
             result, summary = orch._parse_revised_prd(response, {})
         self.assertIsNone(result)
 
     def test_returns_none_for_invalid_json(self):
         orch = self.create_mock_orchestrator()
         response = '<REVISED_PRD>not valid json</REVISED_PRD>'
-        with patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.warning'):
             result, summary = orch._parse_revised_prd(response, {})
         self.assertIsNone(result)
 
@@ -3711,7 +3711,7 @@ class TestRevisePrdSchemaValidation(TempConfigTestCase):
             schema=str(self.schema_file)
         )
         original_prd = {"userStories": [{"id": "TASK-001"}]}
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
             # The method checks for userStories key first, so it will fall back
             result = orch._revise_prd_impl(original_prd)
         # Should fall back to original since revised PRD is invalid
@@ -3732,7 +3732,7 @@ class TestRevisePrdEvents(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
         events = []
         orch.hooks.emit = lambda e: events.append(e.event_type)
-        with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
             orch._revise_prd_impl(prd)
         self.assertIn(EventType.PRD_REVISE_START, events)
 
@@ -3747,7 +3747,7 @@ class TestRevisePrdEvents(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
         events = []
         orch.hooks.emit = lambda e: events.append(e.event_type)
-        with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
             orch._revise_prd_impl(prd)
         self.assertIn(EventType.PRD_REVISE_SUCCESS, events)
 
@@ -3758,7 +3758,7 @@ class TestRevisePrdEvents(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, revise_prd=True)
         events = []
         orch.hooks.emit = lambda e: events.append(e.event_type)
-        with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
             orch._revise_prd_impl({"userStories": []})
         self.assertIn(EventType.PRD_REVISE_FAILURE, events)
 
@@ -3767,11 +3767,11 @@ class TestRevisePrdTemplate(unittest.TestCase):
     """Tests for revise_prd.txt template existence."""
 
     def test_template_exists_in_defaults(self):
-        from templates import TemplateManager
+        from pyralph.templates import TemplateManager
         self.assertIn("revise_prd.txt", TemplateManager.DEFAULT_TEMPLATES)
 
     def test_template_has_required_placeholders(self):
-        from templates import TemplateManager
+        from pyralph.templates import TemplateManager
         template = TemplateManager.DEFAULT_TEMPLATES["revise_prd.txt"]
         self.assertIn("{{original_prd}}", template)
 
@@ -3824,7 +3824,7 @@ class TestQAReviewCLIPassthrough(unittest.TestCase):
     """Tests for --qa-review flags passed to orchestrator."""
 
     def test_qa_review_passed(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--qa-review']):
                 main()
@@ -3832,7 +3832,7 @@ class TestQAReviewCLIPassthrough(unittest.TestCase):
             self.assertTrue(call_kwargs.get('qa_review'))
 
     def test_qa_strict_passed(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--qa-review', '--qa-strict']):
                 main()
@@ -3874,7 +3874,7 @@ class TestQAReviewMethod(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="(No code changes detected)"):
-            with patch('logger.Logger.info'):
+            with patch('pyralph.logger.Logger.info'):
                 passed, findings = orch._run_qa_review(task)
         self.assertTrue(passed)
         self.assertIsNone(findings)
@@ -3895,7 +3895,7 @@ class TestQAReviewMethod(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                 passed, findings = orch._run_qa_review(task)
         self.assertTrue(passed)
         self.assertIsNotNone(findings)
@@ -3917,7 +3917,7 @@ class TestQAReviewMethod(TempConfigTestCase):
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
             with patch.object(orch, '_prompt_for_prd_generation', return_value=False):
-                with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+                with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                     passed, findings = orch._run_qa_review(task)
         self.assertTrue(passed)  # Non-strict mode continues despite critical issues
         self.assertIsNotNone(findings)
@@ -3938,7 +3938,7 @@ class TestQAReviewMethod(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_strict=True)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                 passed, findings = orch._run_qa_review(task)
         self.assertFalse(passed)  # Strict mode fails on critical issues
         self.assertIsNotNone(findings)
@@ -3949,7 +3949,7 @@ class TestQAReviewMethod(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
                 passed, findings = orch._run_qa_review(task)
         self.assertTrue(passed)  # Continues despite agent failure
         self.assertIsNone(findings)
@@ -3960,7 +3960,7 @@ class TestQAReviewMethod(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.warning'), patch('logger.Logger.debug'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'), patch('pyralph.logger.Logger.debug'):
                 passed, findings = orch._run_qa_review(task)
         self.assertTrue(passed)  # Continues despite parse failure
         self.assertIsNone(findings)
@@ -3972,7 +3972,7 @@ class TestQAReviewMethod(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
                 passed, findings = orch._run_qa_review(task)
         self.assertTrue(passed)  # Continues despite exception
         self.assertIsNone(findings)
@@ -3983,7 +3983,7 @@ class TestQAReviewMethod(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="(Unable to detect code changes)"):
-            with patch('logger.Logger.info'):
+            with patch('pyralph.logger.Logger.info'):
                 passed, findings = orch._run_qa_review(task)
         self.assertTrue(passed)
         self.assertIsNone(findings)
@@ -4014,14 +4014,14 @@ Some trailing text"""
     def test_returns_none_for_missing_tags(self):
         orch = self.create_mock_orchestrator()
         response = "No tags here at all"
-        with patch('logger.Logger.debug'):
+        with patch('pyralph.logger.Logger.debug'):
             findings = orch._parse_qa_findings(response)
         self.assertIsNone(findings)
 
     def test_returns_none_for_invalid_json(self):
         orch = self.create_mock_orchestrator()
         response = "<QA_FINDINGS>not valid json</QA_FINDINGS>"
-        with patch('logger.Logger.debug'):
+        with patch('pyralph.logger.Logger.debug'):
             findings = orch._parse_qa_findings(response)
         self.assertIsNone(findings)
 
@@ -4030,11 +4030,11 @@ class TestQAReviewTemplate(unittest.TestCase):
     """Tests for QA review template."""
 
     def test_template_exists(self):
-        from templates import TemplateManager
+        from pyralph.templates import TemplateManager
         self.assertIn("qa_review.txt", TemplateManager.DEFAULT_TEMPLATES)
 
     def test_template_has_required_placeholders(self):
-        from templates import TemplateManager
+        from pyralph.templates import TemplateManager
         template = TemplateManager.DEFAULT_TEMPLATES["qa_review.txt"]
         required_placeholders = [
             "{{task_id}}",
@@ -4079,7 +4079,7 @@ class TestQAReviewEvents(TempConfigTestCase):
         orch.hooks.emit = lambda e: events.append(e.event_type)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                 orch._run_qa_review(task)
         self.assertIn(EventType.QA_REVIEW_START, events)
 
@@ -4095,7 +4095,7 @@ class TestQAReviewEvents(TempConfigTestCase):
         orch.hooks.emit = lambda e: events.append(e.event_type)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                 orch._run_qa_review(task)
         self.assertIn(EventType.QA_REVIEW_SUCCESS, events)
 
@@ -4107,7 +4107,7 @@ class TestQAReviewEvents(TempConfigTestCase):
         orch.hooks.emit = lambda e: events.append(e.event_type)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="(No code changes detected)"):
-            with patch('logger.Logger.info'):
+            with patch('pyralph.logger.Logger.info'):
                 orch._run_qa_review(task)
         self.assertIn(EventType.QA_REVIEW_SKIPPED, events)
 
@@ -4120,7 +4120,7 @@ class TestQAReviewEvents(TempConfigTestCase):
         orch.hooks.emit = lambda e: events.append(e.event_type)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
                 orch._run_qa_review(task)
         self.assertIn(EventType.QA_REVIEW_FAILURE, events)
 
@@ -4133,7 +4133,7 @@ class TestQAReviewEvents(TempConfigTestCase):
         orch.hooks.emit = lambda e: events.append(e.event_type)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.warning'), patch('logger.Logger.debug'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'), patch('pyralph.logger.Logger.debug'):
                 orch._run_qa_review(task)
         self.assertIn(EventType.QA_REVIEW_FAILURE, events)
 
@@ -4146,7 +4146,7 @@ class TestQAReviewEvents(TempConfigTestCase):
         orch.hooks.emit = lambda e: events.append(e.event_type)
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
-            with patch('logger.Logger.info'), patch('logger.Logger.warning'):
+            with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.warning'):
                 orch._run_qa_review(task)
         self.assertIn(EventType.QA_REVIEW_FAILURE, events)
 
@@ -4200,7 +4200,7 @@ class TestQAReviewPRDPrompt(TempConfigTestCase):
         mock_agent = self.create_mock_agent()
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, non_interactive=True)
         findings = {"critical_issues": [{"description": "test"}], "warnings": []}
-        with patch('logger.Logger.info') as mock_info:
+        with patch('pyralph.logger.Logger.info') as mock_info:
             result = orch._prompt_for_prd_generation(findings)
         self.assertFalse(result)
         mock_info.assert_called()
@@ -4210,7 +4210,7 @@ class TestQAReviewPRDPrompt(TempConfigTestCase):
         mock_agent = self.create_mock_agent()
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, non_interactive=True, ci=True)
         findings = {"critical_issues": [{"description": "test"}], "warnings": []}
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             result = orch._prompt_for_prd_generation(findings)
         self.assertFalse(result)
 
@@ -4221,7 +4221,7 @@ class TestQAReviewPRDPrompt(TempConfigTestCase):
         findings = {"critical_issues": [{"description": "test"}], "warnings": []}
         # First input is invalid, second is valid
         with patch('builtins.input', side_effect=['invalid', 'maybe', 'y']):
-            with patch('logger.Logger.info') as mock_info:
+            with patch('pyralph.logger.Logger.info') as mock_info:
                 result = orch._prompt_for_prd_generation(findings)
         self.assertTrue(result)
         # Should have shown invalid input warning twice
@@ -4241,7 +4241,7 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
             "critical_issues": [{"category": "security", "description": "SQL injection"}],
             "warnings": [{"category": "style", "description": "Inconsistent naming"}]
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         # Verify PRD was created with valid structure
@@ -4262,7 +4262,7 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
             "critical_issues": [{"category": "security", "description": "SQL injection"}],
             "warnings": []
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
@@ -4279,7 +4279,7 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
             "critical_issues": [{"category": "security", "description": "SQL injection"}],
             "warnings": []
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
@@ -4301,7 +4301,7 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
             "warnings": [],
             "suggestions": []
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
@@ -4320,7 +4320,7 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
             "warnings": [{"category": "style", "description": f"Warning {i}"} for i in range(20)],
             "suggestions": [{"category": "performance", "description": f"Suggestion {i}"} for i in range(20)]
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
@@ -4342,7 +4342,7 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
             "warnings": [],
             "suggestions": []
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error') as mock_error:
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error') as mock_error:
             orch._generate_prd_from_qa_findings(task, findings)
 
         # Should log an error
@@ -4384,7 +4384,7 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
             "critical_issues": [{"category": "security", "description": "SQL injection"}],
             "warnings": []
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         # PRD should be created (passes validation)
@@ -4401,7 +4401,7 @@ class TestQAReviewPRDGeneration(TempConfigTestCase):
             "warnings": [{"category": "style", "description": "Warning issue"}],
             "suggestions": [{"category": "docs", "description": "Suggestion"}]
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         prd_data = json.loads(CONF.PRD_FILE.read_text(encoding='utf-8'))
@@ -4441,10 +4441,10 @@ class TestStandaloneQAReviewCLIValidation(unittest.TestCase):
 
     def test_qa_path_requires_qa_review_flag(self):
         """Test that --qa-path without --qa-review errors in main()."""
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--qa-path', '/some/path']):
-                with patch('logger.Logger.error') as mock_error:
+                with patch('pyralph.logger.Logger.error') as mock_error:
                     with self.assertRaises(SystemExit) as ctx:
                         main()
                     self.assertEqual(ctx.exception.code, 1)
@@ -4455,10 +4455,10 @@ class TestStandaloneQAReviewCLIValidation(unittest.TestCase):
 
     def test_qa_path_incompatible_with_phase(self):
         """Test that --qa-path with phase argument errors in main()."""
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', 'execute', '--qa-review', '--qa-path', '/some/path']):
-                with patch('logger.Logger.error') as mock_error:
+                with patch('pyralph.logger.Logger.error') as mock_error:
                     with self.assertRaises(SystemExit) as ctx:
                         main()
                     self.assertEqual(ctx.exception.code, 1)
@@ -4469,7 +4469,7 @@ class TestStandaloneQAReviewCLIPassthrough(unittest.TestCase):
     """Tests for --qa-path flag passed to orchestrator."""
 
     def test_qa_path_passed_to_orchestrator(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_instance = MagicMock()
             mock_orch.return_value = mock_instance
             with patch('sys.argv', ['ralph', '--qa-review', '--qa-path', '/test/path']):
@@ -4499,7 +4499,7 @@ class TestStandaloneQAReviewMethod(TempConfigTestCase):
         """Test that non-existent path causes exit with error."""
         mock_agent = self.create_mock_agent()
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path="/nonexistent/path")
-        with patch('logger.Logger.error') as mock_error:
+        with patch('pyralph.logger.Logger.error') as mock_error:
             with self.assertRaises(SystemExit) as ctx:
                 orch._run_standalone_qa_review()
             self.assertEqual(ctx.exception.code, 1)
@@ -4516,7 +4516,7 @@ class TestStandaloneQAReviewMethod(TempConfigTestCase):
         test_file.write_text("print('hello')", encoding='utf-8')
 
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             orch._run_standalone_qa_review()
 
         mock_agent.run.assert_called_once()
@@ -4534,7 +4534,7 @@ class TestStandaloneQAReviewMethod(TempConfigTestCase):
 
         try:
             orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_dir))
-            with patch('logger.Logger.info'):
+            with patch('pyralph.logger.Logger.info'):
                 orch._run_standalone_qa_review()
 
             mock_agent.run.assert_called_once()
@@ -4554,7 +4554,7 @@ class TestStandaloneQAReviewMethod(TempConfigTestCase):
         test_file.write_text("print('hello')", encoding='utf-8')
 
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file), non_interactive=True)
-        with patch('logger.Logger.info') as mock_info:
+        with patch('pyralph.logger.Logger.info') as mock_info:
             with patch.object(orch, '_prompt_for_prd_generation') as mock_prompt:
                 orch._run_standalone_qa_review()
                 # Should not call prompt in non-interactive mode
@@ -4570,7 +4570,7 @@ class TestStandaloneQAReviewMethod(TempConfigTestCase):
         test_file.write_text("print('hello')", encoding='utf-8')
 
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             with patch.object(orch, '_prompt_for_prd_generation', return_value=False) as mock_prompt:
                 orch._run_standalone_qa_review()
                 mock_prompt.assert_called_once()
@@ -4585,8 +4585,8 @@ class TestStandaloneQAReviewMethod(TempConfigTestCase):
         test_file.write_text("print('hello')", encoding='utf-8')
 
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
-        with patch('logger.Logger.error'):
-            with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.error'):
+            with patch('pyralph.logger.Logger.info'):
                 with self.assertRaises(SystemExit) as ctx:
                     orch._run_standalone_qa_review()
                 self.assertEqual(ctx.exception.code, 1)
@@ -4601,8 +4601,8 @@ class TestStandaloneQAReviewMethod(TempConfigTestCase):
         test_file.write_text("print('hello')", encoding='utf-8')
 
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
-        with patch('logger.Logger.error'):
-            with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.error'):
+            with patch('pyralph.logger.Logger.info'):
                 with self.assertRaises(SystemExit) as ctx:
                     orch._run_standalone_qa_review()
                 self.assertEqual(ctx.exception.code, 1)
@@ -4623,7 +4623,7 @@ class TestStandaloneQAReviewEvents(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
         events = []
         orch.hooks.emit = lambda e: events.append(e.event_type)
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             orch._run_standalone_qa_review()
         self.assertIn(EventType.QA_REVIEW_START, events)
 
@@ -4639,7 +4639,7 @@ class TestStandaloneQAReviewEvents(TempConfigTestCase):
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
         events = []
         orch.hooks.emit = lambda e: events.append(e.event_type)
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             orch._run_standalone_qa_review()
         self.assertIn(EventType.QA_REVIEW_SUCCESS, events)
 
@@ -4648,11 +4648,11 @@ class TestStandaloneQAReviewTemplate(unittest.TestCase):
     """Tests for standalone QA review template."""
 
     def test_template_exists(self):
-        from templates import TemplateManager
+        from pyralph.templates import TemplateManager
         self.assertIn("qa_standalone_review.txt", TemplateManager.DEFAULT_TEMPLATES)
 
     def test_template_contains_required_variables(self):
-        from templates import TemplateManager
+        from pyralph.templates import TemplateManager
         template = TemplateManager.DEFAULT_TEMPLATES["qa_standalone_review.txt"]
         self.assertIn("{{review_path}}", template)
         self.assertIn("{{codebase_files}}", template)
@@ -4672,7 +4672,7 @@ class TestStandaloneQAReviewPRDGeneration(TempConfigTestCase):
         test_file.write_text("print('hello')", encoding='utf-8')
 
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file))
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             with patch.object(orch, '_prompt_for_prd_generation', return_value=True):
                 orch._run_standalone_qa_review()
 
@@ -4690,7 +4690,7 @@ class TestStandaloneQAReviewPRDGeneration(TempConfigTestCase):
 
         custom_prd_path = CONF.ROOT_DIR / "custom_prd.json"
         orch = self.create_mock_orchestrator(mock_agent=mock_agent, qa_review=True, qa_path=str(test_file), prd_out=str(custom_prd_path))
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             with patch.object(orch, '_prompt_for_prd_generation', return_value=True):
                 orch._run_standalone_qa_review()
 
@@ -4711,7 +4711,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "critical_issues": [{"category": "security", "description": "SQL injection"}],
             "warnings": []
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         self.assertTrue(CONF.PRD_FILE.exists())
@@ -4731,7 +4731,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "critical_issues": [{"category": "security", "description": "SQL injection"}],
             "warnings": []
         }
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         self.assertTrue(custom_path.exists())
@@ -4753,7 +4753,7 @@ class TestPRDFileSaving(TempConfigTestCase):
         }
         self.assertFalse(nested_path.parent.exists())
 
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         self.assertTrue(nested_path.exists())
@@ -4774,7 +4774,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "warnings": []
         }
 
-        with patch('logger.Logger.info') as mock_info, patch('logger.Logger.error') as mock_error:
+        with patch('pyralph.logger.Logger.info') as mock_info, patch('pyralph.logger.Logger.error') as mock_error:
             with patch('builtins.print') as mock_print:
                 orch._generate_prd_from_qa_findings(task, findings)
 
@@ -4802,7 +4802,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "warnings": []
         }
 
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             with patch('builtins.input', return_value='y'):
                 orch._generate_prd_from_qa_findings(task, findings)
 
@@ -4826,7 +4826,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "warnings": []
         }
 
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             with patch('builtins.input', return_value='n'):
                 with patch('builtins.print') as mock_print:
                     orch._generate_prd_from_qa_findings(task, findings)
@@ -4850,7 +4850,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "warnings": []
         }
 
-        with patch('logger.Logger.info') as mock_info, patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info') as mock_info, patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         # Check for file path in info messages
@@ -4871,7 +4871,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "warnings": [{"category": "style", "description": "Naming issue"}]
         }
 
-        with patch('logger.Logger.info'), patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error'):
             orch._generate_prd_from_qa_findings(task, findings)
 
         prd_data = json.loads(custom_path.read_text(encoding='utf-8'))
@@ -4900,7 +4900,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "warnings": []
         }
 
-        with patch('logger.Logger.info'), patch('logger.Logger.error') as mock_error:
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error') as mock_error:
             with patch('builtins.print') as mock_print:
                 with patch.object(Path, 'write_text', side_effect=PermissionError("Access denied")):
                     orch._generate_prd_from_qa_findings(task, findings)
@@ -4925,7 +4925,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "warnings": []
         }
 
-        with patch('logger.Logger.info'), patch('logger.Logger.error') as mock_error:
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error') as mock_error:
             with patch('builtins.print') as mock_print:
                 with patch.object(Path, 'write_text', side_effect=OSError("Disk full")):
                     orch._generate_prd_from_qa_findings(task, findings)
@@ -4952,7 +4952,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "warnings": []
         }
 
-        with patch('logger.Logger.info') as mock_info, patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.info') as mock_info, patch('pyralph.logger.Logger.error'):
             with patch('builtins.input', side_effect=['invalid', 'maybe', 'y']):
                 orch._generate_prd_from_qa_findings(task, findings)
 
@@ -4978,7 +4978,7 @@ class TestPRDFileSaving(TempConfigTestCase):
             "warnings": []
         }
 
-        with patch('logger.Logger.info'), patch('logger.Logger.error') as mock_error:
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.error') as mock_error:
             with patch('builtins.print') as mock_print:
                 with patch.object(Path, 'mkdir', side_effect=OSError("Cannot create directory")):
                     orch._generate_prd_from_qa_findings(task, findings)
@@ -5010,7 +5010,7 @@ class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
             with patch.object(orch, '_prompt_for_prd_generation') as mock_prompt:
-                with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+                with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                     orch._run_qa_review(task)
         mock_prompt.assert_not_called()
 
@@ -5031,7 +5031,7 @@ class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
             with patch.object(orch, '_prompt_for_prd_generation', return_value=False) as mock_prompt:
-                with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+                with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                     orch._run_qa_review(task)
         mock_prompt.assert_called_once()
 
@@ -5052,7 +5052,7 @@ class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
             with patch.object(orch, '_prompt_for_prd_generation', return_value=False) as mock_prompt:
-                with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+                with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                     orch._run_qa_review(task)
         mock_prompt.assert_called_once()
 
@@ -5073,7 +5073,7 @@ class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
             with patch.object(orch, '_prompt_for_prd_generation') as mock_prompt:
-                with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+                with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                     passed, _ = orch._run_qa_review(task)
         mock_prompt.assert_not_called()
         self.assertFalse(passed)
@@ -5096,7 +5096,7 @@ class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
             with patch.object(orch, '_prompt_for_prd_generation', return_value=True):
                 with patch.object(orch, '_generate_prd_from_qa_findings') as mock_gen:
-                    with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+                    with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                         orch._run_qa_review(task)
         mock_gen.assert_called_once()
 
@@ -5118,7 +5118,7 @@ class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
             with patch.object(orch, '_prompt_for_prd_generation', return_value=False):
                 with patch.object(orch, '_generate_prd_from_qa_findings') as mock_gen:
-                    with patch('logger.Logger.info'), patch('logger.Logger.debug'):
+                    with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'):
                         orch._run_qa_review(task)
         mock_gen.assert_not_called()
 
@@ -5139,7 +5139,7 @@ class TestQAReviewWithPRDPromptIntegration(TempConfigTestCase):
         task = {"id": "TASK-001", "description": "Test task"}
         with patch.object(orch, '_get_code_changes', return_value="diff --git a/file.py"):
             with patch.object(orch, '_prompt_for_prd_generation', return_value=False):
-                with patch('logger.Logger.info') as mock_info, patch('logger.Logger.debug'):
+                with patch('pyralph.logger.Logger.info') as mock_info, patch('pyralph.logger.Logger.debug'):
                     orch._run_qa_review(task)
         # Check that the summary message was logged
         calls = [str(call) for call in mock_info.call_args_list]
@@ -5195,10 +5195,10 @@ class TestEnhanceAllCLIPassthrough(unittest.TestCase):
     """Tests for --enhance-all flags passed to orchestrator."""
 
     def test_enhance_all_enables_all_features(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--enhance-all']):
-                with patch('logger.Logger.info'):
+                with patch('pyralph.logger.Logger.info'):
                     main()
             call_kwargs = mock_orch.call_args[1]
             self.assertTrue(call_kwargs.get('enhance_intent'))
@@ -5206,10 +5206,10 @@ class TestEnhanceAllCLIPassthrough(unittest.TestCase):
             self.assertTrue(call_kwargs.get('qa_review'))
 
     def test_enhance_all_with_no_enhance_intent_override(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--enhance-all', '--no-enhance-intent']):
-                with patch('logger.Logger.info'):
+                with patch('pyralph.logger.Logger.info'):
                     main()
             call_kwargs = mock_orch.call_args[1]
             self.assertFalse(call_kwargs.get('enhance_intent'))
@@ -5217,10 +5217,10 @@ class TestEnhanceAllCLIPassthrough(unittest.TestCase):
             self.assertTrue(call_kwargs.get('qa_review'))
 
     def test_enhance_all_with_no_revise_prd_override(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--enhance-all', '--no-revise-prd']):
-                with patch('logger.Logger.info'):
+                with patch('pyralph.logger.Logger.info'):
                     main()
             call_kwargs = mock_orch.call_args[1]
             self.assertTrue(call_kwargs.get('enhance_intent'))
@@ -5228,10 +5228,10 @@ class TestEnhanceAllCLIPassthrough(unittest.TestCase):
             self.assertTrue(call_kwargs.get('qa_review'))
 
     def test_enhance_all_with_no_qa_review_override(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--enhance-all', '--no-qa-review']):
-                with patch('logger.Logger.info'):
+                with patch('pyralph.logger.Logger.info'):
                     main()
             call_kwargs = mock_orch.call_args[1]
             self.assertTrue(call_kwargs.get('enhance_intent'))
@@ -5239,10 +5239,10 @@ class TestEnhanceAllCLIPassthrough(unittest.TestCase):
             self.assertFalse(call_kwargs.get('qa_review'))
 
     def test_enhance_all_with_multiple_overrides(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--enhance-all', '--no-enhance-intent', '--no-qa-review']):
-                with patch('logger.Logger.info'):
+                with patch('pyralph.logger.Logger.info'):
                     main()
             call_kwargs = mock_orch.call_args[1]
             self.assertFalse(call_kwargs.get('enhance_intent'))
@@ -5250,7 +5250,7 @@ class TestEnhanceAllCLIPassthrough(unittest.TestCase):
             self.assertFalse(call_kwargs.get('qa_review'))
 
     def test_explicit_flags_work_without_enhance_all(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--enhance-intent', '--qa-review']):
                 main()
@@ -5261,7 +5261,7 @@ class TestEnhanceAllCLIPassthrough(unittest.TestCase):
 
     def test_explicit_positive_flag_overrides_no_flag(self):
         """Explicit positive flags should work even when --no-* flags are specified."""
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--enhance-intent', '--no-enhance-intent']):
                 main()
@@ -5274,9 +5274,9 @@ class TestEnhanceAllLogging(unittest.TestCase):
     """Tests for --enhance-all logging of enabled features."""
 
     def test_logs_enabled_features_when_all_enabled(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
-            with patch('logger.Logger.info') as mock_log:
+            with patch('pyralph.logger.Logger.info') as mock_log:
                 with patch('sys.argv', ['ralph', '--enhance-all']):
                     main()
             # Check that enabled features are logged
@@ -5285,9 +5285,9 @@ class TestEnhanceAllLogging(unittest.TestCase):
             self.assertTrue(len(enabled_log) > 0)
 
     def test_logs_disabled_features_when_override_used(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
-            with patch('logger.Logger.info') as mock_log:
+            with patch('pyralph.logger.Logger.info') as mock_log:
                 with patch('sys.argv', ['ralph', '--enhance-all', '--no-qa-review']):
                     main()
             # Check that disabled features are logged
@@ -5871,7 +5871,7 @@ class TestQAReportFindingsIntegration(TempConfigTestCase):
 
         task = {"id": "TASK-001", "description": "Test task"}
 
-        with patch('logger.Logger.info'), patch('logger.Logger.debug'), patch('logger.Logger.file_log'):
+        with patch('pyralph.logger.Logger.info'), patch('pyralph.logger.Logger.debug'), patch('pyralph.logger.Logger.file_log'):
             orch._report_qa_findings(task, findings)
 
     def test_report_qa_findings_json_output(self):
@@ -5894,7 +5894,7 @@ class TestQAReportFindingsIntegration(TempConfigTestCase):
         original_json = Logger.json_output
         try:
             Logger.json_output = True
-            with patch('logger.Logger.file_log'):
+            with patch('pyralph.logger.Logger.file_log'):
                 with patch('builtins.print') as mock_print:
                     orch._report_qa_findings(task, findings)
 
@@ -5934,8 +5934,8 @@ class TestQAReportFindingsIntegration(TempConfigTestCase):
         try:
             Logger.json_output = False
             Logger.ndjson_output = False
-            with patch('logger.Logger.info', side_effect=capture_info):
-                with patch('logger.Logger.debug'), patch('logger.Logger.file_log'):
+            with patch('pyralph.logger.Logger.info', side_effect=capture_info):
+                with patch('pyralph.logger.Logger.debug'), patch('pyralph.logger.Logger.file_log'):
                     orch._report_qa_findings(task, findings)
 
             # Check that file_a.py appears in output
@@ -6036,44 +6036,44 @@ class TestBatchCLI(IssueWatcherTestCase):
 class TestBatchMain(IssueWatcherTestCase):
     """Tests for batch_main function."""
 
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_returns_1_when_gh_cli_not_installed(self, mock_check):
         """When gh CLI is not installed, returns exit code 1."""
         mock_check.return_value = False
 
-        with patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.error'):
             result = batch_main([])
 
         self.assertEqual(result, 1)
 
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_returns_1_when_memory_dir_missing(self, mock_check, mock_conf):
         """When memory directory doesn't exist, returns exit code 1."""
         mock_check.return_value = True
         mock_conf.MEMORY_DIR.exists.return_value = False
 
-        with patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.error'):
             result = batch_main([])
 
         self.assertEqual(result, 1)
 
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_returns_1_when_memory_dir_empty(self, mock_check, mock_conf):
         """When memory directory is empty, returns exit code 1."""
         mock_check.return_value = True
         mock_conf.MEMORY_DIR.exists.return_value = True
         mock_conf.MEMORY_DIR.iterdir.return_value = iter([])
 
-        with patch('logger.Logger.error'):
+        with patch('pyralph.logger.Logger.error'):
             result = batch_main([])
 
         self.assertEqual(result, 1)
 
-    @patch('fetch_ready_issues.batch_process_issues')
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.batch_process_issues')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_returns_0_on_success(self, mock_check, mock_conf, mock_batch):
         """When batch processing succeeds, returns exit code 0."""
         mock_check.return_value = True
@@ -6087,14 +6087,14 @@ class TestBatchMain(IssueWatcherTestCase):
             message="Success"
         )
 
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             result = batch_main([])
 
         self.assertEqual(result, 0)
 
-    @patch('fetch_ready_issues.batch_process_issues')
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.batch_process_issues')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_returns_1_on_failures(self, mock_check, mock_conf, mock_batch):
         """When some issues fail, returns exit code 1."""
         mock_check.return_value = True
@@ -6108,14 +6108,14 @@ class TestBatchMain(IssueWatcherTestCase):
             message="Some failures"
         )
 
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             result = batch_main([])
 
         self.assertEqual(result, 1)
 
-    @patch('fetch_ready_issues.batch_process_issues')
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.batch_process_issues')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_passes_label_to_batch_process(self, mock_check, mock_conf, mock_batch):
         """--label argument should be passed to batch_process_issues."""
         mock_check.return_value = True
@@ -6126,16 +6126,16 @@ class TestBatchMain(IssueWatcherTestCase):
             results=[], message=""
         )
 
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             batch_main(["--label", "custom-label"])
 
         mock_batch.assert_called_once()
         call_kwargs = mock_batch.call_args[1]
         self.assertEqual(call_kwargs["label"], "custom-label")
 
-    @patch('fetch_ready_issues.batch_process_issues')
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.batch_process_issues')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_dry_run_disables_orchestration(self, mock_check, mock_conf, mock_batch):
         """--dry-run should set execute_orchestration=False."""
         mock_check.return_value = True
@@ -6146,15 +6146,15 @@ class TestBatchMain(IssueWatcherTestCase):
             results=[], message=""
         )
 
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             batch_main(["--dry-run"])
 
         call_kwargs = mock_batch.call_args[1]
         self.assertFalse(call_kwargs["execute_orchestration"])
 
-    @patch('fetch_ready_issues.batch_process_issues')
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.batch_process_issues')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_verbose_logs_detailed_output(self, mock_check, mock_conf, mock_batch):
         """--verbose should log detailed progress information."""
         mock_check.return_value = True
@@ -6175,16 +6175,16 @@ class TestBatchMain(IssueWatcherTestCase):
         def capture_info(msg, color=None):
             logged_messages.append(msg)
 
-        with patch('logger.Logger.info', side_effect=capture_info):
+        with patch('pyralph.logger.Logger.info', side_effect=capture_info):
             batch_main(["--verbose"])
 
         # Check verbose output markers
         self.assertTrue(any("BATCH PROCESSING SUMMARY" in msg for msg in logged_messages))
         self.assertTrue(any("Individual issue results:" in msg for msg in logged_messages))
 
-    @patch('fetch_ready_issues.batch_process_issues')
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.batch_process_issues')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_no_hooks_disables_hooks(self, mock_check, mock_conf, mock_batch):
         """--no-hooks should set enable_hooks=False."""
         mock_check.return_value = True
@@ -6195,15 +6195,15 @@ class TestBatchMain(IssueWatcherTestCase):
             results=[], message=""
         )
 
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             batch_main(["--no-hooks"])
 
         call_kwargs = mock_batch.call_args[1]
         self.assertFalse(call_kwargs["enable_hooks"])
 
-    @patch('fetch_ready_issues.batch_process_issues')
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.batch_process_issues')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_no_mark_disables_marking(self, mock_check, mock_conf, mock_batch):
         """--no-mark should set mark_processed=False."""
         mock_check.return_value = True
@@ -6214,15 +6214,15 @@ class TestBatchMain(IssueWatcherTestCase):
             results=[], message=""
         )
 
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             batch_main(["--no-mark"])
 
         call_kwargs = mock_batch.call_args[1]
         self.assertFalse(call_kwargs["mark_processed"])
 
-    @patch('fetch_ready_issues.batch_process_issues')
-    @patch('config.CONF')
-    @patch('fetch_ready_issues.check_gh_cli')
+    @patch('pyralph.fetch_ready_issues.batch_process_issues')
+    @patch('pyralph.config.CONF')
+    @patch('pyralph.fetch_ready_issues.check_gh_cli')
     def test_agent_flag_passed_to_batch_process(self, mock_check, mock_conf, mock_batch):
         """--agent argument should be passed to batch_process_issues."""
         mock_check.return_value = True
@@ -6233,7 +6233,7 @@ class TestBatchMain(IssueWatcherTestCase):
             results=[], message=""
         )
 
-        with patch('logger.Logger.info'):
+        with patch('pyralph.logger.Logger.info'):
             batch_main(["--agent", "copilot"])
 
         call_kwargs = mock_batch.call_args[1]
@@ -7362,10 +7362,10 @@ class TestQAChecklistCLIValidation(TempConfigTestCase):
 
     def test_qa_checklist_file_not_found(self):
         """Test that non-existent checklist file errors in main()."""
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--qa-checklist', '/nonexistent/checklist.json']):
-                with patch('logger.Logger.error') as mock_error:
+                with patch('pyralph.logger.Logger.error') as mock_error:
                     with self.assertRaises(SystemExit) as ctx:
                         main()
                     self.assertEqual(ctx.exception.code, 1)
@@ -7379,10 +7379,10 @@ class TestQAChecklistCLIValidation(TempConfigTestCase):
         invalid_file = self.temp_path / "invalid.json"
         invalid_file.write_text("{ not valid json }", encoding='utf-8')
 
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_orch.return_value = MagicMock()
             with patch('sys.argv', ['ralph', '--qa-checklist', str(invalid_file)]):
-                with patch('logger.Logger.error') as mock_error:
+                with patch('pyralph.logger.Logger.error') as mock_error:
                     with self.assertRaises(SystemExit) as ctx:
                         main()
                     self.assertEqual(ctx.exception.code, 1)
@@ -7394,7 +7394,7 @@ class TestQAChecklistCLIValidation(TempConfigTestCase):
         valid_file = self.temp_path / "valid.json"
         valid_file.write_text('{"requirements": []}', encoding='utf-8')
 
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_instance = MagicMock()
             mock_orch.return_value = mock_instance
             with patch('sys.argv', ['ralph', '--qa-checklist', str(valid_file)]):
@@ -7408,7 +7408,7 @@ class TestQAChecklistCLIValidation(TempConfigTestCase):
         valid_file = self.temp_path / "relative_checklist.json"
         valid_file.write_text('{"requirements": []}', encoding='utf-8')
 
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_instance = MagicMock()
             mock_orch.return_value = mock_instance
             # Use relative path
@@ -7438,7 +7438,7 @@ class TestQAChecklistCLIPassthrough(unittest.TestCase):
             checklist_file = Path(temp_dir) / "test-checklist.json"
             checklist_file.write_text('{"requirements": []}', encoding='utf-8')
 
-            with patch('ralph.RalphOrchestrator') as mock_orch:
+            with patch('pyralph.RalphOrchestrator') as mock_orch:
                 mock_instance = MagicMock()
                 mock_orch.return_value = mock_instance
                 with patch('sys.argv', ['ralph', '--qa-checklist', str(checklist_file)]):
@@ -7449,7 +7449,7 @@ class TestQAChecklistCLIPassthrough(unittest.TestCase):
                 self.assertEqual(qa_checklist.name, "test-checklist.json")
 
     def test_qa_checklist_none_when_not_provided(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_instance = MagicMock()
             mock_orch.return_value = mock_instance
             with patch('sys.argv', ['ralph']):
@@ -7505,7 +7505,7 @@ class TestQAStatusCLIPassthrough(unittest.TestCase):
     """Tests for qa-status command passed through to orchestrator."""
 
     def test_qa_status_calls_start_with_correct_phase(self):
-        with patch('ralph.RalphOrchestrator') as mock_orch:
+        with patch('pyralph.RalphOrchestrator') as mock_orch:
             mock_instance = MagicMock()
             mock_orch.return_value = mock_instance
             with patch('sys.argv', ['ralph', 'qa-status']):
@@ -7628,7 +7628,7 @@ class TestQAStatusDisplay(TempConfigTestCase):
         ])
 
         orch = self.create_mock_orchestrator()
-        with patch('logger.Logger.info') as mock_logger:
+        with patch('pyralph.logger.Logger.info') as mock_logger:
             orch._run_qa_status()
             # Check that linked tasks were logged
             call_args_list = [str(call) for call in mock_logger.call_args_list]
@@ -7800,7 +7800,7 @@ class TestQAStatusVerbose(TempConfigTestCase):
         orch = self.create_mock_orchestrator()
         Logger.verbosity = 1
 
-        with patch('logger.Logger.info') as mock_logger:
+        with patch('pyralph.logger.Logger.info') as mock_logger:
             orch._run_qa_status()
             call_args_list = [str(call) for call in mock_logger.call_args_list]
             last_checked_logged = any("2024-01-15T10:30:00" in str(call) for call in call_args_list)
