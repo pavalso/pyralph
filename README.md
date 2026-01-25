@@ -117,7 +117,6 @@ Ralph provides extensive command-line options organized into the following categ
 | `--json` | Output in JSON format |
 | `--enhance-intent` | Enhance intent before architect phase |
 | `--revise-prd` | Revise PRD for quality improvements |
-| `--qa-review` | Review code quality after each task |
 | `--enhance-all` | Enable all enhancement features |
 
 ### Output/Verbosity
@@ -314,9 +313,6 @@ Ralph provides AI-powered enhancement agents that improve the quality of your in
 | `--no-enhance-intent` | Disable intent enhancement (overrides `--enhance-all`) |
 | `--revise-prd` | Pass PRD through revision agent for quality improvements |
 | `--no-revise-prd` | Disable PRD revision (overrides `--enhance-all`) |
-| `--qa-review` | Enable QA agent to review implemented code for quality issues after each task |
-| `--qa-strict` | Fail tasks when QA review finds critical issues (requires `--qa-review`) |
-| `--no-qa-review` | Disable QA review (overrides `--enhance-all`) |
 | `--enhance-all` | Enable all enhancement features at once |
 
 #### Intent Enhancement (`--enhance-intent`)
@@ -362,35 +358,11 @@ ralph --revise-prd planner
 ralph --revise-prd --schema prd-schema.json --min-criteria 3 planner
 ```
 
-#### QA Review (`--qa-review`)
-
-The QA review agent performs automated code quality review after each task is implemented. It checks for common issues including error handling, security vulnerabilities, code style, testing coverage, and documentation.
-
-**What it checks:**
-- **Error Handling**: Exception handling, informative error messages, resource cleanup
-- **Security Vulnerabilities**: Input validation, injection prevention, XSS prevention, authentication/authorization
-- **Code Style and Quality**: Project conventions, naming, DRY principles, readability
-- **Testing Coverage**: Tests for new functionality, edge cases, error scenarios
-- **Documentation**: Complex functions, public APIs, TODOs/FIXMEs
-
-**Example**: Enable QA review during execution:
-```bash
-ralph --qa-review execute
-```
-
-**With strict mode**: Fail tasks when QA finds critical issues:
-```bash
-ralph --qa-review --qa-strict execute
-```
-
-QA findings are logged to `.ralph/ralph_log.txt` with category `QA_REVIEW`.
-
 #### Using `--enhance-all`
 
-The `--enhance-all` flag enables all three enhancement features at once:
+The `--enhance-all` flag enables both enhancement features at once:
 - Intent enhancement (`--enhance-intent`)
 - PRD revision (`--revise-prd`)
-- QA review (`--qa-review`)
 
 **Example**: Enable all enhancements:
 ```bash
@@ -399,14 +371,11 @@ ralph --enhance-all all
 
 **Selectively disable specific features** using `--no-*` flags:
 ```bash
-# Enable all enhancements except QA review
-ralph --enhance-all --no-qa-review all
-
 # Enable all enhancements except intent enhancement
 ralph --enhance-all --no-enhance-intent planner
 
-# Enable only PRD revision (disable intent enhancement and QA review)
-ralph --enhance-all --no-enhance-intent --no-qa-review planner
+# Enable only PRD revision (disable intent enhancement)
+ralph --enhance-all --no-enhance-intent planner
 ```
 
 #### Combining Enhancement Flags with Other Options
@@ -441,7 +410,6 @@ Enhancement agents are designed to gracefully handle failures without blocking y
 |---------|------------------|-------------|
 | Intent Enhancement | Falls back to original intent | Exits with error (`--enhance-intent-strict`) |
 | PRD Revision | Falls back to original PRD | N/A |
-| QA Review | Continues without QA review | Fails the task (`--qa-strict`) |
 
 **When fallback occurs:**
 - A warning is logged explaining the failure
@@ -452,7 +420,6 @@ Enhancement agents are designed to gracefully handle failures without blocking y
 - Enhancement agent timeout or network error
 - Agent returns empty or unparseable response
 - Revised PRD fails schema validation (falls back to original PRD)
-- QA review cannot detect code changes (skipped)
 
 #### Error Messages and Resolutions
 
@@ -466,9 +433,6 @@ Enhancement agents are designed to gracefully handle failures without blocking y
 | `Could not parse revised PRD from response.` | Agent response missing `<REVISED_PRD>` tags | Will use original PRD; check agent prompt compatibility |
 | `Revised PRD failed schema validation: <error>` | Revised PRD doesn't match `--schema` file | Will use original PRD; review schema requirements |
 | `Invalid JSON in revised PRD: <error>` | Agent returned malformed JSON | Will use original PRD; check agent output |
-| `QA review agent failed: <error>` | Agent failed during QA review | Execution continues; check agent connectivity |
-| `Could not parse QA findings.` | Agent response missing `<QA_FINDINGS>` tags | Execution continues; check agent output |
-| `QA review found critical issues (--qa-strict mode)` | Critical issues detected with `--qa-strict` | Fix the reported issues or remove `--qa-strict` |
 
 #### Events Emitted by Enhancement Features
 
@@ -482,10 +446,6 @@ Enhancement features emit events that can be subscribed to via hooks:
 | `PRD_REVISE_START` | PRD revision begins |
 | `PRD_REVISE_SUCCESS` | PRD successfully revised |
 | `PRD_REVISE_FAILURE` | PRD revision failed |
-| `QA_REVIEW_START` | QA review begins for a task |
-| `QA_REVIEW_SUCCESS` | QA review completed |
-| `QA_REVIEW_FAILURE` | QA review failed |
-| `QA_REVIEW_SKIPPED` | QA review skipped (no code changes detected) |
 
 **Example hook for enhancement events**:
 ```python
@@ -495,8 +455,7 @@ from pyralph import Event  # Optional: for type hints
 EVENTS = [
     "INTENT_ENHANCE_SUCCESS",
     "INTENT_ENHANCE_FAILURE",
-    "PRD_REVISE_SUCCESS",
-    "QA_REVIEW_SUCCESS"
+    "PRD_REVISE_SUCCESS"
 ]
 
 def on_event(event: Event) -> None:
@@ -531,16 +490,11 @@ pyralph/
 │   ├── templates.py          # Prompt template management
 │   ├── hooks.py              # Event/hook system for extensibility
 │   ├── fetch_ready_issues.py # GitHub issue fetcher utility
-│   ├── agents/               # Agent implementations
-│   │   ├── __init__.py       # Agent factory and registration
-│   │   ├── base.py           # Abstract BaseAgent interface
-│   │   ├── claude.py         # Claude CLI agent implementation
-│   │   └── copilot.py        # GitHub Copilot CLI agent implementation
-│   └── qa/                   # QA review subsystem
-│       ├── __init__.py       # QA module exports
-│       ├── models.py         # QA data models (findings, severity)
-│       ├── checklist.py      # QA checklist management
-│       └── analyzer.py       # Code quality analyzer
+│   └── agents/               # Agent implementations
+│       ├── __init__.py       # Agent factory and registration
+│       ├── base.py           # Abstract BaseAgent interface
+│       ├── claude.py         # Claude CLI agent implementation
+│       └── copilot.py        # GitHub Copilot CLI agent implementation
 ├── prompt.md                 # Default user context prompt template
 ├── test_ralph.py             # Comprehensive test suite
 ├── pyproject.toml            # Build configuration
@@ -573,7 +527,6 @@ Ralph follows a modular architecture with clear separation of concerns. For deta
 | **PRD** | `src/pyralph/prd.py` | Dataclasses for PRD and UserStory structures. |
 | **Templates** | `src/pyralph/templates.py` | Prompt template management and rendering. |
 | **Shell** | `src/pyralph/shell.py` | Shell command execution utilities. |
-| **QA System** | `src/pyralph/qa/` | QA review subsystem with models, checklist management, and code quality analyzer. |
 
 ### Agent Architecture
 

@@ -17,7 +17,6 @@ class Config:
     TEMPLATES_DIR: Path = ROOT_DIR / "templates"
     HOOKS_DIR: Path = ROOT_DIR / "hooks"
     PRD_FILE: Path = ROOT_DIR / "prd.json"
-    QA_CHECKLIST_FILE: Path = ROOT_DIR / "qa-checklist.json"
     PROGRESS_FILE: Path = ROOT_DIR / "progress.txt"
     LOG_FILE: Path = ROOT_DIR / "ralph_log.txt"
 

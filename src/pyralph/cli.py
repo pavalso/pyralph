@@ -4,10 +4,8 @@
 This module contains the CLI entry point (main) and version functions that handle
 command-line argument parsing and application startup.
 """
-import json
 import sys
 import argparse
-from pathlib import Path
 
 from .logger import Logger
 from .agents import list_agents
@@ -33,7 +31,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ralph - Autonomous Software Development Agent",
         epilog="Examples: ralph | ralph architect | ralph -y execute | ralph -vvv --no-emoji execute",
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("phase", choices=["architect", "planner", "execute", "all", "qa-status"], default="all", nargs="?", help="Phase to run")
+    parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?", help="Phase to run")
     parser.add_argument("--version", action="version", version=f"Ralph {get_version()}")
     parser.add_argument("--accept-all", "-y", action="store_true", help="Skip prompts")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v, -vv, -vvv)")
@@ -102,14 +100,8 @@ def main() -> None:
     parser.add_argument("--label", nargs="+", metavar="KEY=VAL", help="Add custom labels to PRD (format: key=value or just key)")
     parser.add_argument("--revise-prd", action="store_true", help="Pass PRD through revision agent for quality improvements before planner phase")
     parser.add_argument("--no-revise-prd", action="store_true", help="Disable PRD revision (overrides --enhance-all)")
-    # QA review flags for automated code quality review
-    parser.add_argument("--qa-review", action="store_true", help="Enable QA agent to review implemented code for quality issues after each task. When combined with --qa-path, runs standalone QA review workflow")
-    parser.add_argument("--no-qa-review", action="store_true", help="Disable QA review (overrides --enhance-all)")
-    parser.add_argument("--qa-strict", action="store_true", help="Fail tasks when QA review finds critical issues (requires --qa-review)")
-    parser.add_argument("--qa-path", type=str, metavar="PATH", help="Path to review for standalone QA workflow (requires --qa-review). If not specified with --qa-review, reviews the entire codebase")
-    parser.add_argument("--qa-checklist", type=str, metavar="FILE", help="Path to custom QA checklist JSON file (default: .ralph/qa-checklist.json)")
     # Enhancement combination flag
-    parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd, --qa-review). Individual --no-* flags can override specific features.")
+    parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd). Individual --no-* flags can override specific features.")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -155,44 +147,8 @@ def main() -> None:
         Logger.error("Cannot use both --intent and --intent-file together.")
         sys.exit(1)
 
-    # Validate --qa-path requires --qa-review
-    if args.qa_path and not args.qa_review:
-        Logger.error("--qa-path requires --qa-review flag to run standalone QA workflow.")
-        sys.exit(1)
-
-    # Validate --qa-path is incompatible with phase execution
-    if args.qa_path and args.phase != "all":
-        Logger.error(f"--qa-path cannot be combined with phase '{args.phase}'. Standalone QA workflow runs independently of task phases.")
-        sys.exit(1)
-
-    # Validate --qa-checklist file exists and is valid JSON
-    qa_checklist_path = None
-    if args.qa_checklist:
-        # Resolve relative paths from current working directory
-        qa_checklist_path = Path(args.qa_checklist)
-        if not qa_checklist_path.is_absolute():
-            qa_checklist_path = Path.cwd() / qa_checklist_path
-        qa_checklist_path = qa_checklist_path.resolve()
-
-        if not qa_checklist_path.exists():
-            Logger.error(f"QA checklist file not found: {qa_checklist_path}")
-            sys.exit(1)
-
-        # Validate JSON format
-        try:
-            content = qa_checklist_path.read_text(encoding='utf-8')
-            json.loads(content)
-        except json.JSONDecodeError as e:
-            Logger.error(f"Invalid JSON in QA checklist file: {qa_checklist_path}")
-            Logger.error(f"  Parse error: {e.msg} at line {e.lineno}, column {e.colno}")
-            sys.exit(1)
-        except OSError as e:
-            Logger.error(f"Cannot read QA checklist file: {qa_checklist_path}")
-            Logger.error(f"  Error: {e}")
-            sys.exit(1)
-
     # Handle --enhance-all flag: apply enhancement defaults with explicit overrides
-    # --enhance-all enables: --enhance-intent, --revise-prd, --qa-review
+    # --enhance-all enables: --enhance-intent, --revise-prd
     # Individual --no-* flags can override specific features
     enhance_all = args.enhance_all
 
@@ -201,7 +157,6 @@ def main() -> None:
     # Explicit negative flags disable the feature (override --enhance-all)
     enhance_intent = args.enhance_intent or (enhance_all and not args.no_enhance_intent)
     revise_prd = args.revise_prd or (enhance_all and not args.no_revise_prd)
-    qa_review = args.qa_review or (enhance_all and not args.no_qa_review)
 
     # Log which enhancement features are actually enabled when --enhance-all is used
     if enhance_all:
@@ -217,11 +172,6 @@ def main() -> None:
             enabled_features.append("PRD revision")
         else:
             disabled_features.append("PRD revision")
-
-        if qa_review:
-            enabled_features.append("QA review")
-        else:
-            disabled_features.append("QA review")
 
         if enabled_features:
             Logger.info(f"Enhancement features enabled: {', '.join(enabled_features)}")
@@ -272,9 +222,5 @@ def main() -> None:
         schema=args.schema,
         min_criteria=args.min_criteria,
         label=args.label,
-        revise_prd=revise_prd,
-        qa_review=qa_review,
-        qa_strict=args.qa_strict,
-        qa_path=args.qa_path,
-        qa_checklist=qa_checklist_path
+        revise_prd=revise_prd
     ).start(phase=args.phase, accept_all=args.accept_all)
