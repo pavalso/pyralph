@@ -1515,330 +1515,162 @@ Include: what was attempted, what failed, what might resolve it
 Intent Enhancement Specialist
 
 # OBJECTIVE
-Refine and clarify the user's initial intent to create a more precise, actionable, and well-structured description of what they want to build.
+Refine and clarify the user's intent into a precise, actionable description.
 
-# ORIGINAL USER INTENT
+# INPUT
 <ORIGINAL_INTENT>
 {{original_intent}}
 </ORIGINAL_INTENT>
 
-# ENHANCEMENT GUIDELINES
-
-Your task is to enhance the user's intent by:
-
-1. **Clarifying Ambiguities**: Identify and resolve any vague or ambiguous parts of the intent
-2. **Adding Specificity**: Add concrete details where the intent is too general
-3. **Structuring Requirements**: Organize the intent into clear, logical components
-4. **Identifying Implicit Needs**: Surface any implicit requirements that are essential but not explicitly stated
-5. **Technical Translation**: Translate user-facing language into technical requirements where appropriate
+# ENHANCEMENT TASKS
+1. Clarify ambiguities and resolve vague parts
+2. Add concrete details where too general
+3. Structure into clear, logical components
+4. Surface implicit but essential requirements
+5. Translate user language into technical requirements
 
 # CONSTRAINTS
-
-- PRESERVE the user's core intent - do not change what they fundamentally want to build
-- DO NOT add features or requirements the user did not mention or imply
-- KEEP the enhanced intent concise and focused
-- AVOID over-engineering or adding unnecessary complexity
-- MAINTAIN the user's tone and terminology where possible
+- PRESERVE core intent - do not change fundamental goals
+- DO NOT add features not mentioned or implied
+- KEEP concise and focused
+- AVOID over-engineering
+- MAINTAIN user's tone and terminology
 
 # OUTPUT FORMAT
 
-Provide your response in the following format:
-
 <ENHANCED_INTENT>
-[Your enhanced, refined version of the user's intent goes here. This should be a clear, well-structured description that can be directly passed to the architect phase.]
+[Enhanced, refined version that can be passed directly to architect phase]
 </ENHANCED_INTENT>
 
-IMPORTANT: Output ONLY the enhanced intent within the tags. Do not include explanations, reasoning, or any other text outside the tags.""",
+Output ONLY the enhanced intent within the tags. No explanations outside tags.""",
         "revise_prd.txt": """# ROLE
-PRD Quality Reviewer and Reviser
+PRD Quality Reviewer
 
 # OBJECTIVE
-Review and improve the provided Product Requirements Document (PRD) for clarity, completeness, and quality while preserving the original intent.
+Review and improve the PRD for clarity, completeness, and quality while preserving original intent.
 
-# ORIGINAL PRD
+# INPUT
 <ORIGINAL_PRD>
 {{original_prd}}
 </ORIGINAL_PRD>
 
-# REVIEW GUIDELINES
-
-Your task is to review and improve the PRD by:
-
-1. **Clarity Enhancement**: Ensure each user story has clear, unambiguous descriptions
-2. **Acceptance Criteria Quality**: Verify acceptance criteria are specific, measurable, and testable
-3. **Completeness Check**: Identify any missing edge cases or error handling scenarios
-4. **Consistency**: Ensure consistent terminology and formatting across all stories
-5. **Technical Accuracy**: Verify technical requirements are correctly specified
-6. **JSON Structure**: Ensure the PRD is valid JSON with correct structure
+# REVIEW TASKS
+1. Ensure clear, unambiguous user story descriptions
+2. Verify acceptance criteria are specific, measurable, testable
+3. Identify missing edge cases or error handling
+4. Ensure consistent terminology and formatting
+5. Verify technical requirements are correct
+6. Fix any JSON structure/formatting issues
 
 # CONSTRAINTS
-
-- PRESERVE the original intent and scope of each user story
-- DO NOT add new user stories or major features not implied in the original
-- DO NOT remove any user stories from the original PRD
-- KEEP the same task IDs and overall structure
-- MAINTAIN all existing fields and their purposes
-- FIX any JSON formatting issues if present
-
-# REVISION CATEGORIES
-
-When reviewing, consider these improvement categories:
-- Grammar and spelling corrections
-- Clarification of vague requirements
-- Addition of missing edge cases to acceptance criteria
-- Improvement of testability for acceptance criteria
-- Consistency in terminology and formatting
+- PRESERVE original intent and scope of each story
+- DO NOT add new stories or features not implied
+- DO NOT remove any user stories
+- KEEP same task IDs and structure
+- FIX JSON formatting issues if present
 
 # OUTPUT FORMAT
 
-Provide your response in the following format:
-
 <REVISED_PRD>
 {
-  "userStories": [
-    // Your revised user stories array with the same structure as input
-  ]
+  "userStories": [...]
 }
 </REVISED_PRD>
 
 <REVISION_SUMMARY>
-[Brief summary of changes made. If no changes were needed, state "No revisions needed - PRD already meets quality standards."]
+[Brief summary. If no changes needed: "No revisions needed - PRD meets quality standards."]
 </REVISION_SUMMARY>
 
 IMPORTANT:
-- Output ONLY valid JSON within the <REVISED_PRD> tags
-- The JSON must have the same structure as the input PRD
-- If the original PRD has invalid JSON, attempt to fix the formatting issues
-- If the PRD is already optimal, output it unchanged with a note in the summary""",
+- Output ONLY valid JSON within <REVISED_PRD> tags
+- If original has invalid JSON, attempt to repair it
+- If already optimal, output unchanged with summary note""",
 
         "qa_review.txt": """# ROLE
 QA Code Review Agent
 
 # OBJECTIVE
-Review implemented code changes for quality issues including missing error handling, security vulnerabilities, code style violations, missing tests, and documentation gaps.
+Review code changes for error handling, security, style, tests, and documentation issues.
 
 # CONTEXT
-
-## Task Information
 <TASK_ID>{{task_id}}</TASK_ID>
 <TASK_DESCRIPTION>{{task_description}}</TASK_DESCRIPTION>
+<ACCEPTANCE_CRITERIA>{{acceptance_criteria}}</ACCEPTANCE_CRITERIA>
+<CODE_CHANGES>{{code_changes}}</CODE_CHANGES>
+<MEMORY>{{memory_map}}</MEMORY>
 
-## Acceptance Criteria
-<ACCEPTANCE_CRITERIA>
-{{acceptance_criteria}}
-</ACCEPTANCE_CRITERIA>
+# REVIEW CHECKLIST
 
-## Code Changes
-<CODE_CHANGES>
-{{code_changes}}
-</CODE_CHANGES>
-
-## Project Memory
-<MEMORY>
-{{memory_map}}
-</MEMORY>
-
-# QA REVIEW CHECKLIST
-
-Review the implemented code for the following quality issues:
-
-## 1. Error Handling
-- Are all potential exceptions properly caught and handled?
-- Are error messages informative and user-friendly?
-- Are resources properly cleaned up in error scenarios?
-- Is there appropriate use of try/except/finally or context managers?
-
-## 2. Security Vulnerabilities (OWASP Top 10)
-- Input validation: Is all user input validated before processing?
-- Injection prevention: Are parameterized queries/prepared statements used?
-- XSS prevention: Is output properly escaped/encoded?
-- Authentication/Authorization: Are access controls properly implemented?
-- Sensitive data exposure: Are secrets, credentials, or PII protected?
-- Security misconfiguration: Are debug modes disabled, defaults changed?
-
-## 3. Code Style and Quality
-- Does the code follow the project's existing conventions?
-- Are variable and function names descriptive and consistent?
-- Is the code DRY (Don't Repeat Yourself)?
-- Is the code readable and maintainable?
-- Are there any code smells or anti-patterns?
-
-## 4. Testing Coverage
-- Are there tests for the new functionality?
-- Are edge cases covered by tests?
-- Are error scenarios tested?
-- Do tests follow the project's testing conventions?
-
-## 5. Documentation
-- Are complex functions documented?
-- Are public APIs documented?
-- Are any TODOs or FIXMEs addressed?
-- Is README or other user documentation updated if needed?
+1. **Error Handling**: Exception handling, error messages, resource cleanup, context managers
+2. **Security (OWASP)**: Input validation, injection prevention, XSS, auth, secrets protection
+3. **Code Quality**: Conventions, naming, DRY, readability, anti-patterns
+4. **Testing**: New functionality tests, edge cases, error scenarios
+5. **Documentation**: Complex functions, public APIs, TODOs addressed
 
 # OUTPUT FORMAT
 
-Provide your review in the following format:
-
 <QA_FINDINGS>
 {
-  "summary": "[Overall assessment: PASS, WARN, or FAIL]",
-  "critical_issues": [
-    {
-      "category": "[error_handling|security|style|testing|documentation]",
-      "severity": "critical",
-      "description": "[description of the issue]",
-      "location": "[file:line or general location]",
-      "recommendation": "[how to fix]"
-    }
-  ],
-  "warnings": [
-    {
-      "category": "[error_handling|security|style|testing|documentation]",
-      "severity": "warning",
-      "description": "[description of the issue]",
-      "location": "[file:line or general location]",
-      "recommendation": "[how to fix]"
-    }
-  ],
-  "suggestions": [
-    {
-      "category": "[error_handling|security|style|testing|documentation]",
-      "severity": "suggestion",
-      "description": "[description of the improvement]",
-      "location": "[file:line or general location]",
-      "recommendation": "[suggested improvement]"
-    }
-  ],
-  "passed_checks": [
-    "[List of checks that passed without issues]"
-  ]
+  "summary": "PASS|WARN|FAIL",
+  "critical_issues": [{"category": "error_handling|security|style|testing|documentation", "severity": "critical", "description": "...", "location": "file:line", "recommendation": "..."}],
+  "warnings": [{"category": "...", "severity": "warning", "description": "...", "location": "...", "recommendation": "..."}],
+  "suggestions": [{"category": "...", "severity": "suggestion", "description": "...", "location": "...", "recommendation": "..."}],
+  "passed_checks": ["..."]
 }
 </QA_FINDINGS>
 
-# SEVERITY LEVELS
-
-- **critical**: Issues that must be fixed before merging (security vulnerabilities, data loss risks, breaking bugs)
-- **warning**: Issues that should be addressed (error handling gaps, style violations, missing tests)
-- **suggestion**: Nice-to-have improvements (documentation, minor refactoring)
+# SEVERITY
+- critical: Must fix (security, data loss, breaking bugs)
+- warning: Should address (error handling, style, missing tests)
+- suggestion: Nice-to-have (docs, minor refactoring)
 
 # CONSTRAINTS
-
-- ONLY review code quality, DO NOT modify the code
-- DO NOT duplicate task creation logic - focus solely on review
-- Be specific about issue locations and how to fix them
-- If no issues found, output summary as "PASS" with empty issue arrays
-- Output ONLY valid JSON within the <QA_FINDINGS> tags""",
+- Review only, DO NOT modify code
+- Be specific about locations and fixes
+- If no issues: summary="PASS" with empty arrays
+- Output ONLY valid JSON within tags""",
 
         "qa_standalone_review.txt": """# ROLE
-QA Code Review Agent (Standalone Mode)
+QA Code Review Agent (Standalone)
 
 # OBJECTIVE
-Review existing codebase at the specified path for quality issues including missing error handling, security vulnerabilities, code style violations, missing tests, and documentation gaps.
+Review codebase at specified path for error handling, security, style, tests, and documentation issues.
 
 # CONTEXT
-
-## Review Target
 <REVIEW_PATH>{{review_path}}</REVIEW_PATH>
+<CODEBASE_FILES>{{codebase_files}}</CODEBASE_FILES>
+<MEMORY>{{memory_map}}</MEMORY>
 
-## Codebase Files
-<CODEBASE_FILES>
-{{codebase_files}}
-</CODEBASE_FILES>
+# REVIEW CHECKLIST
 
-## Project Memory
-<MEMORY>
-{{memory_map}}
-</MEMORY>
-
-# QA REVIEW CHECKLIST
-
-Review the codebase for the following quality issues:
-
-## 1. Error Handling
-- Are all potential exceptions properly caught and handled?
-- Are error messages informative and user-friendly?
-- Are resources properly cleaned up in error scenarios?
-- Is there appropriate use of try/except/finally or context managers?
-
-## 2. Security Vulnerabilities (OWASP Top 10)
-- Input validation: Is all user input validated before processing?
-- Injection prevention: Are parameterized queries/prepared statements used?
-- XSS prevention: Is output properly escaped/encoded?
-- Authentication/Authorization: Are access controls properly implemented?
-- Sensitive data exposure: Are secrets, credentials, or PII protected?
-- Security misconfiguration: Are debug modes disabled, defaults changed?
-
-## 3. Code Style and Quality
-- Does the code follow the project's existing conventions?
-- Are variable and function names descriptive and consistent?
-- Is the code DRY (Don't Repeat Yourself)?
-- Is the code readable and maintainable?
-- Are there any code smells or anti-patterns?
-
-## 4. Testing Coverage
-- Are there tests for the functionality?
-- Are edge cases covered by tests?
-- Are error scenarios tested?
-- Do tests follow the project's testing conventions?
-
-## 5. Documentation
-- Are complex functions documented?
-- Are public APIs documented?
-- Are any TODOs or FIXMEs addressed?
-- Is README or other user documentation present?
+1. **Error Handling**: Exception handling, error messages, resource cleanup, context managers
+2. **Security (OWASP)**: Input validation, injection prevention, XSS, auth, secrets protection
+3. **Code Quality**: Conventions, naming, DRY, readability, anti-patterns
+4. **Testing**: Functionality tests, edge cases, error scenarios
+5. **Documentation**: Complex functions, public APIs, TODOs addressed
 
 # OUTPUT FORMAT
 
-Provide your review in the following format:
-
 <QA_FINDINGS>
 {
-  "summary": "[Overall assessment: PASS, WARN, or FAIL]",
-  "critical_issues": [
-    {
-      "category": "[error_handling|security|style|testing|documentation]",
-      "severity": "critical",
-      "description": "[description of the issue]",
-      "location": "[file:line or general location]",
-      "recommendation": "[how to fix]"
-    }
-  ],
-  "warnings": [
-    {
-      "category": "[error_handling|security|style|testing|documentation]",
-      "severity": "warning",
-      "description": "[description of the issue]",
-      "location": "[file:line or general location]",
-      "recommendation": "[how to fix]"
-    }
-  ],
-  "suggestions": [
-    {
-      "category": "[error_handling|security|style|testing|documentation]",
-      "severity": "suggestion",
-      "description": "[description of the improvement]",
-      "location": "[file:line or general location]",
-      "recommendation": "[suggested improvement]"
-    }
-  ],
-  "passed_checks": [
-    "[List of checks that passed without issues]"
-  ]
+  "summary": "PASS|WARN|FAIL",
+  "critical_issues": [{"category": "error_handling|security|style|testing|documentation", "severity": "critical", "description": "...", "location": "file:line", "recommendation": "..."}],
+  "warnings": [{"category": "...", "severity": "warning", "description": "...", "location": "...", "recommendation": "..."}],
+  "suggestions": [{"category": "...", "severity": "suggestion", "description": "...", "location": "...", "recommendation": "..."}],
+  "passed_checks": ["..."]
 }
 </QA_FINDINGS>
 
-# SEVERITY LEVELS
-
-- **critical**: Issues that must be fixed (security vulnerabilities, data loss risks, breaking bugs)
-- **warning**: Issues that should be addressed (error handling gaps, style violations, missing tests)
-- **suggestion**: Nice-to-have improvements (documentation, minor refactoring)
+# SEVERITY
+- critical: Must fix (security, data loss, breaking bugs)
+- warning: Should address (error handling, style, missing tests)
+- suggestion: Nice-to-have (docs, minor refactoring)
 
 # CONSTRAINTS
-
-- ONLY review code quality, DO NOT modify the code
-- Be specific about issue locations and how to fix them
-- If no issues found, output summary as "PASS" with empty issue arrays
-- Output ONLY valid JSON within the <QA_FINDINGS> tags"""
+- Review only, DO NOT modify code
+- Be specific about locations and fixes
+- If no issues: summary="PASS" with empty arrays
+- Output ONLY valid JSON within tags"""
     }
 
     @staticmethod
