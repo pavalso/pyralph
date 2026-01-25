@@ -572,7 +572,7 @@ class TestPRDManager(TempConfigTestCase):
 
 
 # ==============================================================================
-# QA CHECKLIST MANAGER TESTS
+# MEMORY MANAGER TESTS
 # ==============================================================================
 
 
@@ -3518,10 +3518,3 @@ class TestBatchMain(IssueWatcherTestCase):
 
         call_kwargs = mock_batch.call_args[1]
         self.assertEqual(call_kwargs["agent_name"], "copilot")
-
-
-# ==============================================================================
-# FINAL QA VALIDATOR TESTS
-# ==============================================================================
-
-
