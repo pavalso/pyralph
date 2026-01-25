@@ -17,6 +17,7 @@ from agents.claude import ClaudeAgent
 from agents.copilot import GithubAgent
 from ralph import (
     Config, CONF, JsonUtils, Logger, MemoryManager, PRDManager, PromptFormatter,
+    QAChecklistCorruptedError, QAChecklistError, QAChecklistManager, QARequirement,
     QAFinding, QAFindingsAnalyzer, QAFindingType,
     RalphOrchestrator, Shell, TemplateManager, get_version, main,
 )
@@ -564,6 +565,443 @@ class TestPRDManager(TempConfigTestCase):
         self.prd_path.write_text('not valid json', encoding='utf-8')
         with self.assertRaises(json.JSONDecodeError):
             self.manager.load()
+
+
+# ==============================================================================
+# QA CHECKLIST MANAGER TESTS
+# ==============================================================================
+
+
+class TestQARequirement(unittest.TestCase):
+    """Tests for QARequirement dataclass."""
+
+    def test_default_values(self):
+        req = QARequirement(id="REQ-001", description="Test requirement")
+        self.assertEqual(req.id, "REQ-001")
+        self.assertEqual(req.description, "Test requirement")
+        self.assertEqual(req.status, "pending")
+        self.assertIsNone(req.lastChecked)
+        self.assertEqual(req.linkedTasks, [])
+
+    def test_to_dict(self):
+        req = QARequirement(
+            id="REQ-001",
+            description="Test requirement",
+            status="passed",
+            lastChecked="2024-01-01T00:00:00",
+            linkedTasks=["TASK-001", "TASK-002"]
+        )
+        data = req.to_dict()
+        self.assertEqual(data["id"], "REQ-001")
+        self.assertEqual(data["description"], "Test requirement")
+        self.assertEqual(data["status"], "passed")
+        self.assertEqual(data["lastChecked"], "2024-01-01T00:00:00")
+        self.assertEqual(data["linkedTasks"], ["TASK-001", "TASK-002"])
+
+    def test_from_dict_with_all_fields(self):
+        data = {
+            "id": "REQ-001",
+            "description": "Test requirement",
+            "status": "failed",
+            "lastChecked": "2024-01-01T00:00:00",
+            "linkedTasks": ["TASK-001"]
+        }
+        req = QARequirement.from_dict(data)
+        self.assertEqual(req.id, "REQ-001")
+        self.assertEqual(req.description, "Test requirement")
+        self.assertEqual(req.status, "failed")
+        self.assertEqual(req.lastChecked, "2024-01-01T00:00:00")
+        self.assertEqual(req.linkedTasks, ["TASK-001"])
+
+    def test_from_dict_with_minimal_fields(self):
+        data = {"id": "REQ-001", "description": "Test requirement"}
+        req = QARequirement.from_dict(data)
+        self.assertEqual(req.id, "REQ-001")
+        self.assertEqual(req.description, "Test requirement")
+        self.assertEqual(req.status, "pending")
+        self.assertIsNone(req.lastChecked)
+        self.assertEqual(req.linkedTasks, [])
+
+    def test_from_dict_missing_id_raises(self):
+        data = {"description": "Test requirement"}
+        with self.assertRaises(KeyError):
+            QARequirement.from_dict(data)
+
+    def test_from_dict_missing_description_raises(self):
+        data = {"id": "REQ-001"}
+        with self.assertRaises(KeyError):
+            QARequirement.from_dict(data)
+
+
+class TestQAChecklistManager(TempConfigTestCase):
+    """Tests for QAChecklistManager class."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_manager = PRDManager(CONF.PRD_FILE)
+        self.manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+
+    def _write_checklist(self, data):
+        """Helper to write checklist JSON to disk."""
+        self.checklist_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def _write_prd(self, data):
+        """Helper to write PRD JSON to disk."""
+        CONF.PRD_FILE.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    # --- Basic existence tests ---
+
+    def test_exists_false_when_no_file(self):
+        self.assertFalse(self.manager.exists())
+
+    def test_exists_true_when_file_present(self):
+        self._write_checklist({"requirements": []})
+        self.assertTrue(self.manager.exists())
+
+    def test_path_property(self):
+        self.assertEqual(self.manager.path, self.checklist_path)
+
+    # --- Load tests ---
+
+    def test_load_parses_valid_checklist(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Requirement 1", "status": "pending"},
+                {"id": "REQ-002", "description": "Requirement 2", "status": "passed", "linkedTasks": ["TASK-001"]}
+            ]
+        }
+        self._write_checklist(checklist)
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 2)
+        self.assertIn("REQ-001", requirements)
+        self.assertIn("REQ-002", requirements)
+        self.assertEqual(requirements["REQ-001"].status, "pending")
+        self.assertEqual(requirements["REQ-002"].linkedTasks, ["TASK-001"])
+
+    def test_load_raises_on_missing_file_without_auto_create(self):
+        manager = QAChecklistManager(self.checklist_path, prd_manager=None)
+        with self.assertRaises(FileNotFoundError):
+            manager.load(auto_create=False)
+
+    def test_load_auto_creates_from_prd_when_missing(self):
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {
+                    "id": "TASK-001",
+                    "acceptanceCriteria": [
+                        "First acceptance criterion",
+                        "Second acceptance criterion"
+                    ]
+                },
+                {
+                    "id": "TASK-002",
+                    "acceptanceCriteria": [
+                        "Third acceptance criterion"
+                    ]
+                }
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 3)
+        self.assertIn("TASK-001-AC01", requirements)
+        self.assertIn("TASK-001-AC02", requirements)
+        self.assertIn("TASK-002-AC01", requirements)
+        self.assertEqual(requirements["TASK-001-AC01"].description, "First acceptance criterion")
+        self.assertEqual(requirements["TASK-002-AC01"].description, "Third acceptance criterion")
+        # Verify file was created
+        self.assertTrue(self.checklist_path.exists())
+
+    def test_load_no_auto_create_without_prd_manager(self):
+        manager = QAChecklistManager(self.checklist_path, prd_manager=None)
+        with self.assertRaises(FileNotFoundError):
+            manager.load(auto_create=True)
+
+    # --- Corruption detection and recovery tests ---
+
+    def test_load_handles_invalid_json(self):
+        self.checklist_path.write_text('not valid json {', encoding='utf-8')
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 1)
+        # Verify backup was created
+        backup_files = list(self.checklist_path.parent.glob("*.corrupted.*.json"))
+        self.assertEqual(len(backup_files), 1)
+
+    def test_load_handles_missing_requirements_field(self):
+        self._write_checklist({"invalid": "structure"})
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 1)
+        backup_files = list(self.checklist_path.parent.glob("*.corrupted.*.json"))
+        self.assertEqual(len(backup_files), 1)
+
+    def test_load_handles_requirements_not_a_list(self):
+        self._write_checklist({"requirements": "not a list"})
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 1)
+
+    def test_load_handles_requirement_missing_id(self):
+        self._write_checklist({
+            "requirements": [{"description": "Missing id"}]
+        })
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        # Should regenerate from PRD
+        self.assertIn("TASK-001-AC01", requirements)
+
+    def test_load_handles_requirement_missing_description(self):
+        self._write_checklist({
+            "requirements": [{"id": "REQ-001"}]
+        })
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertIn("TASK-001-AC01", requirements)
+
+    def test_load_handles_invalid_status(self):
+        self._write_checklist({
+            "requirements": [{"id": "REQ-001", "description": "Test", "status": "invalid_status"}]
+        })
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertIn("TASK-001-AC01", requirements)
+
+    def test_load_corrupted_raises_when_no_prd(self):
+        self.checklist_path.write_text('corrupted', encoding='utf-8')
+        manager = QAChecklistManager(self.checklist_path, prd_manager=None)
+        with self.assertRaises(QAChecklistCorruptedError):
+            manager.load()
+
+    # --- Save tests ---
+
+    def test_save_creates_file(self):
+        self._write_prd({"id": "PRD-001", "userStories": []})
+        self.manager.load()
+        self.manager._requirements["NEW-001"] = QARequirement(
+            id="NEW-001", description="New requirement"
+        )
+        self.manager.save()
+
+        content = json.loads(self.checklist_path.read_text(encoding='utf-8'))
+        self.assertEqual(len(content["requirements"]), 1)
+        self.assertEqual(content["requirements"][0]["id"], "NEW-001")
+
+    def test_save_creates_parent_directories(self):
+        nested_path = self.temp_path / "deep" / "nested" / "qa-checklist.json"
+        manager = QAChecklistManager(nested_path, self.prd_manager)
+        manager._requirements = {"REQ-001": QARequirement(id="REQ-001", description="Test")}
+        manager.save()
+        self.assertTrue(nested_path.exists())
+
+    # --- CRUD operation tests ---
+
+    def test_get_requirement_returns_existing(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test requirement"}
+            ]
+        }
+        self._write_checklist(checklist)
+        req = self.manager.get_requirement("REQ-001")
+        self.assertIsNotNone(req)
+        self.assertEqual(req.id, "REQ-001")
+
+    def test_get_requirement_returns_none_for_missing(self):
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+        req = self.manager.get_requirement("NONEXISTENT")
+        self.assertIsNone(req)
+
+    def test_get_all_requirements(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "First"},
+                {"id": "REQ-002", "description": "Second"}
+            ]
+        }
+        self._write_checklist(checklist)
+        all_reqs = self.manager.get_all_requirements()
+        self.assertEqual(len(all_reqs), 2)
+
+    def test_update_requirement_status(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test", "status": "pending"}
+            ]
+        }
+        self._write_checklist(checklist)
+
+        result = self.manager.update_requirement("REQ-001", status="passed")
+        self.assertTrue(result)
+
+        req = self.manager.get_requirement("REQ-001")
+        self.assertEqual(req.status, "passed")
+        self.assertIsNotNone(req.lastChecked)
+
+    def test_update_requirement_links_task(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test", "linkedTasks": []}
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.manager.update_requirement("REQ-001", linked_task="TASK-001")
+        req = self.manager.get_requirement("REQ-001")
+        self.assertIn("TASK-001", req.linkedTasks)
+
+    def test_update_requirement_does_not_duplicate_task(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test", "linkedTasks": ["TASK-001"]}
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.manager.update_requirement("REQ-001", linked_task="TASK-001")
+        req = self.manager.get_requirement("REQ-001")
+        self.assertEqual(req.linkedTasks.count("TASK-001"), 1)
+
+    def test_update_requirement_returns_false_for_missing(self):
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+        result = self.manager.update_requirement("NONEXISTENT", status="passed")
+        self.assertFalse(result)
+
+    def test_update_requirement_invalid_status_raises(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test"}
+            ]
+        }
+        self._write_checklist(checklist)
+        with self.assertRaises(ValueError):
+            self.manager.update_requirement("REQ-001", status="invalid")
+
+    def test_update_requirement_persists_to_disk(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test", "status": "pending"}
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.manager.update_requirement("REQ-001", status="passed")
+
+        # Reload from disk
+        fresh_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+        req = fresh_manager.get_requirement("REQ-001")
+        self.assertEqual(req.status, "passed")
+
+    def test_add_requirement(self):
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+        self.manager.load()
+
+        new_req = QARequirement(id="REQ-001", description="New requirement")
+        self.manager.add_requirement(new_req)
+
+        req = self.manager.get_requirement("REQ-001")
+        self.assertIsNotNone(req)
+        self.assertEqual(req.description, "New requirement")
+
+    def test_add_requirement_duplicate_raises(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Existing"}
+            ]
+        }
+        self._write_checklist(checklist)
+        self.manager.load()
+
+        new_req = QARequirement(id="REQ-001", description="Duplicate")
+        with self.assertRaises(ValueError):
+            self.manager.add_requirement(new_req)
+
+    # --- Incremental update tests ---
+
+    def test_incremental_update_preserves_history(self):
+        """Verify updates don't lose previous validation history."""
+        checklist = {
+            "requirements": [
+                {
+                    "id": "REQ-001",
+                    "description": "Test",
+                    "status": "passed",
+                    "lastChecked": "2024-01-01T00:00:00",
+                    "linkedTasks": ["TASK-001"]
+                },
+                {
+                    "id": "REQ-002",
+                    "description": "Another",
+                    "status": "pending",
+                    "linkedTasks": []
+                }
+            ]
+        }
+        self._write_checklist(checklist)
+
+        # Update only REQ-002
+        self.manager.update_requirement("REQ-002", status="passed", linked_task="TASK-002")
+
+        # Verify REQ-001 is unchanged
+        req1 = self.manager.get_requirement("REQ-001")
+        self.assertEqual(req1.status, "passed")
+        self.assertEqual(req1.linkedTasks, ["TASK-001"])
+        self.assertEqual(req1.lastChecked, "2024-01-01T00:00:00")
+
+        # Verify REQ-002 is updated
+        req2 = self.manager.get_requirement("REQ-002")
+        self.assertEqual(req2.status, "passed")
+        self.assertIn("TASK-002", req2.linkedTasks)
 
 
 # ==============================================================================
