@@ -4,5 +4,9 @@
 This package contains QA-related domain objects and utilities.
 """
 from qa.models import QARequirement, QAFinding, QAFindingType
+from qa.checklist import QAChecklistError, QAChecklistCorruptedError, QAChecklistManager
 
-__all__ = ['QARequirement', 'QAFinding', 'QAFindingType']
+__all__ = [
+    'QARequirement', 'QAFinding', 'QAFindingType',
+    'QAChecklistError', 'QAChecklistCorruptedError', 'QAChecklistManager'
+]
