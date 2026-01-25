@@ -1171,170 +1171,50 @@ class TemplateManager:
 Senior Software Architect
 
 # OBJECTIVE
-Analyze the project structure and initialize comprehensive architecture documentation following software engineering best practices.
+Analyze project structure and create architecture documentation.
 
 # CONTEXT
-
-## User Intent
 <USER_INTENT>
 {{user_intent}}
 </USER_INTENT>
 
-## Project File Tree
 <FILE_TREE>
 {{file_tree}}
 </FILE_TREE>
 
 # ANALYSIS REQUIREMENTS
 
-## 1. SOLID Principles Analysis
-When analyzing code structure, evaluate adherence to SOLID principles:
-- **Single Responsibility**: Each module/class should have one reason to change
-- **Open/Closed**: Code should be open for extension, closed for modification
-- **Liskov Substitution**: Subtypes must be substitutable for their base types
-- **Interface Segregation**: Prefer specific interfaces over general-purpose ones
-- **Dependency Inversion**: Depend on abstractions, not concrete implementations
+Analyze and document the following aspects:
 
-Document any violations or areas for improvement in the architecture documentation.
+1. **SOLID Principles**: Evaluate Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, and Dependency Inversion adherence.
 
-## 2. Architectural Patterns Identification
-Identify and document which architectural patterns are present in the codebase:
-- **MVC/MVP/MVVM**: Model-View-Controller and variants
-- **Layered Architecture**: Presentation, business logic, data access layers
-- **Microservices**: Independent, deployable services
-- **Event-Driven**: Pub/sub, message queues, event sourcing
-- **Repository Pattern**: Data access abstraction
-- **Clean Architecture**: Dependency rules, use cases, entities
-- **Hexagonal/Ports & Adapters**: Core domain isolated from external concerns
+2. **Architectural Patterns**: Identify patterns (MVC, Layered, Microservices, Event-Driven, Repository, Clean Architecture, Hexagonal).
 
-Note which patterns are used and how consistently they are applied.
+3. **Security**: Document authentication, input validation, secrets management, and potential vulnerabilities.
 
-## 3. Security Considerations
-Analyze and document security aspects of the architecture:
-- **Authentication/Authorization**: How identity and permissions are handled
-- **Input Validation**: Where and how user input is validated
-- **Data Protection**: Encryption at rest and in transit
-- **Secrets Management**: How API keys, passwords, and tokens are stored
-- **OWASP Top 10**: Potential vulnerabilities (injection, XSS, CSRF, etc.)
-- **Dependency Security**: Third-party package vulnerability risks
+4. **Error Handling**: Document error strategies, logging framework, and log levels.
 
-Flag any security concerns or gaps that require attention.
+5. **API Boundaries**: Identify external/internal APIs, data formats, and protocols.
 
-## 4. Error Handling and Logging Patterns
-Document the error handling and logging strategies used:
-- **Error Handling Strategy**: Try/catch patterns, error boundaries, fallbacks
-- **Error Propagation**: How errors bubble up through layers
-- **Logging Framework**: What logging library/approach is used
-- **Log Levels**: How different severity levels are applied
-- **Error Reporting**: Integration with monitoring/alerting systems
-- **Graceful Degradation**: How the system handles partial failures
+# FALLBACK BEHAVIOR
 
-## 5. API Boundaries and Integration Points
-Identify and document all API boundaries and integration points:
-- **External APIs**: Third-party services the codebase integrates with
-- **Internal APIs**: Module boundaries and internal service interfaces
-- **Data Formats**: JSON, XML, Protocol Buffers, etc.
-- **Communication Protocols**: REST, GraphQL, gRPC, WebSocket, etc.
-- **Database Interfaces**: ORM usage, raw queries, connection management
-- **File System Interfaces**: File I/O patterns and locations
-- **Environment Dependencies**: Config files, environment variables, secrets
-
-# STRUCTURED REASONING PROTOCOL
-
-Before executing any action, you MUST complete this reasoning framework:
-
-## Step 1: Pre-Execution Analysis
-Answer these questions explicitly in your thinking:
-1. **Scope Assessment**: What is the boundary of my analysis? What am I including/excluding and why?
-2. **Approach Justification**: What method will I use to analyze this codebase? Why is this approach suitable?
-3. **Expected Outcomes**: What deliverables do I expect to produce? What format and content?
-4. **Risk Identification**: What could go wrong? What assumptions am I making?
-
-## Step 2: Validation Checkpoints
-At each major step, verify before proceeding:
-- [ ] **File Tree Verification**: Have I examined the file tree structure completely?
-- [ ] **Technology Detection Confidence**: Am I confident about the technologies I've identified? If unsure, what additional evidence would I need?
-- [ ] **Pattern Recognition Accuracy**: Are the architectural patterns I've identified actually present, or am I inferring from limited evidence?
-- [ ] **Completeness Check**: Have I addressed all required sections (SOLID, patterns, security, error handling, API boundaries)?
-
-## Step 3: Evidence-Based Conclusions
-For each conclusion in your analysis:
-- Cite specific file paths or patterns that support your conclusion
-- Distinguish between observed facts and inferences
-- Rate your confidence level: HIGH (direct evidence), MEDIUM (strong inference), LOW (limited evidence)
-
-# FALLBACK STRATEGIES
-
-## When Primary Analysis Approaches Fail
-
-### Scenario 1: Minimal File Tree Information
-**Primary approach fails when**: File tree is sparse or lacks typical project structure indicators
-**Fallback strategy**:
-1. Focus on file extensions to infer language(s)
-2. Look for configuration files (package.json, pyproject.toml, Cargo.toml, etc.)
-3. Identify entry points by common naming (main.*, index.*, app.*)
-4. Document uncertainty explicitly in output
-
-### Scenario 2: Unfamiliar Technology Stack
-**Primary approach fails when**: Technologies present are outside common patterns
-**Fallback strategy**:
-1. Identify configuration files and their formats
-2. Document what CAN be determined with confidence
-3. Explicitly list technologies that could not be identified
-4. Recommend manual verification for uncertain elements
-
-### Scenario 3: Inconsistent or Legacy Architecture
-**Primary approach fails when**: Codebase shows mixed patterns or no clear architecture
-**Fallback strategy**:
-1. Document the observed inconsistencies rather than forcing a pattern
-2. Note areas where architecture is unclear
-3. Identify dominant patterns even if not universally applied
-4. Flag areas that may need architectural review
-
-### Scenario 4: Missing Test Information
-**Primary approach fails when**: No clear test framework or test files visible
-**Fallback strategy**:
-1. Check for common test directories (test/, tests/, spec/, __tests__/)
-2. Look for test configuration files (pytest.ini, jest.config.js, etc.)
-3. If still unclear, document "Test Command: [Unable to determine - manual verification required]"
-4. Note the absence of visible testing infrastructure as a finding
-
-# LIMITATIONS AND UNCERTAINTY ACKNOWLEDGMENT
-
-You MUST explicitly acknowledge limitations and uncertainty in your output:
-
-## Required Disclosures
-1. **Analysis Scope Limitations**: What aspects of the codebase could NOT be analyzed from the file tree alone?
-2. **Confidence Levels**: For each major finding, indicate whether it is:
-   - CONFIRMED: Directly visible in file tree or explicitly stated
-   - INFERRED: Reasonable conclusion based on available evidence
-   - UNCERTAIN: Limited evidence, requires verification
-3. **Missing Information**: What information would improve the analysis if available?
-4. **Assumptions Made**: List any assumptions made during analysis
-
-## Output Format for Uncertainty
-When documenting uncertain findings, use this format:
-- "Based on [evidence], [conclusion] (Confidence: HIGH/MEDIUM/LOW)"
-- "Unable to determine [aspect] due to [reason]. Recommendation: [next step]"
-- "Assumption: [assumption made]. If incorrect, [impact on analysis]"
+When information cannot be determined from the file tree:
+- Use file extensions to infer languages
+- Check config files (package.json, pyproject.toml, etc.)
+- For unknown items, use: `[Unable to determine]`
+- For test commands: `[Unable to determine - manual verification required]`
 
 # CONSTRAINTS
-- You MUST create exactly two files: .ralph/memory/architecture.md and ARCH.md
-- You MUST use the exact YAML frontmatter format specified below
-- You MUST include ALL required sections in the exact order specified
-- You MUST detect the actual test command from the project (pytest, npm test, etc.)
-- You MUST NOT invent or assume technologies not evident in the file tree
-- You MUST apply SOLID principles analysis when evaluating code structure
-- You MUST identify architectural patterns present in the codebase
-- You MUST document security considerations and potential vulnerabilities
-- You MUST document error handling strategies and logging patterns
-- You MUST identify API boundaries and integration points
+- Create exactly two files: .ralph/memory/architecture.md and ARCH.md
+- Use exact YAML frontmatter format below
+- Include ALL required sections
+- Detect actual test command (pytest, npm test, etc.)
+- Do NOT invent technologies not evident in file tree
 - Keep descriptions concise and factual
 
 # OUTPUT SPECIFICATION
 
 ## File 1: .ralph/memory/architecture.md
-Create this file with the following structure:
 
 ```markdown
 ---
@@ -1351,10 +1231,9 @@ title: Architecture
 - [additional relevant technologies]
 
 ## Overview
-[2-3 sentence description of the project purpose and architecture]
+[2-3 sentence description of project purpose and architecture]
 
 ## Architectural Patterns
-[Identify patterns used: MVC, Layered, Microservices, Event-Driven, etc.]
 - **Primary Pattern**: [main architectural pattern]
 - **Supporting Patterns**: [additional patterns used]
 
