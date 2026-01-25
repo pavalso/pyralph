@@ -3767,11 +3767,11 @@ class TestRevisePrdTemplate(unittest.TestCase):
     """Tests for revise_prd.txt template existence."""
 
     def test_template_exists_in_defaults(self):
-        from ralph import TemplateManager
+        from templates import TemplateManager
         self.assertIn("revise_prd.txt", TemplateManager.DEFAULT_TEMPLATES)
 
     def test_template_has_required_placeholders(self):
-        from ralph import TemplateManager
+        from templates import TemplateManager
         template = TemplateManager.DEFAULT_TEMPLATES["revise_prd.txt"]
         self.assertIn("{{original_prd}}", template)
 
@@ -4030,11 +4030,11 @@ class TestQAReviewTemplate(unittest.TestCase):
     """Tests for QA review template."""
 
     def test_template_exists(self):
-        from ralph import TemplateManager
+        from templates import TemplateManager
         self.assertIn("qa_review.txt", TemplateManager.DEFAULT_TEMPLATES)
 
     def test_template_has_required_placeholders(self):
-        from ralph import TemplateManager
+        from templates import TemplateManager
         template = TemplateManager.DEFAULT_TEMPLATES["qa_review.txt"]
         required_placeholders = [
             "{{task_id}}",
@@ -4648,11 +4648,11 @@ class TestStandaloneQAReviewTemplate(unittest.TestCase):
     """Tests for standalone QA review template."""
 
     def test_template_exists(self):
-        from ralph import TemplateManager
+        from templates import TemplateManager
         self.assertIn("qa_standalone_review.txt", TemplateManager.DEFAULT_TEMPLATES)
 
     def test_template_contains_required_variables(self):
-        from ralph import TemplateManager
+        from templates import TemplateManager
         template = TemplateManager.DEFAULT_TEMPLATES["qa_standalone_review.txt"]
         self.assertIn("{{review_path}}", template)
         self.assertIn("{{codebase_files}}", template)

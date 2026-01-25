@@ -285,7 +285,7 @@ class ExecutableHook(Hook):
             pass  # Timeout is handled by caller
         except (OSError, json.JSONDecodeError) as e:
             # Log hook execution errors for debugging, caller handles the None return
-            from ralph import Logger
+            from logger import Logger
             Logger.debug(f"Hook execution failed for {self._path}: {type(e).__name__}: {e}")
         return None
 
@@ -893,7 +893,8 @@ class QAChecklistAgent:
         3. Agent will automatically update checklist on task success
 
     Example:
-        >>> from ralph import QAChecklistManager, CONF
+        >>> from qa import QAChecklistManager
+        >>> from config import CONF
         >>> checklist_manager = QAChecklistManager(CONF.QA_CHECKLIST_FILE)
         >>> qa_agent = QAChecklistAgent(checklist_manager)
         >>> qa_agent.register(hook_manager)
@@ -1163,7 +1164,9 @@ class FinalQAValidator:
         3. Or register with HookManager to auto-trigger on all tasks complete
 
     Example:
-        >>> from ralph import QAChecklistManager, PRDManager, CONF
+        >>> from qa import QAChecklistManager
+        >>> from prd import PRDManager
+        >>> from config import CONF
         >>> checklist_manager = QAChecklistManager(CONF.QA_CHECKLIST_FILE)
         >>> prd_manager = PRDManager(CONF.PRD_FILE)
         >>> validator = FinalQAValidator(checklist_manager, prd_manager)
