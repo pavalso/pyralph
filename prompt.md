@@ -6,7 +6,7 @@ Complete workflow from task start to merge completion.
 
 **One branch per PRD, merged only after all tasks are complete.**
 
-A PRD uses a single branch (`PRD/<prd-id>`) for all its tasks. Each task is committed directly to this branch. The branch is only merged back to master after every task in the PRD has been completed and verified.
+A PRD uses a single branch (`PRD/<prd-short-description>`) for all its tasks. Each task is committed directly to this branch. The branch is only merged back to master after every task in the PRD has been completed and verified.
 
 ## Phases
 
@@ -22,7 +22,7 @@ A PRD uses a single branch (`PRD/<prd-id>`) for all its tasks. Each task is comm
 
 ```
 master
-  └── PRD/<prd-id>
+  └── PRD/<prd-short-description>
         ├── TASK-001 commit
         ├── TASK-002 commit
         ├── TASK-003 commit
@@ -36,8 +36,8 @@ master
 When starting work on a PRD, create a single dedicated PRD branch from master. This branch will be used for ALL tasks in the PRD.
 
 1. Ensure master is up-to-date: `git pull origin master`
-2. Create PRD branch: `git checkout -b PRD/<prd-id> master`
-3. Use naming convention: `PRD/<prd-id>` (e.g., `PRD/user-authentication`)
+2. Create PRD branch: `git checkout -b PRD/<prd-short-description> master`
+3. Use naming convention: `PRD/<prd-short-description>` (e.g., `PRD/user-authentication`)
 4. This is the only branch you will use—all tasks are committed here
 
 ---
@@ -52,7 +52,7 @@ When starting work on a PRD, create a single dedicated PRD branch from master. T
 4. Commit after completing each task (one commit per task, all on the same branch)
 5. Review staged changes: `git diff --staged`
 6. Never commit generated files, build artifacts, or `.gitignore` entries
-7. Push regularly to remote: `git push origin PRD/<prd-id>`
+7. Push regularly to remote: `git push origin PRD/<prd-short-description>`
 8. Continue committing tasks until ALL tasks in the PRD are complete
 
 ---
@@ -83,12 +83,12 @@ When starting work on a PRD, create a single dedicated PRD branch from master. T
 1. Verify all tests pass on the PRD branch
 2. Switch to master: `git checkout master`
 3. Pull latest: `git pull origin master`
-4. Merge PRD branch: `git merge PRD/<prd-id>`
+4. Merge PRD branch: `git merge PRD/<prd-short-description>`
 5. Resolve conflicts if needed, then re-run tests
 6. Push to master: `git push origin master`
 7. Delete PRD branch:
-   - Local: `git branch -d PRD/<prd-id>`
-   - Remote: `git push origin --delete PRD/<prd-id>`
+   - Local: `git branch -d PRD/<prd-short-description>`
+   - Remote: `git push origin --delete PRD/<prd-short-description>`
 
 **This step is NOT optional. Every completed PRD must be merged to master.**
 
@@ -105,7 +105,7 @@ When starting work on a PRD, create a single dedicated PRD branch from master. T
    (current branch changes)
    =======
    (incoming branch changes)
-   >>>>>>> PRD/<prd-id>
+   >>>>>>> PRD/<prd-short-description>
    ```
 3. Resolve by choosing, combining, or rewriting
 4. Remove all conflict markers
@@ -141,3 +141,4 @@ Guidelines for managing memory entries:
 4. Use specific tags when retrieving
 5. Prioritize updating existing entries over creating new ones
 6. Focus on actionable information
+7. Write memories for every important decision or lesson learned

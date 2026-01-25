@@ -31,6 +31,7 @@ class Config:
     TEMPLATES_DIR: Path = ROOT_DIR / "templates"
     HOOKS_DIR: Path = ROOT_DIR / "hooks"
     PRD_FILE: Path = ROOT_DIR / "prd.json"
+    QA_CHECKLIST_FILE: Path = ROOT_DIR / "qa-checklist.json"
     PROGRESS_FILE: Path = ROOT_DIR / "progress.txt"
     LOG_FILE: Path = ROOT_DIR / "ralph_log.txt"
 
@@ -550,6 +551,343 @@ class JsonUtils:
             text = text[start:end+1]
         text = re.sub(r"//.*", "", text)
         return json.loads(text)
+
+
+# ==============================================================================
+# QA CHECKLIST MANAGEMENT
+# ==============================================================================
+
+
+class QAChecklistError(Exception):
+    """Base exception for QA checklist operations."""
+    pass
+
+
+class QAChecklistCorruptedError(QAChecklistError):
+    """Raised when the checklist file is corrupted and cannot be parsed."""
+    pass
+
+
+@dataclass
+class QARequirement:
+    """Represents a single requirement item in the QA checklist.
+
+    Attributes:
+        id: Unique identifier for the requirement
+        description: Human-readable description of the requirement
+        status: Current validation status (pending/passed/failed)
+        lastChecked: ISO timestamp of last validation check (None if never checked)
+        linkedTasks: List of task IDs that contributed to this requirement
+    """
+    id: str
+    description: str
+    status: str = "pending"
+    lastChecked: Optional[str] = None
+    linkedTasks: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert requirement to dictionary for JSON serialization."""
+        return {
+            "id": self.id,
+            "description": self.description,
+            "status": self.status,
+            "lastChecked": self.lastChecked,
+            "linkedTasks": self.linkedTasks
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'QARequirement':
+        """Create a QARequirement from a dictionary.
+
+        Args:
+            data: Dictionary containing requirement fields
+
+        Returns:
+            QARequirement instance
+
+        Raises:
+            KeyError: If required fields (id, description) are missing
+        """
+        return cls(
+            id=data["id"],
+            description=data["description"],
+            status=data.get("status", "pending"),
+            lastChecked=data.get("lastChecked"),
+            linkedTasks=data.get("linkedTasks", [])
+        )
+
+
+class QAChecklistManager:
+    """Manages QA checklist file operations with corruption detection and recovery.
+
+    The checklist is stored in .ralph/qa-checklist.json and tracks requirement
+    fulfillment status across tasks. Supports incremental updates and automatic
+    generation from PRD acceptance criteria when the checklist doesn't exist.
+    """
+
+    VALID_STATUSES = ("pending", "passed", "failed")
+
+    def __init__(self, checklist_path: Path, prd_manager: Optional['PRDManager'] = None):
+        """Initialize the QA checklist manager.
+
+        Args:
+            checklist_path: Path to the qa-checklist.json file
+            prd_manager: Optional PRDManager instance for generating default checklist
+        """
+        self._path = checklist_path
+        self._prd_manager = prd_manager
+        self._requirements: Dict[str, QARequirement] = {}
+        self._loaded = False
+
+    @property
+    def path(self) -> Path:
+        """Get the checklist file path."""
+        return self._path
+
+    def exists(self) -> bool:
+        """Check if the checklist file exists on disk."""
+        return self._path.exists()
+
+    def _validate_checklist_structure(self, data: Any) -> List[QARequirement]:
+        """Validate checklist JSON structure and extract requirements.
+
+        Args:
+            data: Parsed JSON data
+
+        Returns:
+            List of QARequirement objects
+
+        Raises:
+            QAChecklistCorruptedError: If structure is invalid
+        """
+        if not isinstance(data, dict):
+            raise QAChecklistCorruptedError("Checklist root must be a JSON object")
+
+        if "requirements" not in data:
+            raise QAChecklistCorruptedError("Checklist missing 'requirements' field")
+
+        requirements_data = data["requirements"]
+        if not isinstance(requirements_data, list):
+            raise QAChecklistCorruptedError("'requirements' must be a list")
+
+        requirements = []
+        for i, item in enumerate(requirements_data):
+            if not isinstance(item, dict):
+                raise QAChecklistCorruptedError(f"Requirement at index {i} is not an object")
+            if "id" not in item:
+                raise QAChecklistCorruptedError(f"Requirement at index {i} missing 'id' field")
+            if "description" not in item:
+                raise QAChecklistCorruptedError(f"Requirement at index {i} missing 'description' field")
+            if "status" in item and item["status"] not in self.VALID_STATUSES:
+                raise QAChecklistCorruptedError(
+                    f"Requirement '{item['id']}' has invalid status '{item['status']}'"
+                )
+            requirements.append(QARequirement.from_dict(item))
+
+        return requirements
+
+    def _backup_corrupted_file(self) -> Optional[Path]:
+        """Create a backup of the corrupted checklist file.
+
+        Returns:
+            Path to backup file, or None if no backup was created
+        """
+        if not self._path.exists():
+            return None
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = self._path.with_suffix(f".corrupted.{timestamp}.json")
+        try:
+            shutil.copy2(self._path, backup_path)
+            Logger.warning(f"Backed up corrupted checklist to: {backup_path}")
+            return backup_path
+        except OSError as e:
+            Logger.error(f"Failed to backup corrupted checklist: {e}")
+            return None
+
+    def _generate_from_prd(self) -> List[QARequirement]:
+        """Generate default requirements from PRD acceptance criteria.
+
+        Returns:
+            List of QARequirement objects derived from PRD
+
+        Raises:
+            QAChecklistError: If PRD manager is not available or PRD is invalid
+        """
+        if self._prd_manager is None:
+            raise QAChecklistError("Cannot generate checklist: no PRD manager provided")
+
+        if not self._prd_manager.exists():
+            raise QAChecklistError("Cannot generate checklist: PRD file does not exist")
+
+        try:
+            prd_data = self._prd_manager.load()
+        except (json.JSONDecodeError, OSError) as e:
+            raise QAChecklistError(f"Cannot generate checklist: PRD read error: {e}") from e
+
+        requirements = []
+        user_stories = prd_data.get("userStories", [])
+
+        for story in user_stories:
+            task_id = story.get("id", "")
+            criteria = story.get("acceptanceCriteria", [])
+
+            for idx, criterion in enumerate(criteria):
+                req_id = f"{task_id}-AC{idx + 1:02d}"
+                requirements.append(QARequirement(
+                    id=req_id,
+                    description=criterion,
+                    status="pending",
+                    lastChecked=None,
+                    linkedTasks=[]
+                ))
+
+        return requirements
+
+    def load(self, auto_create: bool = True) -> Dict[str, QARequirement]:
+        """Load checklist from disk with corruption detection.
+
+        Args:
+            auto_create: If True, create checklist from PRD when file doesn't exist
+
+        Returns:
+            Dictionary mapping requirement IDs to QARequirement objects
+
+        Raises:
+            QAChecklistError: If checklist cannot be loaded or created
+            FileNotFoundError: If file doesn't exist and auto_create is False
+        """
+        if not self.exists():
+            if auto_create and self._prd_manager is not None:
+                Logger.info("QA checklist not found, generating from PRD...")
+                requirements = self._generate_from_prd()
+                self._requirements = {r.id: r for r in requirements}
+                self.save()
+                self._loaded = True
+                return self._requirements
+            raise FileNotFoundError(f"QA checklist not found: {self._path}")
+
+        try:
+            content = self._path.read_text(encoding='utf-8')
+            data = json.loads(content)
+            requirements = self._validate_checklist_structure(data)
+            self._requirements = {r.id: r for r in requirements}
+            self._loaded = True
+            return self._requirements
+
+        except json.JSONDecodeError as e:
+            Logger.error(f"Checklist JSON parse error: {e}")
+            self._backup_corrupted_file()
+            if self._prd_manager is not None:
+                Logger.info("Regenerating checklist from PRD...")
+                requirements = self._generate_from_prd()
+                self._requirements = {r.id: r for r in requirements}
+                self.save()
+                self._loaded = True
+                return self._requirements
+            raise QAChecklistCorruptedError(f"Checklist corrupted and no PRD available: {e}") from e
+
+        except QAChecklistCorruptedError:
+            self._backup_corrupted_file()
+            if self._prd_manager is not None:
+                Logger.info("Regenerating checklist from PRD...")
+                requirements = self._generate_from_prd()
+                self._requirements = {r.id: r for r in requirements}
+                self.save()
+                self._loaded = True
+                return self._requirements
+            raise
+
+    def save(self) -> None:
+        """Save current requirements to disk.
+
+        Creates parent directories if needed.
+        """
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "requirements": [r.to_dict() for r in self._requirements.values()]
+        }
+        self._path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def get_requirement(self, requirement_id: str) -> Optional[QARequirement]:
+        """Get a requirement by ID.
+
+        Args:
+            requirement_id: The requirement ID to look up
+
+        Returns:
+            QARequirement if found, None otherwise
+        """
+        if not self._loaded:
+            self.load()
+        return self._requirements.get(requirement_id)
+
+    def get_all_requirements(self) -> List[QARequirement]:
+        """Get all requirements.
+
+        Returns:
+            List of all QARequirement objects
+        """
+        if not self._loaded:
+            self.load()
+        return list(self._requirements.values())
+
+    def update_requirement(
+        self,
+        requirement_id: str,
+        status: Optional[str] = None,
+        linked_task: Optional[str] = None
+    ) -> bool:
+        """Update a requirement's status and/or link a task.
+
+        Args:
+            requirement_id: ID of the requirement to update
+            status: New status (pending/passed/failed), or None to keep current
+            linked_task: Task ID to add to linkedTasks, or None to skip
+
+        Returns:
+            True if requirement was updated, False if not found
+
+        Raises:
+            ValueError: If status is not a valid status value
+        """
+        if not self._loaded:
+            self.load()
+
+        if status is not None and status not in self.VALID_STATUSES:
+            raise ValueError(f"Invalid status '{status}'. Must be one of: {self.VALID_STATUSES}")
+
+        requirement = self._requirements.get(requirement_id)
+        if requirement is None:
+            return False
+
+        if status is not None:
+            requirement.status = status
+
+        if linked_task is not None and linked_task not in requirement.linkedTasks:
+            requirement.linkedTasks.append(linked_task)
+
+        requirement.lastChecked = datetime.datetime.now().isoformat()
+        self.save()
+        return True
+
+    def add_requirement(self, requirement: QARequirement) -> None:
+        """Add a new requirement to the checklist.
+
+        Args:
+            requirement: The QARequirement to add
+
+        Raises:
+            ValueError: If requirement with same ID already exists
+        """
+        if not self._loaded:
+            self.load()
+
+        if requirement.id in self._requirements:
+            raise ValueError(f"Requirement '{requirement.id}' already exists")
+
+        self._requirements[requirement.id] = requirement
+        self.save()
 
 
 # ==============================================================================
@@ -1719,7 +2057,8 @@ class RalphOrchestrator:
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
                  label: Optional[List[str]] = None, revise_prd: bool = False,
-                 qa_review: bool = False, qa_strict: bool = False, qa_path: Optional[str] = None) -> None:
+                 qa_review: bool = False, qa_strict: bool = False, qa_path: Optional[str] = None,
+                 qa_checklist: Optional[Path] = None) -> None:
         # Use --timeout override if provided, otherwise use config default
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
         self.agent = get_agent(agent_name, timeout_seconds=agent_timeout,
@@ -1790,8 +2129,18 @@ class RalphOrchestrator:
         self._qa_review = qa_review
         self._qa_strict = qa_strict
         self._qa_path = qa_path
+        self._qa_checklist_path = qa_checklist
         # Initialize PRD manager for consolidated file operations
         self._prd = PRDManager(CONF.PRD_FILE)
+
+    @property
+    def qa_checklist_path(self) -> Path:
+        """Get the effective QA checklist path.
+
+        Returns the custom path if provided via --qa-checklist, otherwise
+        returns the default path from CONF.QA_CHECKLIST_FILE.
+        """
+        return self._qa_checklist_path if self._qa_checklist_path else CONF.QA_CHECKLIST_FILE
 
     def _load_plugins(self) -> None:
         """
@@ -3739,6 +4088,178 @@ class RalphOrchestrator:
                 Logger.warning(f"Tasks incomplete: {completed}/{total} completed, {failed} failed, {pending} pending.")
             return 1
 
+    def _run_qa_status(self) -> int:
+        """
+        Display QA checklist status and return appropriate exit code.
+
+        Shows all requirements with their current status (pending/passed/failed),
+        linked tasks, and a summary line with fulfillment percentage.
+
+        Respects the following flags:
+        - --json: Output in machine-parseable JSON format
+        - --verbose: Include lastChecked timestamps and additional details
+
+        Returns:
+            0 if all requirements passed
+            1 if some requirements are pending or failed
+            2 if no checklist exists and user declined generation
+        """
+        checklist_path = self.qa_checklist_path
+        checklist_manager = QAChecklistManager(checklist_path, self._prd)
+
+        # Edge case: checklist doesn't exist
+        if not checklist_manager.exists():
+            # Check if PRD exists to offer generation
+            if self._prd.exists():
+                if Logger.json_output or Logger.ndjson_output:
+                    print(Logger._format_json_message(
+                        "No QA checklist found. Use 'ralph qa-status' with PRD to generate.",
+                        "info",
+                        status="no_checklist",
+                        can_generate=True,
+                        prd_exists=True,
+                        exit_code=2
+                    ))
+                else:
+                    Logger.info("No QA checklist found.", "YELLOW")
+                    Logger.info(f"A PRD exists at: {self._prd._path}")
+                    if not self._non_interactive:
+                        response = input(f"{Logger.COLORS['YELLOW']}Generate checklist from PRD? (y/n): {Logger.COLORS['RESET']}").strip().lower()
+                        if response == 'y':
+                            try:
+                                checklist_manager.load(auto_create=True)
+                                Logger.info(f"Generated QA checklist at: {checklist_path}", "GREEN")
+                                # Continue to display the newly generated checklist
+                            except QAChecklistError as e:
+                                Logger.error(f"Failed to generate checklist: {e}")
+                                return 2
+                        else:
+                            Logger.info("Checklist generation skipped.")
+                            return 2
+                    else:
+                        Logger.info("Run in interactive mode to generate checklist from PRD.")
+                        return 2
+            else:
+                if Logger.json_output or Logger.ndjson_output:
+                    print(Logger._format_json_message(
+                        "No QA checklist found and no PRD available to generate one.",
+                        "error",
+                        status="no_checklist",
+                        can_generate=False,
+                        prd_exists=False,
+                        exit_code=2
+                    ))
+                else:
+                    Logger.error("No QA checklist found.")
+                    Logger.error("No PRD available to generate checklist. Run planner first.")
+                return 2
+
+        # Load the checklist
+        try:
+            checklist_manager.load(auto_create=False)
+        except (QAChecklistError, QAChecklistCorruptedError) as e:
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(
+                    f"Failed to load QA checklist: {e}",
+                    "error",
+                    status="load_error",
+                    exit_code=1
+                ))
+            else:
+                Logger.error(f"Failed to load QA checklist: {e}")
+            return 1
+
+        requirements = checklist_manager.get_all_requirements()
+
+        if not requirements:
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(
+                    "QA checklist is empty",
+                    "warn",
+                    status="empty",
+                    total=0,
+                    passed=0,
+                    failed=0,
+                    pending=0,
+                    percentage=0,
+                    exit_code=1
+                ))
+            else:
+                Logger.warning("QA checklist is empty.")
+            return 1
+
+        # Calculate statistics
+        total = len(requirements)
+        passed = sum(1 for r in requirements if r.status == "passed")
+        failed = sum(1 for r in requirements if r.status == "failed")
+        pending = sum(1 for r in requirements if r.status == "pending")
+        percentage = round((passed / total) * 100) if total > 0 else 0
+
+        # Prepare output data
+        if Logger.json_output or Logger.ndjson_output:
+            # JSON output mode
+            requirements_data = []
+            for req in requirements:
+                req_data = {
+                    "id": req.id,
+                    "description": req.description,
+                    "status": req.status,
+                    "linkedTasks": req.linkedTasks
+                }
+                if Logger.verbosity > 0:
+                    req_data["lastChecked"] = req.lastChecked
+                requirements_data.append(req_data)
+
+            output_data = {
+                "requirements": requirements_data,
+                "summary": {
+                    "total": total,
+                    "passed": passed,
+                    "failed": failed,
+                    "pending": pending,
+                    "percentage": percentage
+                },
+                "status": "complete" if passed == total else "incomplete",
+                "exit_code": 0 if passed == total else 1
+            }
+            print(json.dumps(output_data, indent=2))
+        else:
+            # Human-readable output
+            Logger.info("QA Checklist Status", "CYAN")
+            Logger.info("=" * 60)
+
+            # Status symbols and colors
+            status_display = {
+                "passed": ("✅", "GREEN"),
+                "failed": ("❌", "RED"),
+                "pending": ("⏳", "YELLOW")
+            }
+
+            for req in requirements:
+                symbol, color = status_display.get(req.status, ("?", "WHITE"))
+                status_line = f"{symbol} [{req.status.upper():7}] {req.id}: {req.description}"
+                Logger.info(status_line, color)
+
+                # Show linked tasks if any
+                if req.linkedTasks:
+                    tasks_str = ", ".join(req.linkedTasks)
+                    Logger.info(f"   └─ Tasks: {tasks_str}")
+
+                # Show lastChecked in verbose mode
+                if Logger.verbosity > 0 and req.lastChecked:
+                    Logger.info(f"   └─ Last checked: {req.lastChecked}")
+
+            Logger.info("=" * 60)
+            Logger.info(f"Summary: {passed} of {total} requirements fulfilled ({percentage}%)",
+                       "GREEN" if passed == total else "YELLOW")
+
+            if failed > 0:
+                Logger.info(f"  Failed: {failed}", "RED")
+            if pending > 0:
+                Logger.info(f"  Pending: {pending}", "YELLOW")
+
+        return 0 if passed == total else 1
+
     def _validate_memory_on_startup(self) -> None:
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
             return
@@ -3945,7 +4466,7 @@ class RalphOrchestrator:
         Start the Ralph orchestrator.
 
         Args:
-            phase: Which phase to run ("architect", "planner", "execute", or "all")
+            phase: Which phase to run ("architect", "planner", "execute", "all", or "qa-status")
             accept_all: If True, skip user confirmation prompts
 
         Respects the following flags:
@@ -3953,6 +4474,11 @@ class RalphOrchestrator:
         - --prd-out: Export PRD to specified file and continue
         - --status-check: Check PRD status and exit with appropriate code
         """
+        # Handle qa-status command: show QA checklist status and exit
+        if phase == "qa-status":
+            exit_code = self._run_qa_status()
+            sys.exit(exit_code)
+
         # Handle --status-check flag: check PRD status and exit
         if self._status_check:
             exit_code = self._check_prd_status()
@@ -3997,7 +4523,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ralph - Autonomous Software Development Agent",
         epilog="Examples: ralph | ralph architect | ralph -y execute | ralph -vvv --no-emoji execute",
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?", help="Phase to run")
+    parser.add_argument("phase", choices=["architect", "planner", "execute", "all", "qa-status"], default="all", nargs="?", help="Phase to run")
     parser.add_argument("--version", action="version", version=f"Ralph {get_version()}")
     parser.add_argument("--accept-all", "-y", action="store_true", help="Skip prompts")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v, -vv, -vvv)")
@@ -4071,6 +4597,7 @@ def main() -> None:
     parser.add_argument("--no-qa-review", action="store_true", help="Disable QA review (overrides --enhance-all)")
     parser.add_argument("--qa-strict", action="store_true", help="Fail tasks when QA review finds critical issues (requires --qa-review)")
     parser.add_argument("--qa-path", type=str, metavar="PATH", help="Path to review for standalone QA workflow (requires --qa-review). If not specified with --qa-review, reviews the entire codebase")
+    parser.add_argument("--qa-checklist", type=str, metavar="FILE", help="Path to custom QA checklist JSON file (default: .ralph/qa-checklist.json)")
     # Enhancement combination flag
     parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd, --qa-review). Individual --no-* flags can override specific features.")
     args = parser.parse_args()
@@ -4127,6 +4654,32 @@ def main() -> None:
     if args.qa_path and args.phase != "all":
         Logger.error(f"--qa-path cannot be combined with phase '{args.phase}'. Standalone QA workflow runs independently of task phases.")
         sys.exit(1)
+
+    # Validate --qa-checklist file exists and is valid JSON
+    qa_checklist_path = None
+    if args.qa_checklist:
+        # Resolve relative paths from current working directory
+        qa_checklist_path = Path(args.qa_checklist)
+        if not qa_checklist_path.is_absolute():
+            qa_checklist_path = Path.cwd() / qa_checklist_path
+        qa_checklist_path = qa_checklist_path.resolve()
+
+        if not qa_checklist_path.exists():
+            Logger.error(f"QA checklist file not found: {qa_checklist_path}")
+            sys.exit(1)
+
+        # Validate JSON format
+        try:
+            content = qa_checklist_path.read_text(encoding='utf-8')
+            json.loads(content)
+        except json.JSONDecodeError as e:
+            Logger.error(f"Invalid JSON in QA checklist file: {qa_checklist_path}")
+            Logger.error(f"  Parse error: {e.msg} at line {e.lineno}, column {e.colno}")
+            sys.exit(1)
+        except OSError as e:
+            Logger.error(f"Cannot read QA checklist file: {qa_checklist_path}")
+            Logger.error(f"  Error: {e}")
+            sys.exit(1)
 
     # Handle --enhance-all flag: apply enhancement defaults with explicit overrides
     # --enhance-all enables: --enhance-intent, --revise-prd, --qa-review
@@ -4210,7 +4763,8 @@ def main() -> None:
         revise_prd=revise_prd,
         qa_review=qa_review,
         qa_strict=args.qa_strict,
-        qa_path=args.qa_path
+        qa_path=args.qa_path,
+        qa_checklist=qa_checklist_path
     ).start(phase=args.phase, accept_all=args.accept_all)
 
 if __name__ == "__main__":

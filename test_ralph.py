@@ -17,10 +17,15 @@ from agents.claude import ClaudeAgent
 from agents.copilot import GithubAgent
 from ralph import (
     Config, CONF, JsonUtils, Logger, MemoryManager, PRDManager, PromptFormatter,
+    QAChecklistCorruptedError, QAChecklistError, QAChecklistManager, QARequirement,
     QAFinding, QAFindingsAnalyzer, QAFindingType,
     RalphOrchestrator, Shell, TemplateManager, get_version, main,
 )
-from hooks import Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook
+from hooks import (
+    Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook,
+    QAChecklistAgent, FinalQAValidator, FinalQAReport,
+    UnfilledRequirementsHandler, UnfilledRequirementsResult, SupplementaryPRDGenerator, UserChoice
+)
 
 
 # ==============================================================================
@@ -31,7 +36,7 @@ from hooks import Event, EventType, HookManager, PythonHook, ExecutableHook, Fun
 class TempConfigTestCase(unittest.TestCase):
     """Base test class providing temporary directory and CONF management."""
 
-    config_attrs = ('BASE_DIR', 'ROOT_DIR', 'MEMORY_DIR', 'ARCHIVE_DIR', 'PRD_FILE')
+    config_attrs = ('BASE_DIR', 'ROOT_DIR', 'MEMORY_DIR', 'ARCHIVE_DIR', 'PRD_FILE', 'QA_CHECKLIST_FILE')
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -42,6 +47,7 @@ class TempConfigTestCase(unittest.TestCase):
         CONF.MEMORY_DIR = self.temp_path / ".ralph" / "memory"
         CONF.ARCHIVE_DIR = self.temp_path / ".ralph" / "archive"
         CONF.PRD_FILE = self.temp_path / ".ralph" / "prd.json"
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
 
     def tearDown(self):
         for attr, value in self._original_conf.items():
@@ -567,6 +573,683 @@ class TestPRDManager(TempConfigTestCase):
 
 
 # ==============================================================================
+# QA CHECKLIST MANAGER TESTS
+# ==============================================================================
+
+
+class TestQARequirement(unittest.TestCase):
+    """Tests for QARequirement dataclass."""
+
+    def test_default_values(self):
+        req = QARequirement(id="REQ-001", description="Test requirement")
+        self.assertEqual(req.id, "REQ-001")
+        self.assertEqual(req.description, "Test requirement")
+        self.assertEqual(req.status, "pending")
+        self.assertIsNone(req.lastChecked)
+        self.assertEqual(req.linkedTasks, [])
+
+    def test_to_dict(self):
+        req = QARequirement(
+            id="REQ-001",
+            description="Test requirement",
+            status="passed",
+            lastChecked="2024-01-01T00:00:00",
+            linkedTasks=["TASK-001", "TASK-002"]
+        )
+        data = req.to_dict()
+        self.assertEqual(data["id"], "REQ-001")
+        self.assertEqual(data["description"], "Test requirement")
+        self.assertEqual(data["status"], "passed")
+        self.assertEqual(data["lastChecked"], "2024-01-01T00:00:00")
+        self.assertEqual(data["linkedTasks"], ["TASK-001", "TASK-002"])
+
+    def test_from_dict_with_all_fields(self):
+        data = {
+            "id": "REQ-001",
+            "description": "Test requirement",
+            "status": "failed",
+            "lastChecked": "2024-01-01T00:00:00",
+            "linkedTasks": ["TASK-001"]
+        }
+        req = QARequirement.from_dict(data)
+        self.assertEqual(req.id, "REQ-001")
+        self.assertEqual(req.description, "Test requirement")
+        self.assertEqual(req.status, "failed")
+        self.assertEqual(req.lastChecked, "2024-01-01T00:00:00")
+        self.assertEqual(req.linkedTasks, ["TASK-001"])
+
+    def test_from_dict_with_minimal_fields(self):
+        data = {"id": "REQ-001", "description": "Test requirement"}
+        req = QARequirement.from_dict(data)
+        self.assertEqual(req.id, "REQ-001")
+        self.assertEqual(req.description, "Test requirement")
+        self.assertEqual(req.status, "pending")
+        self.assertIsNone(req.lastChecked)
+        self.assertEqual(req.linkedTasks, [])
+
+    def test_from_dict_missing_id_raises(self):
+        data = {"description": "Test requirement"}
+        with self.assertRaises(KeyError):
+            QARequirement.from_dict(data)
+
+    def test_from_dict_missing_description_raises(self):
+        data = {"id": "REQ-001"}
+        with self.assertRaises(KeyError):
+            QARequirement.from_dict(data)
+
+
+class TestQAChecklistManager(TempConfigTestCase):
+    """Tests for QAChecklistManager class."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_manager = PRDManager(CONF.PRD_FILE)
+        self.manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+
+    def _write_checklist(self, data):
+        """Helper to write checklist JSON to disk."""
+        self.checklist_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def _write_prd(self, data):
+        """Helper to write PRD JSON to disk."""
+        CONF.PRD_FILE.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    # --- Basic existence tests ---
+
+    def test_exists_false_when_no_file(self):
+        self.assertFalse(self.manager.exists())
+
+    def test_exists_true_when_file_present(self):
+        self._write_checklist({"requirements": []})
+        self.assertTrue(self.manager.exists())
+
+    def test_path_property(self):
+        self.assertEqual(self.manager.path, self.checklist_path)
+
+    # --- Load tests ---
+
+    def test_load_parses_valid_checklist(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Requirement 1", "status": "pending"},
+                {"id": "REQ-002", "description": "Requirement 2", "status": "passed", "linkedTasks": ["TASK-001"]}
+            ]
+        }
+        self._write_checklist(checklist)
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 2)
+        self.assertIn("REQ-001", requirements)
+        self.assertIn("REQ-002", requirements)
+        self.assertEqual(requirements["REQ-001"].status, "pending")
+        self.assertEqual(requirements["REQ-002"].linkedTasks, ["TASK-001"])
+
+    def test_load_raises_on_missing_file_without_auto_create(self):
+        manager = QAChecklistManager(self.checklist_path, prd_manager=None)
+        with self.assertRaises(FileNotFoundError):
+            manager.load(auto_create=False)
+
+    def test_load_auto_creates_from_prd_when_missing(self):
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {
+                    "id": "TASK-001",
+                    "acceptanceCriteria": [
+                        "First acceptance criterion",
+                        "Second acceptance criterion"
+                    ]
+                },
+                {
+                    "id": "TASK-002",
+                    "acceptanceCriteria": [
+                        "Third acceptance criterion"
+                    ]
+                }
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 3)
+        self.assertIn("TASK-001-AC01", requirements)
+        self.assertIn("TASK-001-AC02", requirements)
+        self.assertIn("TASK-002-AC01", requirements)
+        self.assertEqual(requirements["TASK-001-AC01"].description, "First acceptance criterion")
+        self.assertEqual(requirements["TASK-002-AC01"].description, "Third acceptance criterion")
+        # Verify file was created
+        self.assertTrue(self.checklist_path.exists())
+
+    def test_load_no_auto_create_without_prd_manager(self):
+        manager = QAChecklistManager(self.checklist_path, prd_manager=None)
+        with self.assertRaises(FileNotFoundError):
+            manager.load(auto_create=True)
+
+    # --- Corruption detection and recovery tests ---
+
+    def test_load_handles_invalid_json(self):
+        self.checklist_path.write_text('not valid json {', encoding='utf-8')
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 1)
+        # Verify backup was created
+        backup_files = list(self.checklist_path.parent.glob("*.corrupted.*.json"))
+        self.assertEqual(len(backup_files), 1)
+
+    def test_load_handles_missing_requirements_field(self):
+        self._write_checklist({"invalid": "structure"})
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 1)
+        backup_files = list(self.checklist_path.parent.glob("*.corrupted.*.json"))
+        self.assertEqual(len(backup_files), 1)
+
+    def test_load_handles_requirements_not_a_list(self):
+        self._write_checklist({"requirements": "not a list"})
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertEqual(len(requirements), 1)
+
+    def test_load_handles_requirement_missing_id(self):
+        self._write_checklist({
+            "requirements": [{"description": "Missing id"}]
+        })
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        # Should regenerate from PRD
+        self.assertIn("TASK-001-AC01", requirements)
+
+    def test_load_handles_requirement_missing_description(self):
+        self._write_checklist({
+            "requirements": [{"id": "REQ-001"}]
+        })
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertIn("TASK-001-AC01", requirements)
+
+    def test_load_handles_invalid_status(self):
+        self._write_checklist({
+            "requirements": [{"id": "REQ-001", "description": "Test", "status": "invalid_status"}]
+        })
+        prd_data = {
+            "id": "PRD-001",
+            "userStories": [
+                {"id": "TASK-001", "acceptanceCriteria": ["Criterion 1"]}
+            ]
+        }
+        self._write_prd(prd_data)
+
+        requirements = self.manager.load()
+        self.assertIn("TASK-001-AC01", requirements)
+
+    def test_load_corrupted_raises_when_no_prd(self):
+        self.checklist_path.write_text('corrupted', encoding='utf-8')
+        manager = QAChecklistManager(self.checklist_path, prd_manager=None)
+        with self.assertRaises(QAChecklistCorruptedError):
+            manager.load()
+
+    # --- Save tests ---
+
+    def test_save_creates_file(self):
+        self._write_prd({"id": "PRD-001", "userStories": []})
+        self.manager.load()
+        self.manager._requirements["NEW-001"] = QARequirement(
+            id="NEW-001", description="New requirement"
+        )
+        self.manager.save()
+
+        content = json.loads(self.checklist_path.read_text(encoding='utf-8'))
+        self.assertEqual(len(content["requirements"]), 1)
+        self.assertEqual(content["requirements"][0]["id"], "NEW-001")
+
+    def test_save_creates_parent_directories(self):
+        nested_path = self.temp_path / "deep" / "nested" / "qa-checklist.json"
+        manager = QAChecklistManager(nested_path, self.prd_manager)
+        manager._requirements = {"REQ-001": QARequirement(id="REQ-001", description="Test")}
+        manager.save()
+        self.assertTrue(nested_path.exists())
+
+    # --- CRUD operation tests ---
+
+    def test_get_requirement_returns_existing(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test requirement"}
+            ]
+        }
+        self._write_checklist(checklist)
+        req = self.manager.get_requirement("REQ-001")
+        self.assertIsNotNone(req)
+        self.assertEqual(req.id, "REQ-001")
+
+    def test_get_requirement_returns_none_for_missing(self):
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+        req = self.manager.get_requirement("NONEXISTENT")
+        self.assertIsNone(req)
+
+    def test_get_all_requirements(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "First"},
+                {"id": "REQ-002", "description": "Second"}
+            ]
+        }
+        self._write_checklist(checklist)
+        all_reqs = self.manager.get_all_requirements()
+        self.assertEqual(len(all_reqs), 2)
+
+    def test_update_requirement_status(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test", "status": "pending"}
+            ]
+        }
+        self._write_checklist(checklist)
+
+        result = self.manager.update_requirement("REQ-001", status="passed")
+        self.assertTrue(result)
+
+        req = self.manager.get_requirement("REQ-001")
+        self.assertEqual(req.status, "passed")
+        self.assertIsNotNone(req.lastChecked)
+
+    def test_update_requirement_links_task(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test", "linkedTasks": []}
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.manager.update_requirement("REQ-001", linked_task="TASK-001")
+        req = self.manager.get_requirement("REQ-001")
+        self.assertIn("TASK-001", req.linkedTasks)
+
+    def test_update_requirement_does_not_duplicate_task(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test", "linkedTasks": ["TASK-001"]}
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.manager.update_requirement("REQ-001", linked_task="TASK-001")
+        req = self.manager.get_requirement("REQ-001")
+        self.assertEqual(req.linkedTasks.count("TASK-001"), 1)
+
+    def test_update_requirement_returns_false_for_missing(self):
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+        result = self.manager.update_requirement("NONEXISTENT", status="passed")
+        self.assertFalse(result)
+
+    def test_update_requirement_invalid_status_raises(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test"}
+            ]
+        }
+        self._write_checklist(checklist)
+        with self.assertRaises(ValueError):
+            self.manager.update_requirement("REQ-001", status="invalid")
+
+    def test_update_requirement_persists_to_disk(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Test", "status": "pending"}
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.manager.update_requirement("REQ-001", status="passed")
+
+        # Reload from disk
+        fresh_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+        req = fresh_manager.get_requirement("REQ-001")
+        self.assertEqual(req.status, "passed")
+
+    def test_add_requirement(self):
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+        self.manager.load()
+
+        new_req = QARequirement(id="REQ-001", description="New requirement")
+        self.manager.add_requirement(new_req)
+
+        req = self.manager.get_requirement("REQ-001")
+        self.assertIsNotNone(req)
+        self.assertEqual(req.description, "New requirement")
+
+    def test_add_requirement_duplicate_raises(self):
+        checklist = {
+            "requirements": [
+                {"id": "REQ-001", "description": "Existing"}
+            ]
+        }
+        self._write_checklist(checklist)
+        self.manager.load()
+
+        new_req = QARequirement(id="REQ-001", description="Duplicate")
+        with self.assertRaises(ValueError):
+            self.manager.add_requirement(new_req)
+
+    # --- Incremental update tests ---
+
+    def test_incremental_update_preserves_history(self):
+        """Verify updates don't lose previous validation history."""
+        checklist = {
+            "requirements": [
+                {
+                    "id": "REQ-001",
+                    "description": "Test",
+                    "status": "passed",
+                    "lastChecked": "2024-01-01T00:00:00",
+                    "linkedTasks": ["TASK-001"]
+                },
+                {
+                    "id": "REQ-002",
+                    "description": "Another",
+                    "status": "pending",
+                    "linkedTasks": []
+                }
+            ]
+        }
+        self._write_checklist(checklist)
+
+        # Update only REQ-002
+        self.manager.update_requirement("REQ-002", status="passed", linked_task="TASK-002")
+
+        # Verify REQ-001 is unchanged
+        req1 = self.manager.get_requirement("REQ-001")
+        self.assertEqual(req1.status, "passed")
+        self.assertEqual(req1.linkedTasks, ["TASK-001"])
+        self.assertEqual(req1.lastChecked, "2024-01-01T00:00:00")
+
+        # Verify REQ-002 is updated
+        req2 = self.manager.get_requirement("REQ-002")
+        self.assertEqual(req2.status, "passed")
+        self.assertIn("TASK-002", req2.linkedTasks)
+
+
+# ==============================================================================
+# QA CHECKLIST AGENT TESTS
+# ==============================================================================
+
+
+class TestQAChecklistAgent(TempConfigTestCase):
+    """Tests for QAChecklistAgent class."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_manager = MagicMock()
+        self.prd_manager.exists.return_value = True
+        self.manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+        self.hooks_dir = self.temp_path / ".ralph" / "hooks"
+        self.hooks_dir.mkdir(parents=True, exist_ok=True)
+        self.hook_manager = HookManager(self.hooks_dir)
+        self.agent = QAChecklistAgent(self.manager)
+
+    def _write_checklist(self, data):
+        """Helper to write checklist JSON to disk."""
+        self.checklist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.checklist_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def test_register_succeeds(self):
+        """Test QA agent registration with HookManager."""
+        result = self.agent.register(self.hook_manager)
+        self.assertTrue(result)
+        hooks = self.hook_manager.get_all_hooks()
+        hook_names = [h.name for h in hooks]
+        self.assertIn("qa_checklist_agent", hook_names)
+
+    def test_register_fails_if_already_registered(self):
+        """Test that double registration fails."""
+        self.agent.register(self.hook_manager)
+        result = self.agent.register(self.hook_manager)
+        self.assertFalse(result)
+
+    def test_unregister_succeeds(self):
+        """Test QA agent unregistration."""
+        self.agent.register(self.hook_manager)
+        result = self.agent.unregister(self.hook_manager)
+        self.assertTrue(result)
+        hooks = self.hook_manager.get_all_hooks()
+        hook_names = [h.name for h in hooks]
+        self.assertNotIn("qa_checklist_agent", hook_names)
+
+    def test_unregister_fails_if_not_registered(self):
+        """Test unregistration without registration fails."""
+        result = self.agent.unregister(self.hook_manager)
+        self.assertFalse(result)
+
+    def test_on_task_success_updates_requirements(self):
+        """Test that TASK_SUCCESS event updates requirements for the task."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Test criteria 1", "status": "pending"},
+                {"id": "TASK-001-AC02", "description": "Test criteria 2", "status": "pending"},
+                {"id": "TASK-002-AC01", "description": "Other task", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001", task_description="Test task")
+        self.hook_manager.emit(event)
+
+        # Verify TASK-001 requirements are updated
+        req1 = self.manager.get_requirement("TASK-001-AC01")
+        self.assertEqual(req1.status, "passed")
+        self.assertIn("TASK-001", req1.linkedTasks)
+        self.assertIsNotNone(req1.lastChecked)
+
+        req2 = self.manager.get_requirement("TASK-001-AC02")
+        self.assertEqual(req2.status, "passed")
+        self.assertIn("TASK-001", req2.linkedTasks)
+
+        # Verify TASK-002 requirement is unchanged
+        req3 = self.manager.get_requirement("TASK-002-AC01")
+        self.assertEqual(req3.status, "pending")
+        self.assertEqual(req3.linkedTasks, [])
+
+    def test_on_task_success_no_requirements_does_not_error(self):
+        """Test that task with no matching requirements doesn't error."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Test criteria", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-999", task_description="Unknown task")
+
+        # Should not raise
+        self.hook_manager.emit(event)
+
+        # Original requirement unchanged
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertEqual(req.status, "pending")
+
+    def test_on_task_success_without_task_id_does_not_error(self):
+        """Test that event without task_id is handled gracefully."""
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id=None)
+
+        # Should not raise
+        self.hook_manager.emit(event)
+
+    def test_checklist_manager_error_does_not_block(self):
+        """Test that checklist errors don't block task completion."""
+        # Create agent with a mock manager that raises
+        mock_manager = MagicMock()
+        mock_manager.get_all_requirements.side_effect = Exception("DB Error")
+        agent = QAChecklistAgent(mock_manager)
+        agent.register(self.hook_manager)
+
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        # Should not raise, even though manager errors
+        self.hook_manager.emit(event)
+
+    def test_agent_logs_warnings_on_error(self):
+        """Test that agent logs warnings when errors occur."""
+        mock_logger = MagicMock()
+        mock_manager = MagicMock()
+        mock_manager.get_all_requirements.side_effect = Exception("Test error")
+
+        agent = QAChecklistAgent(mock_manager, logger=mock_logger)
+        agent.register(self.hook_manager)
+
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        mock_logger.warning.assert_called()
+
+    def test_requirement_status_set_to_passed_on_success(self):
+        """Test that requirements are marked as passed on TASK_SUCCESS."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001", task_description="Completed task")
+        self.hook_manager.emit(event)
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertEqual(req.status, "passed")
+
+    def test_linked_task_added_to_requirement(self):
+        """Test that task ID is added to linkedTasks array."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria", "status": "pending", "linkedTasks": []},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertIn("TASK-001", req.linkedTasks)
+
+    def test_linked_task_not_duplicated(self):
+        """Test that task ID is not added twice to linkedTasks."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria", "status": "passed", "linkedTasks": ["TASK-001"]},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertEqual(req.linkedTasks.count("TASK-001"), 1)
+
+    def test_last_checked_timestamp_updated(self):
+        """Test that lastChecked timestamp is updated."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria", "status": "pending", "lastChecked": None},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertIsNotNone(req.lastChecked)
+
+    def test_get_requirements_for_task_finds_matching(self):
+        """Test _get_requirements_for_task finds correct requirements."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "pending"},
+                {"id": "TASK-001-AC02", "description": "Criteria 2", "status": "pending"},
+                {"id": "TASK-002-AC01", "description": "Other", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+        self.manager.load()
+
+        reqs = self.agent._get_requirements_for_task("TASK-001")
+        self.assertEqual(len(reqs), 2)
+        req_ids = [r[0] for r in reqs]
+        self.assertIn("TASK-001-AC01", req_ids)
+        self.assertIn("TASK-001-AC02", req_ids)
+        self.assertNotIn("TASK-002-AC01", req_ids)
+
+    def test_evaluate_requirement_returns_passed(self):
+        """Test _evaluate_requirement returns passed status."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Test criteria", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+        self.manager.load()
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        status, reasoning = self.agent._evaluate_requirement(req, "TASK-001", "Test task")
+
+        self.assertEqual(status, "passed")
+        self.assertIn("TASK-001", reasoning)
+        self.assertIn("successfully", reasoning.lower())
+
+
+# ==============================================================================
 # MEMORY MANAGER TESTS
 # ==============================================================================
 
@@ -1082,8 +1765,8 @@ class TestEvent(unittest.TestCase):
     def test_event_types_exist(self):
         for name in self.EVENTS:
             self.assertTrue(hasattr(EventType, name))
-        # 20 original + 11 IssueWatcher events + 3 Intent Enhancement events + 3 PRD Revision events + 4 QA Review events = 41
-        self.assertEqual(len(EventType), 41)
+        # 20 original + 11 IssueWatcher events + 3 Intent Enhancement events + 3 PRD Revision events + 4 QA Review events + 2 PRD completion events = 43
+        self.assertEqual(len(EventType), 43)
 
     def test_event_creation_serialization(self):
         event = Event(EventType.TASK_SUCCESS, phase="execute", task_id="T-001", metadata={"k": "v"})
@@ -5549,6 +6232,1637 @@ class TestBatchMain(IssueWatcherTestCase):
 
         call_kwargs = mock_batch.call_args[1]
         self.assertEqual(call_kwargs["agent_name"], "copilot")
+
+
+# ==============================================================================
+# FINAL QA VALIDATOR TESTS
+# ==============================================================================
+
+
+class TestFinalQAValidator(TempConfigTestCase):
+    """Tests for FinalQAValidator class."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_path = self.temp_path / ".ralph" / "prd.json"
+        self.prd_manager = PRDManager(self.prd_path)
+        self.checklist_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+        self.hooks_dir = self.temp_path / ".ralph" / "hooks"
+        self.hooks_dir.mkdir(parents=True, exist_ok=True)
+        self.hook_manager = HookManager(self.hooks_dir)
+        self.validator = FinalQAValidator(
+            self.checklist_manager,
+            self.prd_manager,
+            self.hook_manager
+        )
+
+    def _write_prd(self, data):
+        """Helper to write PRD JSON to disk."""
+        self.prd_path.parent.mkdir(parents=True, exist_ok=True)
+        self.prd_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def _write_checklist(self, data):
+        """Helper to write checklist JSON to disk."""
+        self.checklist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.checklist_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def test_validate_all_passed(self):
+        """Test validation when all requirements pass."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+                {"id": "TASK-001-AC02", "description": "Criteria 2", "status": "passed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        report = self.validator.validate()
+
+        self.assertTrue(report.all_passed)
+        self.assertEqual(report.total_requirements, 2)
+        self.assertEqual(report.passed, 2)
+        self.assertEqual(report.failed, 0)
+        self.assertEqual(report.coverage_percentage, 100.0)
+        self.assertEqual(report.failed_requirements, [])
+
+    def test_validate_some_failed(self):
+        """Test validation when some requirements fail."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+                {"id": "TASK-001-AC02", "description": "Criteria 2", "status": "failed"},
+                {"id": "TASK-001-AC03", "description": "Criteria 3", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        report = self.validator.validate()
+
+        self.assertFalse(report.all_passed)
+        self.assertEqual(report.total_requirements, 3)
+        self.assertEqual(report.passed, 1)
+        self.assertEqual(report.failed, 2)
+        self.assertAlmostEqual(report.coverage_percentage, 33.33, places=1)
+        self.assertEqual(len(report.failed_requirements), 2)
+        failed_ids = [r[0] for r in report.failed_requirements]
+        self.assertIn("TASK-001-AC02", failed_ids)
+        self.assertIn("TASK-001-AC03", failed_ids)
+
+    def test_validate_emits_prd_complete_event(self):
+        """Test that PRD_COMPLETE event is emitted when all pass."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        events_received = []
+        def capture_event(event):
+            events_received.append(event)
+            return None
+
+        self.hook_manager.register_hook(
+            name="test_capture",
+            handler=capture_event,
+            events=["PRD_COMPLETE"]
+        )
+
+        self.validator.validate()
+
+        prd_complete_events = [e for e in events_received if e.event_type == EventType.PRD_COMPLETE]
+        self.assertEqual(len(prd_complete_events), 1)
+        self.assertIn("report", prd_complete_events[0].metadata)
+
+    def test_validate_emits_prd_incomplete_event(self):
+        """Test that PRD_INCOMPLETE event is emitted when some fail."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "failed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        events_received = []
+        def capture_event(event):
+            events_received.append(event)
+            return None
+
+        self.hook_manager.register_hook(
+            name="test_capture",
+            handler=capture_event,
+            events=["PRD_INCOMPLETE"]
+        )
+
+        self.validator.validate()
+
+        prd_incomplete_events = [e for e in events_received if e.event_type == EventType.PRD_INCOMPLETE]
+        self.assertEqual(len(prd_incomplete_events), 1)
+        self.assertIn("failed_requirements", prd_incomplete_events[0].metadata)
+
+    def test_edge_case_checklist_never_created(self):
+        """Test validation when checklist was never created - generates and evaluates in one pass."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {
+                    "id": "TASK-001",
+                    "description": "Task 1",
+                    "status": "completed",
+                    "acceptanceCriteria": ["Criteria 1", "Criteria 2"]
+                }
+            ]
+        }
+        self._write_prd(prd)
+        # No checklist file exists
+
+        report = self.validator.validate()
+
+        # Checklist should be generated and all requirements should be pending (failed)
+        self.assertFalse(report.all_passed)
+        self.assertEqual(report.total_requirements, 2)
+        self.assertEqual(report.passed, 0)
+        self.assertEqual(report.failed, 2)
+
+    def test_edge_case_empty_requirements(self):
+        """Test validation with no requirements in checklist."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": []
+        }
+        self._write_prd(prd)
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+
+        report = self.validator.validate()
+
+        self.assertTrue(report.all_passed)
+        self.assertEqual(report.total_requirements, 0)
+        self.assertEqual(report.coverage_percentage, 100.0)
+
+    def test_catastrophic_failure_preserves_partial_results(self):
+        """Test that catastrophic failure preserves partial results."""
+        mock_checklist_manager = MagicMock()
+        mock_checklist_manager.exists.return_value = True
+        mock_checklist_manager.get_all_requirements.side_effect = Exception("Database crash")
+
+        mock_prd_manager = MagicMock()
+        validator = FinalQAValidator(mock_checklist_manager, mock_prd_manager)
+
+        report = validator.validate()
+
+        self.assertFalse(report.all_passed)
+        self.assertIsNotNone(report.error)
+        self.assertIn("Database crash", report.error)
+        self.assertIsNotNone(report.partial_results)
+
+    def test_are_all_tasks_completed_true(self):
+        """Test _are_all_tasks_completed returns True when all complete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"},
+                {"id": "TASK-002", "description": "Task 2", "status": "completed"},
+            ]
+        }
+        self._write_prd(prd)
+
+        self.assertTrue(self.validator._are_all_tasks_completed())
+
+    def test_are_all_tasks_completed_false_pending(self):
+        """Test _are_all_tasks_completed returns False with pending tasks."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"},
+                {"id": "TASK-002", "description": "Task 2", "status": "pending"},
+            ]
+        }
+        self._write_prd(prd)
+
+        self.assertFalse(self.validator._are_all_tasks_completed())
+
+    def test_are_all_tasks_completed_false_no_prd(self):
+        """Test _are_all_tasks_completed returns False when no PRD."""
+        self.assertFalse(self.validator._are_all_tasks_completed())
+
+    def test_check_and_validate_triggers_when_all_complete(self):
+        """Test check_and_validate triggers validation when all tasks complete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        report = self.validator.check_and_validate()
+
+        self.assertIsNotNone(report)
+        self.assertTrue(report.all_passed)
+
+    def test_check_and_validate_returns_none_when_incomplete(self):
+        """Test check_and_validate returns None when tasks not complete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "pending"}
+            ]
+        }
+        self._write_prd(prd)
+
+        report = self.validator.check_and_validate()
+
+        self.assertIsNone(report)
+
+    def test_register_succeeds(self):
+        """Test validator registration with HookManager."""
+        result = self.validator.register(self.hook_manager)
+        self.assertTrue(result)
+        hooks = self.hook_manager.get_all_hooks()
+        hook_names = [h.name for h in hooks]
+        self.assertIn("final_qa_validator", hook_names)
+
+    def test_register_fails_if_already_registered(self):
+        """Test that double registration fails."""
+        self.validator.register(self.hook_manager)
+        result = self.validator.register(self.hook_manager)
+        self.assertFalse(result)
+
+    def test_unregister_succeeds(self):
+        """Test validator unregistration."""
+        self.validator.register(self.hook_manager)
+        result = self.validator.unregister(self.hook_manager)
+        self.assertTrue(result)
+        hooks = self.hook_manager.get_all_hooks()
+        hook_names = [h.name for h in hooks]
+        self.assertNotIn("final_qa_validator", hook_names)
+
+    def test_unregister_fails_if_not_registered(self):
+        """Test unregistration without registration fails."""
+        result = self.validator.unregister(self.hook_manager)
+        self.assertFalse(result)
+
+    def test_on_task_success_triggers_validation_when_all_complete(self):
+        """Test that TASK_SUCCESS triggers validation when all tasks complete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        events_received = []
+        def capture_event(event):
+            events_received.append(event)
+            return None
+
+        self.hook_manager.register_hook(
+            name="test_capture",
+            handler=capture_event,
+            events=["PRD_COMPLETE"]
+        )
+
+        self.validator.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        prd_complete_events = [e for e in events_received if e.event_type == EventType.PRD_COMPLETE]
+        self.assertEqual(len(prd_complete_events), 1)
+
+    def test_on_task_success_does_not_trigger_when_incomplete(self):
+        """Test that TASK_SUCCESS does not trigger validation when tasks incomplete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"},
+                {"id": "TASK-002", "description": "Task 2", "status": "pending"},
+            ]
+        }
+        self._write_prd(prd)
+
+        events_received = []
+        def capture_event(event):
+            events_received.append(event)
+            return None
+
+        self.hook_manager.register_hook(
+            name="test_capture",
+            handler=capture_event,
+            events=["PRD_COMPLETE", "PRD_INCOMPLETE"]
+        )
+
+        self.validator.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        prd_events = [e for e in events_received if e.event_type in (EventType.PRD_COMPLETE, EventType.PRD_INCOMPLETE)]
+        self.assertEqual(len(prd_events), 0)
+
+    def test_report_to_dict(self):
+        """Test FinalQAReport.to_dict serialization."""
+        report = FinalQAReport(
+            total_requirements=5,
+            passed=3,
+            failed=2,
+            coverage_percentage=60.0,
+            failed_requirements=[("REQ-001", "Desc 1"), ("REQ-002", "Desc 2")],
+            all_passed=False,
+            error=None,
+            partial_results=None
+        )
+
+        d = report.to_dict()
+
+        self.assertEqual(d["total_requirements"], 5)
+        self.assertEqual(d["passed"], 3)
+        self.assertEqual(d["failed"], 2)
+        self.assertEqual(d["coverage_percentage"], 60.0)
+        self.assertEqual(len(d["failed_requirements"]), 2)
+        self.assertEqual(d["failed_requirements"][0]["id"], "REQ-001")
+        self.assertFalse(d["all_passed"])
+
+    def test_validator_logs_on_error(self):
+        """Test that validator logs warnings on error."""
+        mock_logger = MagicMock()
+        mock_checklist_manager = MagicMock()
+        mock_checklist_manager.exists.return_value = True
+        mock_checklist_manager.get_all_requirements.side_effect = Exception("Test error")
+
+        validator = FinalQAValidator(
+            mock_checklist_manager,
+            MagicMock(),
+            logger=mock_logger
+        )
+        validator.validate()
+
+        mock_logger.error.assert_called()
+
+
+class TestFinalQAValidatorEventTypes(unittest.TestCase):
+    """Tests for PRD_COMPLETE and PRD_INCOMPLETE event types."""
+
+    def test_prd_complete_event_exists(self):
+        """Test that PRD_COMPLETE event type exists."""
+        self.assertTrue(hasattr(EventType, 'PRD_COMPLETE'))
+
+    def test_prd_incomplete_event_exists(self):
+        """Test that PRD_INCOMPLETE event type exists."""
+        self.assertTrue(hasattr(EventType, 'PRD_INCOMPLETE'))
+
+    def test_event_types_are_unique(self):
+        """Test that PRD_COMPLETE and PRD_INCOMPLETE have different values."""
+        self.assertNotEqual(EventType.PRD_COMPLETE, EventType.PRD_INCOMPLETE)
+
+
+# ==============================================================================
+# SUPPLEMENTARY PRD GENERATOR TESTS
+# ==============================================================================
+
+
+class TestSupplementaryPRDGenerator(TempConfigTestCase):
+    """Tests for SupplementaryPRDGenerator class."""
+
+    def test_generate_creates_valid_prd_structure(self):
+        """Test that generated PRD has correct structure."""
+        generator = SupplementaryPRDGenerator(
+            original_prd_id="PRD-001"
+        )
+
+        failed_requirements = [
+            ("TASK-001-AC01", "First requirement description"),
+            ("TASK-001-AC02", "Second requirement description"),
+        ]
+
+        prd_data, _ = generator.generate(failed_requirements)
+
+        self.assertIn("id", prd_data)
+        self.assertIn("PRD-001-SUPP-", prd_data["id"])
+        self.assertIn("description", prd_data)
+        self.assertEqual(prd_data["originalPrdId"], "PRD-001")
+        self.assertIn("addressedRequirements", prd_data)
+        self.assertEqual(len(prd_data["addressedRequirements"]), 2)
+        self.assertIn("userStories", prd_data)
+        self.assertEqual(len(prd_data["userStories"]), 2)
+
+    def test_generate_user_stories_have_correct_structure(self):
+        """Test that user stories follow PRD schema."""
+        generator = SupplementaryPRDGenerator(original_prd_id="PRD-001")
+
+        failed_requirements = [
+            ("TASK-001-AC01", "Test requirement"),
+        ]
+
+        prd_data, _ = generator.generate(failed_requirements)
+        story = prd_data["userStories"][0]
+
+        self.assertEqual(story["id"], "TASK-001")
+        self.assertIn("description", story)
+        self.assertEqual(story["priority"], "Must Have")
+        self.assertIn("acceptanceCriteria", story)
+        self.assertGreaterEqual(len(story["acceptanceCriteria"]), 3)
+        self.assertIn("definitionOfDone", story)
+        self.assertGreaterEqual(len(story["definitionOfDone"]), 3)
+        self.assertEqual(story["status"], "pending")
+        self.assertEqual(story["originalRequirement"], "TASK-001-AC01")
+
+    def test_generate_references_original_prd(self):
+        """Test that supplementary PRD references original."""
+        original_path = self.temp_path / ".ralph" / "prd.json"
+        generator = SupplementaryPRDGenerator(
+            original_prd_id="PRD-001",
+            original_prd_path=original_path
+        )
+
+        prd_data, _ = generator.generate([("REQ-01", "Description")])
+
+        self.assertEqual(prd_data["originalPrdId"], "PRD-001")
+        self.assertEqual(prd_data["originalPrdPath"], str(original_path))
+        self.assertEqual(prd_data["addressedRequirements"], ["REQ-01"])
+
+    def test_generate_writes_to_file_when_path_provided(self):
+        """Test that PRD is written to disk when output_path given."""
+        output_path = self.temp_path / "supplementary.json"
+        generator = SupplementaryPRDGenerator(original_prd_id="PRD-001")
+
+        prd_data, written_path = generator.generate(
+            [("REQ-01", "Description")],
+            output_path=output_path
+        )
+
+        self.assertEqual(written_path, output_path)
+        self.assertTrue(output_path.exists())
+
+        content = json.loads(output_path.read_text(encoding='utf-8'))
+        self.assertEqual(content["id"], prd_data["id"])
+
+    def test_generate_raises_on_empty_requirements(self):
+        """Test that ValueError raised when no requirements provided."""
+        generator = SupplementaryPRDGenerator(original_prd_id="PRD-001")
+
+        with self.assertRaises(ValueError) as ctx:
+            generator.generate([])
+
+        self.assertIn("No failed requirements", str(ctx.exception))
+
+    def test_generate_multiple_requirements_creates_sequential_tasks(self):
+        """Test that multiple requirements create sequential TASK IDs."""
+        generator = SupplementaryPRDGenerator(original_prd_id="PRD-001")
+
+        failed_requirements = [
+            ("REQ-01", "First"),
+            ("REQ-02", "Second"),
+            ("REQ-03", "Third"),
+        ]
+
+        prd_data, _ = generator.generate(failed_requirements)
+
+        task_ids = [story["id"] for story in prd_data["userStories"]]
+        self.assertEqual(task_ids, ["TASK-001", "TASK-002", "TASK-003"])
+
+
+# ==============================================================================
+# UNFILLED REQUIREMENTS RESULT TESTS
+# ==============================================================================
+
+
+class TestUnfilledRequirementsResult(unittest.TestCase):
+    """Tests for UnfilledRequirementsResult dataclass."""
+
+    def test_to_dict_serialization(self):
+        """Test that result serializes correctly."""
+        test_path = Path("/test/path.json")
+        result = UnfilledRequirementsResult(
+            choice=UserChoice.GENERATE_SUPPLEMENTARY,
+            supplementary_prd_path=test_path,
+            supplementary_prd_data={"id": "PRD-001"},
+            deferred_requirements=["REQ-01"]
+        )
+
+        data = result.to_dict()
+
+        self.assertEqual(data["choice"], UserChoice.GENERATE_SUPPLEMENTARY)
+        # Use str(Path) for cross-platform compatibility
+        self.assertEqual(data["supplementary_prd_path"], str(test_path))
+        self.assertEqual(data["supplementary_prd_data"], {"id": "PRD-001"})
+        self.assertEqual(data["deferred_requirements"], ["REQ-01"])
+
+    def test_to_dict_handles_none_path(self):
+        """Test serialization with None path."""
+        result = UnfilledRequirementsResult(
+            choice=UserChoice.CONTINUE_WITH_GAPS
+        )
+
+        data = result.to_dict()
+
+        self.assertIsNone(data["supplementary_prd_path"])
+
+
+# ==============================================================================
+# UNFILLED REQUIREMENTS HANDLER TESTS
+# ==============================================================================
+
+
+class TestUnfilledRequirementsHandler(TempConfigTestCase):
+    """Tests for UnfilledRequirementsHandler class."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_path = self.temp_path / ".ralph" / "prd.json"
+        self.prd_manager = PRDManager(self.prd_path)
+        self.checklist_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+
+    def _write_prd(self, data):
+        """Helper to write PRD JSON to disk."""
+        self.prd_path.parent.mkdir(parents=True, exist_ok=True)
+        self.prd_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def _write_checklist(self, data):
+        """Helper to write checklist JSON to disk."""
+        self.checklist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.checklist_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def test_handle_no_unfilled_requirements(self):
+        """Test handling when all requirements are fulfilled."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        report = FinalQAReport(
+            total_requirements=3,
+            passed=3,
+            failed=0,
+            coverage_percentage=100.0,
+            failed_requirements=[],
+            all_passed=True
+        )
+
+        result = handler.handle(report)
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_is_single_requirement(self):
+        """Test detection of single unfilled requirement."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        report_single = FinalQAReport(
+            total_requirements=3,
+            passed=2,
+            failed=1,
+            coverage_percentage=66.67,
+            failed_requirements=[("REQ-01", "Description")],
+            all_passed=False
+        )
+
+        self.assertTrue(handler._is_single_requirement(report_single))
+
+        report_multiple = FinalQAReport(
+            total_requirements=3,
+            passed=1,
+            failed=2,
+            coverage_percentage=33.33,
+            failed_requirements=[("REQ-01", "Desc1"), ("REQ-02", "Desc2")],
+            all_passed=False
+        )
+
+        self.assertFalse(handler._is_single_requirement(report_multiple))
+
+    def test_is_all_requirements_unfilled(self):
+        """Test detection of all requirements unfilled."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        report_all_failed = FinalQAReport(
+            total_requirements=3,
+            passed=0,
+            failed=3,
+            coverage_percentage=0.0,
+            failed_requirements=[
+                ("REQ-01", "Desc1"),
+                ("REQ-02", "Desc2"),
+                ("REQ-03", "Desc3")
+            ],
+            all_passed=False
+        )
+
+        self.assertTrue(handler._is_all_requirements_unfilled(report_all_failed))
+
+        report_some_passed = FinalQAReport(
+            total_requirements=3,
+            passed=1,
+            failed=2,
+            coverage_percentage=33.33,
+            failed_requirements=[("REQ-01", "Desc1"), ("REQ-02", "Desc2")],
+            all_passed=False
+        )
+
+        self.assertFalse(handler._is_all_requirements_unfilled(report_some_passed))
+
+    def test_non_interactive_exits_with_code_2(self):
+        """Test that non-interactive mode exits with code 2."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=True
+        )
+
+        report = FinalQAReport(
+            total_requirements=1,
+            passed=0,
+            failed=1,
+            coverage_percentage=0.0,
+            failed_requirements=[("REQ-01", "Description")],
+            all_passed=False
+        )
+
+        with self.assertRaises(SystemExit) as ctx:
+            handler.handle(report)
+
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_non_interactive_preserves_unfilled_requirements(self):
+        """Test that non-interactive mode preserves requirements list."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=True
+        )
+
+        failed_reqs = [("REQ-01", "Desc1"), ("REQ-02", "Desc2")]
+        report = FinalQAReport(
+            total_requirements=2,
+            passed=0,
+            failed=2,
+            coverage_percentage=0.0,
+            failed_requirements=failed_reqs,
+            all_passed=False
+        )
+
+        with self.assertRaises(SystemExit):
+            handler.handle(report)
+
+        self.assertEqual(handler.get_preserved_unfilled(), failed_reqs)
+
+    def test_non_interactive_outputs_to_stderr(self):
+        """Test that non-interactive mode writes to stderr."""
+        self._write_prd({"id": "PRD-001", "description": "Test", "userStories": []})
+
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=True
+        )
+
+        report = FinalQAReport(
+            total_requirements=1,
+            passed=0,
+            failed=1,
+            coverage_percentage=0.0,
+            failed_requirements=[("REQ-01", "Description")],
+            all_passed=False
+        )
+
+        import io
+        import sys
+
+        captured_stderr = io.StringIO()
+        original_stderr = sys.stderr
+        sys.stderr = captured_stderr
+
+        try:
+            with self.assertRaises(SystemExit):
+                handler.handle(report)
+        finally:
+            sys.stderr = original_stderr
+
+        stderr_output = captured_stderr.getvalue()
+        self.assertIn("UNFILLED REQUIREMENTS", stderr_output)
+        self.assertIn("PRD-001", stderr_output)
+        self.assertIn("REQ-01", stderr_output)
+
+    def test_generate_supplementary_prd(self):
+        """Test supplementary PRD generation via handler."""
+        output_dir = self.temp_path / ".ralph"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        self._write_prd({"id": "PRD-001", "description": "Test", "userStories": []})
+
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=output_dir
+        )
+
+        failed_reqs = [("REQ-01", "Requirement description")]
+        result = handler._generate_supplementary_prd(failed_reqs)
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+        self.assertIsNotNone(result.supplementary_prd_data)
+        self.assertEqual(result.supplementary_prd_data["originalPrdId"], "PRD-001")
+        self.assertIn("REQ-01", result.supplementary_prd_data["addressedRequirements"])
+
+    def test_generate_supplementary_prd_handles_write_error(self):
+        """Test that PRD generation preserves requirements on error."""
+        # Use a non-existent directory that can't be created
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=None
+        )
+        handler._prd_manager = None  # Force path determination failure
+
+        # Mock a generator that raises an exception
+        failed_reqs = [("REQ-01", "Description")]
+
+        with patch.object(SupplementaryPRDGenerator, 'generate', side_effect=Exception("Write failed")):
+            result = handler._generate_supplementary_prd(failed_reqs)
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+        self.assertIsNotNone(result.error)
+        self.assertIn("Write failed", result.error)
+        self.assertEqual(handler.get_preserved_unfilled(), failed_reqs)
+
+    def test_mark_as_deferred(self):
+        """Test marking requirements as deferred."""
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        failed_reqs = [("REQ-01", "Desc1"), ("REQ-02", "Desc2")]
+        result = handler._mark_as_deferred(failed_reqs)
+
+        self.assertEqual(result.choice, UserChoice.MARK_DEFERRED)
+        self.assertEqual(result.deferred_requirements, ["REQ-01", "REQ-02"])
+
+    def test_get_original_prd_id_returns_unknown_when_no_prd(self):
+        """Test that UNKNOWN is returned when PRD not available."""
+        handler = UnfilledRequirementsHandler(
+            None, self.checklist_manager, non_interactive=False
+        )
+
+        self.assertEqual(handler._get_original_prd_id(), "UNKNOWN")
+
+    def test_get_original_prd_id_returns_id_from_prd(self):
+        """Test that correct ID is returned from PRD."""
+        self._write_prd({
+            "id": "PRD-TEST-123",
+            "description": "Test PRD",
+            "userStories": []
+        })
+
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager, non_interactive=False
+        )
+
+        self.assertEqual(handler._get_original_prd_id(), "PRD-TEST-123")
+
+
+# ==============================================================================
+# INTERACTIVE PROMPT TESTS (MOCKED)
+# ==============================================================================
+
+
+class TestUnfilledRequirementsHandlerPrompts(TempConfigTestCase):
+    """Tests for interactive prompts with mocked input."""
+
+    def setUp(self):
+        super().setUp()
+        self.prd_path = self.temp_path / ".ralph" / "prd.json"
+        self.prd_path.parent.mkdir(parents=True, exist_ok=True)
+        self.prd_path.write_text(json.dumps({
+            "id": "PRD-001",
+            "description": "Test",
+            "userStories": []
+        }), encoding='utf-8')
+
+        self.checklist_path = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.prd_manager = PRDManager(self.prd_path)
+        self.checklist_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+
+        self.handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=self.temp_path / ".ralph"
+        )
+
+    def test_prompt_single_requirement_option_1_quick_fix(self):
+        """Test quick-fix option for single requirement."""
+        # Create checklist with a requirement
+        self.checklist_path.write_text(json.dumps({
+            "requirements": [
+                {"id": "REQ-01", "description": "Test", "status": "failed"}
+            ]
+        }), encoding='utf-8')
+        self.checklist_manager.load()
+
+        with patch('builtins.input', return_value="1"):
+            result = self.handler._prompt_single_requirement(("REQ-01", "Description"))
+
+        self.assertEqual(result.choice, UserChoice.QUICK_FIX)
+
+    def test_prompt_single_requirement_option_2_supplementary(self):
+        """Test supplementary PRD option for single requirement."""
+        with patch('builtins.input', return_value="2"):
+            result = self.handler._prompt_single_requirement(("REQ-01", "Description"))
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+        self.assertIsNotNone(result.supplementary_prd_data)
+
+    def test_prompt_single_requirement_option_3_deferred(self):
+        """Test deferred option for single requirement."""
+        with patch('builtins.input', return_value="3"):
+            result = self.handler._prompt_single_requirement(("REQ-01", "Description"))
+
+        self.assertEqual(result.choice, UserChoice.MARK_DEFERRED)
+        self.assertEqual(result.deferred_requirements, ["REQ-01"])
+
+    def test_prompt_single_requirement_option_4_continue(self):
+        """Test continue option for single requirement."""
+        with patch('builtins.input', return_value="4"):
+            result = self.handler._prompt_single_requirement(("REQ-01", "Description"))
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_all_unfilled_option_1_revision(self):
+        """Test full revision option when all unfilled."""
+        with patch('builtins.input', return_value="1"):
+            result = self.handler._prompt_all_unfilled([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.FULL_REVISION)
+
+    def test_prompt_all_unfilled_option_2_supplementary(self):
+        """Test supplementary PRD option when all unfilled."""
+        with patch('builtins.input', return_value="2"):
+            result = self.handler._prompt_all_unfilled([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+
+    def test_prompt_all_unfilled_option_3_deferred(self):
+        """Test deferred option when all unfilled."""
+        with patch('builtins.input', return_value="3"):
+            result = self.handler._prompt_all_unfilled([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.MARK_DEFERRED)
+
+    def test_prompt_all_unfilled_option_4_continue(self):
+        """Test continue option when all unfilled."""
+        with patch('builtins.input', return_value="4"):
+            result = self.handler._prompt_all_unfilled([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_standard_option_1_supplementary(self):
+        """Test supplementary PRD option in standard prompt."""
+        with patch('builtins.input', return_value="1"):
+            result = self.handler._prompt_standard([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+
+    def test_prompt_standard_option_2_deferred(self):
+        """Test deferred option in standard prompt."""
+        with patch('builtins.input', return_value="2"):
+            result = self.handler._prompt_standard([("REQ-01", "D1"), ("REQ-02", "D2")])
+
+        self.assertEqual(result.choice, UserChoice.MARK_DEFERRED)
+
+    def test_prompt_standard_option_3_continue(self):
+        """Test continue option in standard prompt."""
+        with patch('builtins.input', return_value="3"):
+            result = self.handler._prompt_standard([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_handles_keyboard_interrupt(self):
+        """Test that keyboard interrupt returns continue choice."""
+        with patch('builtins.input', side_effect=KeyboardInterrupt):
+            result = self.handler._prompt_standard([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_handles_eof(self):
+        """Test that EOF returns continue choice."""
+        with patch('builtins.input', side_effect=EOFError):
+            result = self.handler._prompt_standard([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.CONTINUE_WITH_GAPS)
+
+    def test_prompt_retries_on_invalid_input(self):
+        """Test that invalid input prompts retry."""
+        inputs = iter(["invalid", "5", "1"])
+
+        with patch('builtins.input', side_effect=lambda _: next(inputs)):
+            result = self.handler._prompt_standard([("REQ-01", "D1")])
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+
+
+# ==============================================================================
+# INTEGRATION TESTS
+# ==============================================================================
+
+
+class TestUnfilledRequirementsIntegration(TempConfigTestCase):
+    """Integration tests for the unfilled requirements workflow."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_path = self.temp_path / ".ralph" / "prd.json"
+
+        # Create PRD
+        self.prd_path.parent.mkdir(parents=True, exist_ok=True)
+        self.prd_path.write_text(json.dumps({
+            "id": "PRD-001",
+            "description": "Integration test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }), encoding='utf-8')
+
+        self.prd_manager = PRDManager(self.prd_path)
+        self.checklist_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+
+    def test_full_workflow_generate_supplementary(self):
+        """Test complete workflow: failed validation -> generate supplementary."""
+        # Create checklist with failed requirements
+        self.checklist_path.write_text(json.dumps({
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+                {"id": "TASK-001-AC02", "description": "Criteria 2", "status": "failed"},
+                {"id": "TASK-001-AC03", "description": "Criteria 3", "status": "pending"},
+            ]
+        }), encoding='utf-8')
+
+        # Run validation
+        hooks_dir = self.temp_path / ".ralph" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook_manager = HookManager(hooks_dir)
+
+        validator = FinalQAValidator(
+            self.checklist_manager, self.prd_manager, hook_manager
+        )
+        report = validator.validate()
+
+        # Verify report has failed requirements
+        self.assertFalse(report.all_passed)
+        self.assertEqual(report.failed, 2)
+
+        # Handle with supplementary PRD generation
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=self.temp_path / ".ralph"
+        )
+
+        with patch('builtins.input', return_value="1"):
+            result = handler.handle(report)
+
+        self.assertEqual(result.choice, UserChoice.GENERATE_SUPPLEMENTARY)
+        self.assertIsNotNone(result.supplementary_prd_path)
+        self.assertTrue(result.supplementary_prd_path.exists())
+
+        # Verify supplementary PRD content
+        supp_prd = json.loads(result.supplementary_prd_path.read_text(encoding='utf-8'))
+        self.assertEqual(supp_prd["originalPrdId"], "PRD-001")
+        self.assertEqual(len(supp_prd["userStories"]), 2)
+        self.assertIn("TASK-001-AC02", supp_prd["addressedRequirements"])
+        self.assertIn("TASK-001-AC03", supp_prd["addressedRequirements"])
+
+    def test_supplementary_prd_task_references_requirement(self):
+        """Test that supplementary PRD tasks reference their source requirement."""
+        # Use multiple failed requirements to trigger standard prompt (not single-requirement prompt)
+        self.checklist_path.write_text(json.dumps({
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Feature X works correctly", "status": "failed"},
+                {"id": "TASK-001-AC02", "description": "Feature Y works correctly", "status": "passed"},
+                {"id": "TASK-001-AC03", "description": "Feature Z works correctly", "status": "failed"},
+            ]
+        }), encoding='utf-8')
+
+        hooks_dir = self.temp_path / ".ralph" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook_manager = HookManager(hooks_dir)
+
+        validator = FinalQAValidator(
+            self.checklist_manager, self.prd_manager, hook_manager
+        )
+        report = validator.validate()
+
+        handler = UnfilledRequirementsHandler(
+            self.prd_manager, self.checklist_manager,
+            non_interactive=False,
+            output_dir=self.temp_path / ".ralph"
+        )
+
+        # Option 1 in standard prompt = Generate supplementary PRD
+        with patch('builtins.input', return_value="1"):
+            result = handler.handle(report)
+
+        task = result.supplementary_prd_data["userStories"][0]
+        self.assertEqual(task["originalRequirement"], "TASK-001-AC01")
+        self.assertIn("Feature X works correctly", task["acceptanceCriteria"][0])
+
+
+class TestUserChoiceConstants(unittest.TestCase):
+    """Tests for UserChoice constants."""
+
+    def test_all_choices_defined(self):
+        """Test that all expected choice constants are defined."""
+        self.assertEqual(UserChoice.GENERATE_SUPPLEMENTARY, "generate_supplementary")
+        self.assertEqual(UserChoice.MARK_DEFERRED, "mark_deferred")
+        self.assertEqual(UserChoice.CONTINUE_WITH_GAPS, "continue_with_gaps")
+        self.assertEqual(UserChoice.FULL_REVISION, "full_revision")
+        self.assertEqual(UserChoice.QUICK_FIX, "quick_fix")
+
+
+# ==============================================================================
+# QA CHECKLIST CLI TESTS
+# ==============================================================================
+
+
+class TestQAChecklistCLI(unittest.TestCase):
+    """Tests for --qa-checklist CLI argument parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("--qa-checklist", type=str)
+
+    def test_qa_checklist_flag_parses(self):
+        args = self.parser.parse_args(["--qa-checklist", "/path/to/checklist.json"])
+        self.assertEqual(args.qa_checklist, "/path/to/checklist.json")
+
+    def test_qa_checklist_default_is_none(self):
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.qa_checklist)
+
+
+class TestQAChecklistCLIValidation(TempConfigTestCase):
+    """Tests for --qa-checklist CLI argument validation."""
+
+    def test_qa_checklist_file_not_found(self):
+        """Test that non-existent checklist file errors in main()."""
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--qa-checklist', '/nonexistent/checklist.json']):
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit) as ctx:
+                        main()
+                    self.assertEqual(ctx.exception.code, 1)
+                    mock_error.assert_called()
+                    call_args = mock_error.call_args[0][0]
+                    self.assertIn("not found", call_args.lower())
+
+    def test_qa_checklist_invalid_json(self):
+        """Test that invalid JSON checklist file errors in main()."""
+        # Create temp file with invalid JSON
+        invalid_file = self.temp_path / "invalid.json"
+        invalid_file.write_text("{ not valid json }", encoding='utf-8')
+
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_orch.return_value = MagicMock()
+            with patch('sys.argv', ['ralph', '--qa-checklist', str(invalid_file)]):
+                with patch('ralph.Logger.error') as mock_error:
+                    with self.assertRaises(SystemExit) as ctx:
+                        main()
+                    self.assertEqual(ctx.exception.code, 1)
+                    # Should have been called at least twice (invalid JSON + parse error details)
+                    self.assertGreaterEqual(mock_error.call_count, 2)
+
+    def test_qa_checklist_valid_json_accepted(self):
+        """Test that valid JSON checklist file is accepted."""
+        valid_file = self.temp_path / "valid.json"
+        valid_file.write_text('{"requirements": []}', encoding='utf-8')
+
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', '--qa-checklist', str(valid_file)]):
+                main()
+            # Verify orchestrator was called (not exit with error)
+            mock_orch.assert_called_once()
+
+    def test_qa_checklist_relative_path_resolved(self):
+        """Test that relative paths are resolved from current working directory."""
+        # Create valid checklist in temp dir
+        valid_file = self.temp_path / "relative_checklist.json"
+        valid_file.write_text('{"requirements": []}', encoding='utf-8')
+
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            # Use relative path
+            with patch('sys.argv', ['ralph', '--qa-checklist', 'relative_checklist.json']):
+                # Change to temp directory
+                original_cwd = Path.cwd()
+                import os
+                os.chdir(self.temp_path)
+                try:
+                    main()
+                finally:
+                    os.chdir(original_cwd)
+            # Verify it was called
+            mock_orch.assert_called_once()
+            # Verify the path was resolved (absolute)
+            call_kwargs = mock_orch.call_args[1]
+            qa_checklist = call_kwargs.get('qa_checklist')
+            self.assertIsNotNone(qa_checklist)
+            self.assertTrue(qa_checklist.is_absolute())
+
+
+class TestQAChecklistCLIPassthrough(unittest.TestCase):
+    """Tests for --qa-checklist flag passed to orchestrator."""
+
+    def test_qa_checklist_passed_to_orchestrator(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checklist_file = Path(temp_dir) / "test-checklist.json"
+            checklist_file.write_text('{"requirements": []}', encoding='utf-8')
+
+            with patch('ralph.RalphOrchestrator') as mock_orch:
+                mock_instance = MagicMock()
+                mock_orch.return_value = mock_instance
+                with patch('sys.argv', ['ralph', '--qa-checklist', str(checklist_file)]):
+                    main()
+                call_kwargs = mock_orch.call_args[1]
+                qa_checklist = call_kwargs.get('qa_checklist')
+                self.assertIsNotNone(qa_checklist)
+                self.assertEqual(qa_checklist.name, "test-checklist.json")
+
+    def test_qa_checklist_none_when_not_provided(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph']):
+                main()
+            call_kwargs = mock_orch.call_args[1]
+            self.assertIsNone(call_kwargs.get('qa_checklist'))
+
+
+class TestQAChecklistOrchestrator(TempConfigTestCase):
+    """Tests for QA checklist in RalphOrchestrator."""
+
+    def test_orchestrator_stores_qa_checklist_path(self):
+        custom_path = self.temp_path / "custom-checklist.json"
+        orch = self.create_mock_orchestrator(qa_checklist=custom_path)
+        self.assertEqual(orch._qa_checklist_path, custom_path)
+
+    def test_orchestrator_defaults_to_no_qa_checklist(self):
+        orch = self.create_mock_orchestrator()
+        self.assertIsNone(orch._qa_checklist_path)
+
+    def test_qa_checklist_path_property_returns_custom(self):
+        custom_path = self.temp_path / "custom-checklist.json"
+        orch = self.create_mock_orchestrator(qa_checklist=custom_path)
+        self.assertEqual(orch.qa_checklist_path, custom_path)
+
+    def test_qa_checklist_path_property_returns_default_when_none(self):
+        orch = self.create_mock_orchestrator()
+        self.assertEqual(orch.qa_checklist_path, CONF.QA_CHECKLIST_FILE)
+
+
+# ==============================================================================
+# QA-STATUS COMMAND TESTS
+# ==============================================================================
+
+
+class TestQAStatusCLI(unittest.TestCase):
+    """Tests for qa-status CLI command parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all", "qa-status"], default="all", nargs="?")
+
+    def test_qa_status_is_valid_phase(self):
+        args = self.parser.parse_args(["qa-status"])
+        self.assertEqual(args.phase, "qa-status")
+
+    def test_qa_status_default_is_all(self):
+        args = self.parser.parse_args([])
+        self.assertEqual(args.phase, "all")
+
+
+class TestQAStatusCLIPassthrough(unittest.TestCase):
+    """Tests for qa-status command passed through to orchestrator."""
+
+    def test_qa_status_calls_start_with_correct_phase(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'qa-status']):
+                try:
+                    main()
+                except SystemExit:
+                    pass  # Expected from qa-status command
+            mock_instance.start.assert_called_once()
+            call_args = mock_instance.start.call_args
+            self.assertEqual(call_args[1].get('phase') or call_args[0][0], 'qa-status')
+
+
+class TestQAStatusNoChecklist(TempConfigTestCase):
+    """Tests for qa-status when no checklist exists."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def test_no_checklist_no_prd_exits_with_code_2(self):
+        """When no checklist and no PRD, exit code 2."""
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 2)
+
+    def test_no_checklist_with_prd_offers_generation_non_interactive(self):
+        """When no checklist but PRD exists in non-interactive mode, exits with code 2."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd_data = {"userStories": [{"id": "TASK-001", "acceptanceCriteria": ["Test criterion"]}]}
+        CONF.PRD_FILE.write_text(json.dumps(prd_data), encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(non_interactive=True)
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 2)
+
+    def test_no_checklist_with_prd_generates_when_user_accepts(self):
+        """When no checklist but PRD exists, generate checklist if user accepts."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd_data = {"userStories": [{"id": "TASK-001", "acceptanceCriteria": ["Test criterion"]}]}
+        CONF.PRD_FILE.write_text(json.dumps(prd_data), encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(non_interactive=False)
+
+        # Mock user input to accept generation
+        with patch('builtins.input', return_value='y'):
+            exit_code = orch._run_qa_status()
+
+        # Should have generated checklist and returned 1 (pending requirements)
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(orch.qa_checklist_path.exists())
+
+
+class TestQAStatusDisplay(TempConfigTestCase):
+    """Tests for qa-status display functionality."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def _create_checklist(self, requirements_data):
+        """Helper to create a checklist file with given requirements."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        checklist_path = CONF.QA_CHECKLIST_FILE
+        checklist_path.write_text(json.dumps({"requirements": requirements_data}), encoding='utf-8')
+        return checklist_path
+
+    def test_all_passed_returns_exit_code_0(self):
+        """When all requirements passed, exit code is 0."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": ["TASK-001"]},
+            {"id": "REQ-002", "description": "Test 2", "status": "passed", "linkedTasks": ["TASK-001"]}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 0)
+
+    def test_some_pending_returns_exit_code_1(self):
+        """When some requirements pending, exit code is 1."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-002", "description": "Test 2", "status": "pending", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_some_failed_returns_exit_code_1(self):
+        """When some requirements failed, exit code is 1."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-002", "description": "Test 2", "status": "failed", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_empty_checklist_returns_exit_code_1(self):
+        """When checklist is empty, exit code is 1."""
+        self._create_checklist([])
+
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_displays_linked_tasks(self):
+        """Verify linked tasks are included in output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": ["TASK-001", "TASK-002"]}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        with patch('ralph.Logger.info') as mock_logger:
+            orch._run_qa_status()
+            # Check that linked tasks were logged
+            call_args_list = [str(call) for call in mock_logger.call_args_list]
+            tasks_logged = any("TASK-001" in str(call) and "TASK-002" in str(call) for call in call_args_list)
+            self.assertTrue(tasks_logged)
+
+
+class TestQAStatusJSONOutput(TempConfigTestCase):
+    """Tests for qa-status JSON output mode."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def _create_checklist(self, requirements_data):
+        """Helper to create a checklist file with given requirements."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        checklist_path = CONF.QA_CHECKLIST_FILE
+        checklist_path.write_text(json.dumps({"requirements": requirements_data}), encoding='utf-8')
+        return checklist_path
+
+    def test_json_output_is_valid_json(self):
+        """Verify --json flag produces valid JSON output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": ["TASK-001"]}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+        self.assertIn("requirements", parsed)
+        self.assertIn("summary", parsed)
+
+    def test_json_output_contains_all_fields(self):
+        """Verify JSON output contains all required fields."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": ["TASK-001"]},
+            {"id": "REQ-002", "description": "Test 2", "status": "pending", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        # Check requirements structure
+        self.assertEqual(len(parsed["requirements"]), 2)
+        req = parsed["requirements"][0]
+        self.assertIn("id", req)
+        self.assertIn("description", req)
+        self.assertIn("status", req)
+        self.assertIn("linkedTasks", req)
+
+        # Check summary structure
+        summary = parsed["summary"]
+        self.assertIn("total", summary)
+        self.assertIn("passed", summary)
+        self.assertIn("failed", summary)
+        self.assertIn("pending", summary)
+        self.assertIn("percentage", summary)
+
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(summary["passed"], 1)
+        self.assertEqual(summary["pending"], 1)
+
+    def test_json_output_no_checklist(self):
+        """Verify JSON output when no checklist exists."""
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        self.assertEqual(parsed.get("status"), "no_checklist")
+        self.assertEqual(parsed.get("exit_code"), 2)
+
+
+class TestQAStatusVerbose(TempConfigTestCase):
+    """Tests for qa-status --verbose flag."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def _create_checklist(self, requirements_data):
+        """Helper to create a checklist file with given requirements."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        checklist_path = CONF.QA_CHECKLIST_FILE
+        checklist_path.write_text(json.dumps({"requirements": requirements_data}), encoding='utf-8')
+        return checklist_path
+
+    def test_verbose_includes_last_checked_in_json(self):
+        """Verify --verbose includes lastChecked in JSON output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed",
+             "linkedTasks": [], "lastChecked": "2024-01-15T10:30:00"}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+        Logger.verbosity = 1
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        Logger.verbosity = 0
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        req = parsed["requirements"][0]
+        self.assertIn("lastChecked", req)
+        self.assertEqual(req["lastChecked"], "2024-01-15T10:30:00")
+
+    def test_non_verbose_excludes_last_checked_in_json(self):
+        """Verify non-verbose mode excludes lastChecked from JSON output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed",
+             "linkedTasks": [], "lastChecked": "2024-01-15T10:30:00"}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+        Logger.verbosity = 0
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        req = parsed["requirements"][0]
+        self.assertNotIn("lastChecked", req)
+
+    def test_verbose_displays_last_checked_in_text(self):
+        """Verify --verbose displays lastChecked timestamp in text output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed",
+             "linkedTasks": [], "lastChecked": "2024-01-15T10:30:00"}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.verbosity = 1
+
+        with patch('ralph.Logger.info') as mock_logger:
+            orch._run_qa_status()
+            call_args_list = [str(call) for call in mock_logger.call_args_list]
+            last_checked_logged = any("2024-01-15T10:30:00" in str(call) for call in call_args_list)
+            self.assertTrue(last_checked_logged)
+
+        Logger.verbosity = 0
+
+
+class TestQAStatusSummary(TempConfigTestCase):
+    """Tests for qa-status summary calculation."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def _create_checklist(self, requirements_data):
+        """Helper to create a checklist file with given requirements."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        checklist_path = CONF.QA_CHECKLIST_FILE
+        checklist_path.write_text(json.dumps({"requirements": requirements_data}), encoding='utf-8')
+        return checklist_path
+
+    def test_percentage_calculation(self):
+        """Verify percentage is calculated correctly."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-002", "description": "Test 2", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-003", "description": "Test 3", "status": "pending", "linkedTasks": []},
+            {"id": "REQ-004", "description": "Test 4", "status": "failed", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        # 2 passed out of 4 = 50%
+        self.assertEqual(parsed["summary"]["percentage"], 50)
+
+    def test_all_passed_percentage_is_100(self):
+        """Verify 100% when all requirements passed."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-002", "description": "Test 2", "status": "passed", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        self.assertEqual(parsed["summary"]["percentage"], 100)
+        self.assertEqual(parsed["status"], "complete")
 
 
 if __name__ == '__main__':
