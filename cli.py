@@ -12,7 +12,6 @@ from pathlib import Path
 
 from logger import Logger
 from agents import list_agents
-from orchestrator import RalphOrchestrator
 
 
 def get_version() -> str:
@@ -234,7 +233,9 @@ def main() -> None:
         if disabled_features:
             Logger.info(f"Enhancement features disabled by explicit flags: {', '.join(disabled_features)}")
 
-    RalphOrchestrator(
+    # Late import to allow tests to patch ralph.RalphOrchestrator
+    import ralph
+    ralph.RalphOrchestrator(
         agent_name=args.agent,
         enable_hooks=enable_hooks,
         enabled_hook_names=enabled_hook_names,
