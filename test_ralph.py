@@ -948,7 +948,6 @@ class TestCliArguments(unittest.TestCase):
         self.parser.add_argument("--schema", type=str)
         self.parser.add_argument("--min-criteria", type=int)
         self.parser.add_argument("--label", nargs="+")
-        self.parser.add_argument("--template-delete", type=str)
 
     def test_phases(self):
         for phase in ["architect", "planner", "execute", "all"]:
@@ -1366,136 +1365,36 @@ class TestTemplateManagerDelete(TempConfigTestCase):
         self.assertFalse(template_path.exists())
 
 
-class TestTemplateDeleteCLI(TempConfigTestCase):
-    """Tests for --template-delete CLI argument."""
+class TestTemplateDeleteCLIRemoved(TempConfigTestCase):
+    """Tests verifying --template-delete CLI argument has been removed."""
 
-    def setUp(self):
-        super().setUp()
-        self._original_templates_dir = CONF.TEMPLATES_DIR
-        CONF.TEMPLATES_DIR = self.temp_path / ".ralph" / "templates"
-        CONF.TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
-
-    def tearDown(self):
-        CONF.TEMPLATES_DIR = self._original_templates_dir
-        super().tearDown()
-
-    def test_cli_delete_template_success(self):
-        """Should delete template and exit with code 0."""
-        template_path = CONF.TEMPLATES_DIR / "testtemplate.txt"
-        template_path.write_text("test content", encoding="utf-8")
-
-        exit_code = None
-        def capture_exit(code):
-            nonlocal exit_code
-            exit_code = code
-            raise SystemExit(code)
-
-        with patch('sys.argv', ['ralph', '--template-delete', 'testtemplate.txt']):
-            with patch('ralph.sys.exit', side_effect=capture_exit):
-                with patch('ralph.Logger.info') as mock_info:
-                    with self.assertRaises(SystemExit):
-                        main()
-                    self.assertEqual(exit_code, 0)
-                    mock_info.assert_called()
-                    # Check success message was logged
-                    call_args = [str(c) for c in mock_info.call_args_list]
-                    self.assertTrue(any('deleted successfully' in str(c) for c in call_args))
-
-        self.assertFalse(template_path.exists())
-
-    def test_cli_delete_template_not_found(self):
-        """Should exit with code 1 when template not found."""
-        exit_code = None
-        def capture_exit(code):
-            nonlocal exit_code
-            exit_code = code
-            raise SystemExit(code)
-
-        with patch('sys.argv', ['ralph', '--template-delete', 'nonexistent']):
-            with patch('ralph.sys.exit', side_effect=capture_exit):
-                with patch('ralph.Logger.error') as mock_error:
-                    with self.assertRaises(SystemExit):
-                        main()
-                    self.assertEqual(exit_code, 1)
-                    mock_error.assert_called()
-                    call_args = str(mock_error.call_args)
-                    self.assertIn('not found', call_args)
-
-    def test_cli_delete_templates_directory_not_found(self):
-        """Should exit with code 1 when templates directory doesn't exist."""
-        shutil.rmtree(CONF.TEMPLATES_DIR)
-
-        exit_code = None
-        def capture_exit(code):
-            nonlocal exit_code
-            exit_code = code
-            raise SystemExit(code)
-
-        with patch('sys.argv', ['ralph', '--template-delete', 'anytemplate']):
-            with patch('ralph.sys.exit', side_effect=capture_exit):
-                with patch('ralph.Logger.error') as mock_error:
-                    with self.assertRaises(SystemExit):
-                        main()
-                    self.assertEqual(exit_code, 1)
-                    mock_error.assert_called()
-                    call_args = str(mock_error.call_args)
-                    self.assertIn('Templates directory not found', call_args)
-
-    def test_cli_delete_empty_template_name(self):
-        """Should exit with code 1 when empty template name provided."""
-        exit_code = None
-        def capture_exit(code):
-            nonlocal exit_code
-            exit_code = code
-            raise SystemExit(code)
-
-        with patch('sys.argv', ['ralph', '--template-delete', '']):
-            with patch('ralph.sys.exit', side_effect=capture_exit):
-                with patch('ralph.Logger.error') as mock_error:
-                    with self.assertRaises(SystemExit):
-                        main()
-                    self.assertEqual(exit_code, 1)
-                    mock_error.assert_called()
-                    call_args = str(mock_error.call_args)
-                    self.assertIn('Invalid template name', call_args)
-
-    def test_cli_delete_permission_error(self):
-        """Should exit with code 1 on permission error."""
-        exit_code = None
-        def capture_exit(code):
-            nonlocal exit_code
-            exit_code = code
-            raise SystemExit(code)
-
-        with patch('sys.argv', ['ralph', '--template-delete', 'testtemplate']):
-            with patch('ralph.TemplateManager.delete', side_effect=PermissionError("Access denied")):
-                with patch('ralph.sys.exit', side_effect=capture_exit):
-                    with patch('ralph.Logger.error') as mock_error:
-                        with self.assertRaises(SystemExit):
-                            main()
-                        self.assertEqual(exit_code, 1)
-                        mock_error.assert_called()
-                        call_args = str(mock_error.call_args)
-                        self.assertIn('Permission denied', call_args)
-
-    def test_cli_delete_does_not_run_orchestrator(self):
-        """Should not create RalphOrchestrator when --template-delete is used."""
-        template_path = CONF.TEMPLATES_DIR / "testtemplate.txt"
-        template_path.write_text("test content", encoding="utf-8")
-
-        with patch('sys.argv', ['ralph', '--template-delete', 'testtemplate.txt']):
-            with patch('ralph.sys.exit', side_effect=SystemExit(0)):
-                with patch('ralph.RalphOrchestrator') as mock_orch:
-                    with self.assertRaises(SystemExit):
-                        main()
-                    mock_orch.assert_not_called()
-
-    def test_cli_delete_argument_requires_value(self):
-        """Should error when --template-delete provided without value."""
-        with patch('sys.argv', ['ralph', '--template-delete']):
+    def test_template_delete_flag_rejected(self):
+        """Should reject --template-delete as unrecognized argument."""
+        with patch('sys.argv', ['ralph', '--template-delete', 'foo']):
             with self.assertRaises(SystemExit) as ctx:
                 main()
-            self.assertEqual(ctx.exception.code, 2)  # argparse error code
+            self.assertEqual(ctx.exception.code, 2)
+
+    def test_template_delete_underscore_variant_rejected(self):
+        """Should reject --template_delete as unrecognized argument."""
+        with patch('sys.argv', ['ralph', '--template_delete', 'foo']):
+            with self.assertRaises(SystemExit) as ctx:
+                main()
+            self.assertEqual(ctx.exception.code, 2)
+
+    def test_template_delete_not_in_help(self):
+        """Should not show --template-delete in help output."""
+        import io
+        from contextlib import redirect_stdout
+
+        with patch('sys.argv', ['ralph', '--help']):
+            with self.assertRaises(SystemExit):
+                f = io.StringIO()
+                with redirect_stdout(f):
+                    main()
+                help_output = f.getvalue()
+                self.assertNotIn('template-delete', help_output)
+                self.assertNotIn('template_delete', help_output)
 
 
 class TestFormatAcceptanceCriteria(TempConfigTestCase):

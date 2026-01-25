@@ -4109,8 +4109,6 @@ def main() -> None:
     parser.add_argument("--qa-path", type=str, metavar="PATH", help="Path to review for standalone QA workflow (requires --qa-review). If not specified with --qa-review, reviews the entire codebase")
     # Enhancement combination flag
     parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd, --qa-review). Individual --no-* flags can override specific features.")
-    # Template management flags
-    parser.add_argument("--template-delete", type=str, metavar="NAME", help="Delete a template by name from .ralph/templates/ directory")
     args = parser.parse_args()
 
     # Handle --ci flag: apply CI defaults before other options
@@ -4165,22 +4163,6 @@ def main() -> None:
     if args.qa_path and args.phase != "all":
         Logger.error(f"--qa-path cannot be combined with phase '{args.phase}'. Standalone QA workflow runs independently of task phases.")
         sys.exit(1)
-
-    # Handle --template-delete flag: delete template and exit
-    if args.template_delete is not None:
-        try:
-            TemplateManager.delete(args.template_delete)
-            Logger.info(f"Template {args.template_delete} deleted successfully.")
-            sys.exit(0)
-        except ValueError as e:
-            Logger.error(str(e))
-            sys.exit(1)
-        except FileNotFoundError as e:
-            Logger.error(str(e))
-            sys.exit(1)
-        except PermissionError as e:
-            Logger.error(f"Permission denied: {e}")
-            sys.exit(1)
 
     # Handle --enhance-all flag: apply enhancement defaults with explicit overrides
     # --enhance-all enables: --enhance-intent, --revise-prd, --qa-review
