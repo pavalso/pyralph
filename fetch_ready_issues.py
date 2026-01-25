@@ -3427,5 +3427,163 @@ def _handle_process(args: argparse.Namespace) -> int:
         return 1
 
 
+# ==============================================================================
+# CLI for batch issue processing
+# ==============================================================================
+
+def create_batch_parser() -> argparse.ArgumentParser:
+    """Create and configure the argument parser for the batch processor CLI.
+
+    Returns:
+        Configured ArgumentParser instance for batch processing.
+    """
+    parser = argparse.ArgumentParser(
+        prog="ralph-batch",
+        description="Process GitHub issues in batch through Ralph's orchestration loop.",
+        epilog="Examples:\n"
+               "  ralph-batch --label ready\n"
+               "  ralph-batch --verbose\n"
+               "  ralph-batch --dry-run\n"
+               "  ralph-batch --label enhancement --verbose",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        "--label",
+        default="ready",
+        help="Filter issues by label (default: ready)"
+    )
+
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable detailed progress logging for each issue"
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Fetch issues and generate PRDs but skip Ralph execution"
+    )
+
+    parser.add_argument(
+        "--agent",
+        default="claude",
+        help="AI agent to use for processing (default: claude)"
+    )
+
+    parser.add_argument(
+        "--no-hooks",
+        action="store_true",
+        dest="no_hooks",
+        help="Disable Ralph hook execution"
+    )
+
+    parser.add_argument(
+        "--no-mark",
+        action="store_true",
+        dest="no_mark",
+        help="Don't mark issues with 'processed' label on success"
+    )
+
+    return parser
+
+
+def batch_main(args: Optional[List[str]] = None) -> int:
+    """Main entry point for the batch processor CLI.
+
+    Args:
+        args: Command line arguments. If None, uses sys.argv.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    parser = create_batch_parser()
+    parsed_args = parser.parse_args(args)
+
+    # Check gh CLI is available first
+    if not check_gh_cli():
+        Logger.error(
+            "GitHub CLI (gh) is not installed or not authenticated. "
+            "Please install gh CLI and run 'gh auth login' to authenticate."
+        )
+        return 1
+
+    # Check memory directory exists (architect phase must have run)
+    try:
+        from ralph import CONF
+        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
+            raise PlannerError(
+                "Memory directory is missing or empty. "
+                "Run the architect phase first: ralph --architect"
+            )
+    except ImportError as e:
+        Logger.error(f"Failed to import Ralph components: {e}")
+        return 1
+    except PlannerError as e:
+        Logger.error(f"Planner error: {e}")
+        return 1
+
+    verbose = parsed_args.verbose
+    dry_run = parsed_args.dry_run
+
+    if verbose:
+        Logger.info(f"Starting batch processing with label: {parsed_args.label}")
+        if dry_run:
+            Logger.info("Dry-run mode: PRDs will be generated but Ralph execution skipped")
+
+    try:
+        result = batch_process_issues(
+            label=parsed_args.label,
+            agent_name=parsed_args.agent,
+            enable_hooks=not parsed_args.no_hooks,
+            execute_orchestration=not dry_run,
+            mark_processed=not parsed_args.no_mark
+        )
+
+        # Output summary
+        if verbose:
+            Logger.info("")
+            Logger.info("=" * 60)
+            Logger.info("BATCH PROCESSING SUMMARY")
+            Logger.info("=" * 60)
+
+        Logger.info(f"Total issues found: {result.issues_found}")
+        Logger.info(f"Successfully processed: {result.issues_processed}")
+        Logger.info(f"Failed: {result.issues_failed}")
+
+        if result.total_tasks_completed > 0 or result.total_tasks_failed > 0:
+            Logger.info(f"Total tasks completed: {result.total_tasks_completed}")
+            Logger.info(f"Total tasks failed: {result.total_tasks_failed}")
+
+        if verbose and result.results:
+            Logger.info("")
+            Logger.info("Individual issue results:")
+            for r in result.results:
+                if r.execution_success:
+                    status = "SUCCESS"
+                    if r.tasks_total > 0:
+                        status += f" ({r.tasks_completed}/{r.tasks_total} tasks)"
+                else:
+                    status = f"FAILED: {r.error}" if r.error else "FAILED"
+                Logger.info(f"  #{r.issue_number}: {status}")
+
+        Logger.info("")
+        Logger.info(result.message)
+
+        # Return exit code based on results
+        if result.issues_failed > 0:
+            return 1
+        return 0
+
+    except GitHubCLIError as e:
+        Logger.error(f"Error: {e}")
+        return 1
+    except PlannerError as e:
+        Logger.error(f"Planner error: {e}")
+        return 1
+
+
 if __name__ == "__main__":
     sys.exit(main())

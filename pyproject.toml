@@ -36,6 +36,7 @@ Documentation = "https://github.com/pavalso/pyralph#readme"
 ralph = "ralph:main"
 fetch-issues = "fetch_ready_issues:main"
 ralph-watch = "fetch_ready_issues:watcher_main"
+ralph-batch = "fetch_ready_issues:batch_main"
 
 [tool.setuptools]
 packages = ["agents"]

@@ -1407,6 +1407,7 @@ from fetch_ready_issues import (
     IssueWatcher, WatcherConfig, WatcherStatus, IssueWatcherError,
     create_watcher_parser, watcher_main,
     GitHubPoller, PollerConfig, GitHubCLIError,
+    create_batch_parser, batch_main,
 )
 
 
@@ -5254,6 +5255,300 @@ class TestQAReportFindingsIntegration(TempConfigTestCase):
         finally:
             Logger.json_output = original_json
             Logger.ndjson_output = original_ndjson
+
+
+# ==============================================================================
+# BATCH CLI TESTS (PRD-001 TASK-003)
+# ==============================================================================
+
+class TestBatchCLI(IssueWatcherTestCase):
+    """Tests for batch processor CLI argument parsing."""
+
+    def test_parser_creation(self):
+        """Parser should be created with correct program name."""
+        parser = create_batch_parser()
+        self.assertIsNotNone(parser)
+        self.assertEqual(parser.prog, "ralph-batch")
+
+    def test_defaults(self):
+        """Parser should have correct default values."""
+        parser = create_batch_parser()
+        args = parser.parse_args([])
+        self.assertEqual(args.label, "ready")
+        self.assertFalse(args.verbose)
+        self.assertFalse(args.dry_run)
+        self.assertEqual(args.agent, "claude")
+        self.assertFalse(args.no_hooks)
+        self.assertFalse(args.no_mark)
+
+    def test_label_flag(self):
+        """--label flag should set the label parameter."""
+        parser = create_batch_parser()
+        args = parser.parse_args(["--label", "enhancement"])
+        self.assertEqual(args.label, "enhancement")
+
+    def test_verbose_flag(self):
+        """--verbose flag should enable verbose mode."""
+        parser = create_batch_parser()
+        args = parser.parse_args(["--verbose"])
+        self.assertTrue(args.verbose)
+
+    def test_dry_run_flag(self):
+        """--dry-run flag should enable dry run mode."""
+        parser = create_batch_parser()
+        args = parser.parse_args(["--dry-run"])
+        self.assertTrue(args.dry_run)
+
+    def test_agent_flag(self):
+        """--agent flag should set the agent parameter."""
+        parser = create_batch_parser()
+        args = parser.parse_args(["--agent", "copilot"])
+        self.assertEqual(args.agent, "copilot")
+
+    def test_no_hooks_flag(self):
+        """--no-hooks flag should disable hooks."""
+        parser = create_batch_parser()
+        args = parser.parse_args(["--no-hooks"])
+        self.assertTrue(args.no_hooks)
+
+    def test_no_mark_flag(self):
+        """--no-mark flag should disable marking issues."""
+        parser = create_batch_parser()
+        args = parser.parse_args(["--no-mark"])
+        self.assertTrue(args.no_mark)
+
+    def test_combined_flags(self):
+        """Multiple flags should work together."""
+        parser = create_batch_parser()
+        args = parser.parse_args([
+            "--label", "bug",
+            "--verbose",
+            "--dry-run",
+            "--agent", "copilot",
+            "--no-hooks",
+            "--no-mark"
+        ])
+        self.assertEqual(args.label, "bug")
+        self.assertTrue(args.verbose)
+        self.assertTrue(args.dry_run)
+        self.assertEqual(args.agent, "copilot")
+        self.assertTrue(args.no_hooks)
+        self.assertTrue(args.no_mark)
+
+    def test_help_exits_with_zero(self):
+        """--help flag should cause SystemExit with code 0."""
+        parser = create_batch_parser()
+        with self.assertRaises(SystemExit) as ctx:
+            with patch('sys.stdout', new_callable=StringIO):
+                parser.parse_args(["--help"])
+        self.assertEqual(ctx.exception.code, 0)
+
+
+class TestBatchMain(IssueWatcherTestCase):
+    """Tests for batch_main function."""
+
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_returns_1_when_gh_cli_not_installed(self, mock_check):
+        """When gh CLI is not installed, returns exit code 1."""
+        mock_check.return_value = False
+
+        with patch('ralph.Logger.error'):
+            result = batch_main([])
+
+        self.assertEqual(result, 1)
+
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_returns_1_when_memory_dir_missing(self, mock_check, mock_conf):
+        """When memory directory doesn't exist, returns exit code 1."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = False
+
+        with patch('ralph.Logger.error'):
+            result = batch_main([])
+
+        self.assertEqual(result, 1)
+
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_returns_1_when_memory_dir_empty(self, mock_check, mock_conf):
+        """When memory directory is empty, returns exit code 1."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter([])
+
+        with patch('ralph.Logger.error'):
+            result = batch_main([])
+
+        self.assertEqual(result, 1)
+
+    @patch('fetch_ready_issues.batch_process_issues')
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_returns_0_on_success(self, mock_check, mock_conf, mock_batch):
+        """When batch processing succeeds, returns exit code 0."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+        mock_batch.return_value = BatchProcessResult(
+            issues_found=2,
+            issues_processed=2,
+            issues_failed=0,
+            results=[],
+            message="Success"
+        )
+
+        with patch('ralph.Logger.info'):
+            result = batch_main([])
+
+        self.assertEqual(result, 0)
+
+    @patch('fetch_ready_issues.batch_process_issues')
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_returns_1_on_failures(self, mock_check, mock_conf, mock_batch):
+        """When some issues fail, returns exit code 1."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+        mock_batch.return_value = BatchProcessResult(
+            issues_found=3,
+            issues_processed=2,
+            issues_failed=1,
+            results=[],
+            message="Some failures"
+        )
+
+        with patch('ralph.Logger.info'):
+            result = batch_main([])
+
+        self.assertEqual(result, 1)
+
+    @patch('fetch_ready_issues.batch_process_issues')
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_passes_label_to_batch_process(self, mock_check, mock_conf, mock_batch):
+        """--label argument should be passed to batch_process_issues."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+        mock_batch.return_value = BatchProcessResult(
+            issues_found=0, issues_processed=0, issues_failed=0,
+            results=[], message=""
+        )
+
+        with patch('ralph.Logger.info'):
+            batch_main(["--label", "custom-label"])
+
+        mock_batch.assert_called_once()
+        call_kwargs = mock_batch.call_args[1]
+        self.assertEqual(call_kwargs["label"], "custom-label")
+
+    @patch('fetch_ready_issues.batch_process_issues')
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_dry_run_disables_orchestration(self, mock_check, mock_conf, mock_batch):
+        """--dry-run should set execute_orchestration=False."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+        mock_batch.return_value = BatchProcessResult(
+            issues_found=0, issues_processed=0, issues_failed=0,
+            results=[], message=""
+        )
+
+        with patch('ralph.Logger.info'):
+            batch_main(["--dry-run"])
+
+        call_kwargs = mock_batch.call_args[1]
+        self.assertFalse(call_kwargs["execute_orchestration"])
+
+    @patch('fetch_ready_issues.batch_process_issues')
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_verbose_logs_detailed_output(self, mock_check, mock_conf, mock_batch):
+        """--verbose should log detailed progress information."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+        mock_batch.return_value = BatchProcessResult(
+            issues_found=1, issues_processed=1, issues_failed=0,
+            results=[
+                OrchestrationResult(
+                    issue_number=1, planner_success=True, execution_success=True,
+                    tasks_completed=2, tasks_failed=0, tasks_total=2
+                )
+            ],
+            message="Success"
+        )
+
+        logged_messages = []
+        def capture_info(msg, color=None):
+            logged_messages.append(msg)
+
+        with patch('ralph.Logger.info', side_effect=capture_info):
+            batch_main(["--verbose"])
+
+        # Check verbose output markers
+        self.assertTrue(any("BATCH PROCESSING SUMMARY" in msg for msg in logged_messages))
+        self.assertTrue(any("Individual issue results:" in msg for msg in logged_messages))
+
+    @patch('fetch_ready_issues.batch_process_issues')
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_no_hooks_disables_hooks(self, mock_check, mock_conf, mock_batch):
+        """--no-hooks should set enable_hooks=False."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+        mock_batch.return_value = BatchProcessResult(
+            issues_found=0, issues_processed=0, issues_failed=0,
+            results=[], message=""
+        )
+
+        with patch('ralph.Logger.info'):
+            batch_main(["--no-hooks"])
+
+        call_kwargs = mock_batch.call_args[1]
+        self.assertFalse(call_kwargs["enable_hooks"])
+
+    @patch('fetch_ready_issues.batch_process_issues')
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_no_mark_disables_marking(self, mock_check, mock_conf, mock_batch):
+        """--no-mark should set mark_processed=False."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+        mock_batch.return_value = BatchProcessResult(
+            issues_found=0, issues_processed=0, issues_failed=0,
+            results=[], message=""
+        )
+
+        with patch('ralph.Logger.info'):
+            batch_main(["--no-mark"])
+
+        call_kwargs = mock_batch.call_args[1]
+        self.assertFalse(call_kwargs["mark_processed"])
+
+    @patch('fetch_ready_issues.batch_process_issues')
+    @patch('ralph.CONF')
+    @patch('fetch_ready_issues.check_gh_cli')
+    def test_agent_flag_passed_to_batch_process(self, mock_check, mock_conf, mock_batch):
+        """--agent argument should be passed to batch_process_issues."""
+        mock_check.return_value = True
+        mock_conf.MEMORY_DIR.exists.return_value = True
+        mock_conf.MEMORY_DIR.iterdir.return_value = iter(["file1.md"])
+        mock_batch.return_value = BatchProcessResult(
+            issues_found=0, issues_processed=0, issues_failed=0,
+            results=[], message=""
+        )
+
+        with patch('ralph.Logger.info'):
+            batch_main(["--agent", "copilot"])
+
+        call_kwargs = mock_batch.call_args[1]
+        self.assertEqual(call_kwargs["agent_name"], "copilot")
 
 
 if __name__ == '__main__':
