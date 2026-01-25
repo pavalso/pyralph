@@ -6,7 +6,7 @@ This module contains the findings analyzer for QA review output:
 """
 from typing import Any, Dict, List
 
-from qa.models import QAFinding, QAFindingType
+from .models import QAFinding, QAFindingType
 
 
 class QAFindingsAnalyzer:

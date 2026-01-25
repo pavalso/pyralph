@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import List, Optional
 
-from config import CONF
+from .config import CONF
 
 
 class _LoggerMeta(type):

@@ -12,11 +12,11 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from logger import Logger
-from qa.models import QARequirement
+from ..logger import Logger
+from .models import QARequirement
 
 if TYPE_CHECKING:
-    from prd import PRDManager
+    from ..prd import PRDManager
 
 
 class QAChecklistError(Exception):

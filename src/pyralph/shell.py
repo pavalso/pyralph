@@ -7,7 +7,7 @@ functionality for the Ralph CLI tool.
 import subprocess
 from typing import List, Optional, Tuple
 
-from config import CONF
+from .config import CONF
 
 
 class Shell:

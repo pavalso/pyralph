@@ -6,7 +6,7 @@ prompt generation and template loading functionality.
 """
 from typing import Dict, Tuple
 
-from config import CONF
+from .config import CONF
 
 
 class PromptFormatter:

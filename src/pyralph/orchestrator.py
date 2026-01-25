@@ -16,34 +16,34 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Import configuration
-from config import CONF
+from .config import CONF
 
 # Import logging
-from logger import Logger
+from .logger import Logger
 
 # Import shell
-from shell import Shell
+from .shell import Shell
 
 # Import PRD utilities
-from prd import PRDManager, JsonUtils
+from .prd import PRDManager, JsonUtils
 
 # Import memory management
-from memory import MemoryManager
+from .memory import MemoryManager
 
 # Import templates
-from templates import PromptFormatter, TemplateManager
+from .templates import PromptFormatter, TemplateManager
 
 # Import QA models, checklist management, and findings analyzer
-from qa.models import QARequirement, QAFinding, QAFindingType
-from qa.checklist import QAChecklistError, QAChecklistCorruptedError, QAChecklistManager
-from qa.analyzer import QAFindingsAnalyzer
+from .qa.models import QARequirement, QAFinding, QAFindingType
+from .qa.checklist import QAChecklistError, QAChecklistCorruptedError, QAChecklistManager
+from .qa.analyzer import QAFindingsAnalyzer
 
 # Import agents
-from agents import get_agent, list_agents
-from agents.base import AgentError
+from .agents import get_agent, list_agents
+from .agents.base import AgentError
 
 # Import hooks
-from hooks import HookManager, Event, EventType
+from .hooks import HookManager, Event, EventType
 
 
 class RalphOrchestrator:

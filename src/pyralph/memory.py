@@ -8,8 +8,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from config import CONF
-from logger import Logger
+from .config import CONF
+from .logger import Logger
 
 
 class MemoryManager:

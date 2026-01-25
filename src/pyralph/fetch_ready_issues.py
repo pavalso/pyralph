@@ -35,10 +35,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple, TYPE_CHECKING
 
-from logger import Logger
+from .logger import Logger
 
 if TYPE_CHECKING:
-    from hooks import HookManager
+    from .hooks import HookManager
 
 
 @dataclass

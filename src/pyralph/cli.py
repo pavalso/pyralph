@@ -6,29 +6,24 @@ command-line argument parsing and application startup.
 """
 import json
 import sys
-import re
 import argparse
 from pathlib import Path
 
-from logger import Logger
-from agents import list_agents
+from .logger import Logger
+from .agents import list_agents
 
 
 def get_version() -> str:
-    """Get the version string from pyproject.toml.
+    """Get the version string from package metadata.
 
     Returns:
-        Version string from pyproject.toml, or 'unknown' if not found or malformed.
+        Version string from package metadata, or 'unknown' if not found.
     """
     try:
-        with open(Path(__file__).parent / "pyproject.toml", "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("version"):
-                    match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
-                    if match:
-                        return match.group(1)
-    except (OSError, UnicodeDecodeError) as e:
-        Logger.debug(f"Failed to read version from pyproject.toml: {type(e).__name__}: {e}")
+        from importlib.metadata import version
+        return version("pyralph")
+    except Exception:
+        pass
     return "unknown"
 
 
@@ -234,8 +229,8 @@ def main() -> None:
             Logger.info(f"Enhancement features disabled by explicit flags: {', '.join(disabled_features)}")
 
     # Late import to allow tests to patch ralph.RalphOrchestrator
-    import ralph
-    ralph.RalphOrchestrator(
+    import pyralph
+    pyralph.RalphOrchestrator(
         agent_name=args.agent,
         enable_hooks=enable_hooks,
         enabled_hook_names=enabled_hook_names,

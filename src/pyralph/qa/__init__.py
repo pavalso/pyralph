@@ -3,9 +3,9 @@
 
 This package contains QA-related domain objects and utilities.
 """
-from qa.models import QARequirement, QAFinding, QAFindingType
-from qa.checklist import QAChecklistError, QAChecklistCorruptedError, QAChecklistManager
-from qa.analyzer import QAFindingsAnalyzer
+from .models import QARequirement, QAFinding, QAFindingType
+from .checklist import QAChecklistError, QAChecklistCorruptedError, QAChecklistManager
+from .analyzer import QAFindingsAnalyzer
 
 __all__ = [
     'QARequirement', 'QAFinding', 'QAFindingType',

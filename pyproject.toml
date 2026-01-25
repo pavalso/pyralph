@@ -33,15 +33,15 @@ Repository = "https://github.com/pavalso/pyralph"
 Documentation = "https://github.com/pavalso/pyralph#readme"
 
 [project.scripts]
-ralph = "ralph:main"
-fetch-issues = "fetch_ready_issues:main"
-ralph-watch = "fetch_ready_issues:watcher_main"
-ralph-batch = "fetch_ready_issues:batch_main"
+ralph = "pyralph.ralph:main"
+fetch-issues = "pyralph.fetch_ready_issues:main"
+ralph-watch = "pyralph.fetch_ready_issues:watcher_main"
+ralph-batch = "pyralph.fetch_ready_issues:batch_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools]
-packages = ["agents"]
-py-modules = ["ralph", "hooks", "fetch_ready_issues"]
-
-[tool.setuptools.package-data]
-agents = ["*.py"]
+package-dir = {"" = "src"}
+include-package-data = true
 
