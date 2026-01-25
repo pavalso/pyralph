@@ -24,16 +24,22 @@ Ralph is an autonomous software development agent that iteratively builds projec
 | Component | Description |
 |-----------|-------------|
 | `src/pyralph/cli.py` | Command-line argument parsing with 50+ options |
-| `src/pyralph/orchestrator.py` | Core execution logic coordinating all phases (~1400 lines) |
+| `src/pyralph/orchestrator.py` | Core execution logic coordinating all phases |
+| `src/pyralph/hooks.py` | Event system with 30+ lifecycle events |
 | `src/pyralph/agents/base.py` | Abstract BaseAgent class and AgentError dataclass |
 | `src/pyralph/agents/claude.py` | ClaudeAgent implementation wrapping Claude CLI |
 | `src/pyralph/agents/copilot.py` | GithubAgent implementation wrapping Copilot CLI |
-| `src/pyralph/hooks.py` | Event system with 30+ lifecycle events (~2100 lines) |
+| `src/pyralph/config.py` | Config dataclass and CONF singleton for paths/limits |
+| `src/pyralph/logger.py` | Centralized Logger class with metaclass-based properties |
+| `src/pyralph/shell.py` | Shell class for safe subprocess execution |
+| `src/pyralph/prd.py` | PRDManager for PRD file operations with caching |
+| `src/pyralph/memory.py` | MemoryManager for context file operations |
+| `src/pyralph/templates.py` | PromptFormatter and TemplateManager for prompt generation |
 
 ## SOLID Principles Assessment
 | Principle | Status | Notes |
 |-----------|--------|-------|
-| Single Responsibility | Good | Clear module boundaries; each class has focused purpose. orchestrator.py and hooks.py exceed target size but documented as technical debt. |
+| Single Responsibility | Good | Clear module boundaries; each class has focused purpose. Large modules (orchestrator.py, hooks.py) are documented as technical debt. |
 | Open/Closed | Good | BaseAgent allows extending with new agents without modifying existing code. Hook and template systems enable extensions. |
 | Liskov Substitution | Good | ClaudeAgent and GithubAgent implement BaseAgent interface identically; can substitute without client changes. |
 | Interface Segregation | Good | Minimal interfaces; BaseAgent exposes only essential abstract methods. Configuration uses focused dataclass. |
