@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""RalphOrchestrator - Core execution logic for Ralph autonomous development agent."""
+"""RalphOrchestrator - Core execution logic for Ralph autonomous development agent.
+
+NOTE: This module is the documented exception to the ~500 line target (TASK-015).
+As the core orchestrator containing the main RalphOrchestrator class with all CLI
+flag handling and execution logic, it is expected to be the largest module in the
+codebase.
+"""
 
 import datetime
 import json

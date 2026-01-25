@@ -4,6 +4,12 @@
 This script uses the GitHub CLI (gh) to fetch all open issues that have the 'ready'
 label from the current repository. The issues can be used as planner inputs for Ralph.
 
+TECHNICAL DEBT (TASK-015): This module exceeds the ~500 line target at ~3600 lines.
+Consider future decomposition into separate modules for:
+- Issue fetching and GitHub API interaction
+- Issue filtering and processing
+- Output formatting and display
+
 Usage:
     python fetch_ready_issues.py [options]
     fetch-issues [options]  # If installed via pip
@@ -29,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple, TYPE_CHECKING
 
-from ralph import Logger
+from logger import Logger
 
 if TYPE_CHECKING:
     from hooks import HookManager
@@ -343,7 +349,8 @@ def invoke_planner(
     # Import here to avoid circular dependencies and allow the module
     # to be used without ralph.py being available
     try:
-        from ralph import RalphOrchestrator, CONF
+        from orchestrator import RalphOrchestrator
+        from config import CONF
     except ImportError as e:
         raise PlannerError(f"Failed to import Ralph components: {e}")
 
@@ -441,7 +448,9 @@ def invoke_orchestration(
         OrchestrationError: If critical setup fails (e.g., missing memory).
     """
     try:
-        from ralph import RalphOrchestrator, CONF, Logger
+        from orchestrator import RalphOrchestrator
+        from config import CONF
+        from logger import Logger
     except ImportError as e:
         raise OrchestrationError(f"Failed to import Ralph components: {e}")
 
@@ -554,7 +563,7 @@ def process_ready_issues(
             - Count of successfully processed issues
             - Count of failed issues
     """
-    from ralph import Logger
+    from logger import Logger
 
     results: List[OrchestrationResult] = []
     success_count = 0
@@ -3512,7 +3521,7 @@ def batch_main(args: Optional[List[str]] = None) -> int:
 
     # Check memory directory exists (architect phase must have run)
     try:
-        from ralph import CONF
+        from config import CONF
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
             raise PlannerError(
                 "Memory directory is missing or empty. "

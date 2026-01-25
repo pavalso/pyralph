@@ -4,6 +4,12 @@ Hook/Event system for Ralph lifecycle events.
 This module provides a mechanism for external programs to subscribe to
 Ralph's lifecycle events (phase start/end, task execution, verification, etc.).
 
+TECHNICAL DEBT (TASK-015): This module exceeds the ~500 line target at ~2100 lines.
+Consider future decomposition into separate modules for:
+- Hook registration and discovery
+- Event execution and dispatch
+- Built-in hook implementations
+
 Usage:
     1. Create Python hooks in .ralph/hooks/*.py with:
        - EVENTS = ["TASK_SUCCESS", "TASK_FAILURE"]  # Required
