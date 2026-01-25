@@ -21,7 +21,7 @@ from ralph import (
     QAFinding, QAFindingsAnalyzer, QAFindingType,
     RalphOrchestrator, Shell, TemplateManager, get_version, main,
 )
-from hooks import Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook
+from hooks import Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook, QAChecklistAgent, FinalQAValidator, FinalQAReport
 
 
 # ==============================================================================
@@ -1005,6 +1005,246 @@ class TestQAChecklistManager(TempConfigTestCase):
 
 
 # ==============================================================================
+# QA CHECKLIST AGENT TESTS
+# ==============================================================================
+
+
+class TestQAChecklistAgent(TempConfigTestCase):
+    """Tests for QAChecklistAgent class."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_manager = MagicMock()
+        self.prd_manager.exists.return_value = True
+        self.manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+        self.hooks_dir = self.temp_path / ".ralph" / "hooks"
+        self.hooks_dir.mkdir(parents=True, exist_ok=True)
+        self.hook_manager = HookManager(self.hooks_dir)
+        self.agent = QAChecklistAgent(self.manager)
+
+    def _write_checklist(self, data):
+        """Helper to write checklist JSON to disk."""
+        self.checklist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.checklist_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def test_register_succeeds(self):
+        """Test QA agent registration with HookManager."""
+        result = self.agent.register(self.hook_manager)
+        self.assertTrue(result)
+        hooks = self.hook_manager.get_all_hooks()
+        hook_names = [h.name for h in hooks]
+        self.assertIn("qa_checklist_agent", hook_names)
+
+    def test_register_fails_if_already_registered(self):
+        """Test that double registration fails."""
+        self.agent.register(self.hook_manager)
+        result = self.agent.register(self.hook_manager)
+        self.assertFalse(result)
+
+    def test_unregister_succeeds(self):
+        """Test QA agent unregistration."""
+        self.agent.register(self.hook_manager)
+        result = self.agent.unregister(self.hook_manager)
+        self.assertTrue(result)
+        hooks = self.hook_manager.get_all_hooks()
+        hook_names = [h.name for h in hooks]
+        self.assertNotIn("qa_checklist_agent", hook_names)
+
+    def test_unregister_fails_if_not_registered(self):
+        """Test unregistration without registration fails."""
+        result = self.agent.unregister(self.hook_manager)
+        self.assertFalse(result)
+
+    def test_on_task_success_updates_requirements(self):
+        """Test that TASK_SUCCESS event updates requirements for the task."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Test criteria 1", "status": "pending"},
+                {"id": "TASK-001-AC02", "description": "Test criteria 2", "status": "pending"},
+                {"id": "TASK-002-AC01", "description": "Other task", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001", task_description="Test task")
+        self.hook_manager.emit(event)
+
+        # Verify TASK-001 requirements are updated
+        req1 = self.manager.get_requirement("TASK-001-AC01")
+        self.assertEqual(req1.status, "passed")
+        self.assertIn("TASK-001", req1.linkedTasks)
+        self.assertIsNotNone(req1.lastChecked)
+
+        req2 = self.manager.get_requirement("TASK-001-AC02")
+        self.assertEqual(req2.status, "passed")
+        self.assertIn("TASK-001", req2.linkedTasks)
+
+        # Verify TASK-002 requirement is unchanged
+        req3 = self.manager.get_requirement("TASK-002-AC01")
+        self.assertEqual(req3.status, "pending")
+        self.assertEqual(req3.linkedTasks, [])
+
+    def test_on_task_success_no_requirements_does_not_error(self):
+        """Test that task with no matching requirements doesn't error."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Test criteria", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-999", task_description="Unknown task")
+
+        # Should not raise
+        self.hook_manager.emit(event)
+
+        # Original requirement unchanged
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertEqual(req.status, "pending")
+
+    def test_on_task_success_without_task_id_does_not_error(self):
+        """Test that event without task_id is handled gracefully."""
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id=None)
+
+        # Should not raise
+        self.hook_manager.emit(event)
+
+    def test_checklist_manager_error_does_not_block(self):
+        """Test that checklist errors don't block task completion."""
+        # Create agent with a mock manager that raises
+        mock_manager = MagicMock()
+        mock_manager.get_all_requirements.side_effect = Exception("DB Error")
+        agent = QAChecklistAgent(mock_manager)
+        agent.register(self.hook_manager)
+
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        # Should not raise, even though manager errors
+        self.hook_manager.emit(event)
+
+    def test_agent_logs_warnings_on_error(self):
+        """Test that agent logs warnings when errors occur."""
+        mock_logger = MagicMock()
+        mock_manager = MagicMock()
+        mock_manager.get_all_requirements.side_effect = Exception("Test error")
+
+        agent = QAChecklistAgent(mock_manager, logger=mock_logger)
+        agent.register(self.hook_manager)
+
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        mock_logger.warning.assert_called()
+
+    def test_requirement_status_set_to_passed_on_success(self):
+        """Test that requirements are marked as passed on TASK_SUCCESS."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001", task_description="Completed task")
+        self.hook_manager.emit(event)
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertEqual(req.status, "passed")
+
+    def test_linked_task_added_to_requirement(self):
+        """Test that task ID is added to linkedTasks array."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria", "status": "pending", "linkedTasks": []},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertIn("TASK-001", req.linkedTasks)
+
+    def test_linked_task_not_duplicated(self):
+        """Test that task ID is not added twice to linkedTasks."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria", "status": "passed", "linkedTasks": ["TASK-001"]},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertEqual(req.linkedTasks.count("TASK-001"), 1)
+
+    def test_last_checked_timestamp_updated(self):
+        """Test that lastChecked timestamp is updated."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria", "status": "pending", "lastChecked": None},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        self.agent.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        self.assertIsNotNone(req.lastChecked)
+
+    def test_get_requirements_for_task_finds_matching(self):
+        """Test _get_requirements_for_task finds correct requirements."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "pending"},
+                {"id": "TASK-001-AC02", "description": "Criteria 2", "status": "pending"},
+                {"id": "TASK-002-AC01", "description": "Other", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+        self.manager.load()
+
+        reqs = self.agent._get_requirements_for_task("TASK-001")
+        self.assertEqual(len(reqs), 2)
+        req_ids = [r[0] for r in reqs]
+        self.assertIn("TASK-001-AC01", req_ids)
+        self.assertIn("TASK-001-AC02", req_ids)
+        self.assertNotIn("TASK-002-AC01", req_ids)
+
+    def test_evaluate_requirement_returns_passed(self):
+        """Test _evaluate_requirement returns passed status."""
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Test criteria", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+        self.manager.load()
+
+        req = self.manager.get_requirement("TASK-001-AC01")
+        status, reasoning = self.agent._evaluate_requirement(req, "TASK-001", "Test task")
+
+        self.assertEqual(status, "passed")
+        self.assertIn("TASK-001", reasoning)
+        self.assertIn("successfully", reasoning.lower())
+
+
+# ==============================================================================
 # MEMORY MANAGER TESTS
 # ==============================================================================
 
@@ -1520,8 +1760,8 @@ class TestEvent(unittest.TestCase):
     def test_event_types_exist(self):
         for name in self.EVENTS:
             self.assertTrue(hasattr(EventType, name))
-        # 20 original + 11 IssueWatcher events + 3 Intent Enhancement events + 3 PRD Revision events + 4 QA Review events = 41
-        self.assertEqual(len(EventType), 41)
+        # 20 original + 11 IssueWatcher events + 3 Intent Enhancement events + 3 PRD Revision events + 4 QA Review events + 2 PRD completion events = 43
+        self.assertEqual(len(EventType), 43)
 
     def test_event_creation_serialization(self):
         event = Event(EventType.TASK_SUCCESS, phase="execute", task_id="T-001", metadata={"k": "v"})
@@ -5090,6 +5330,442 @@ class TestQAReportFindingsIntegration(TempConfigTestCase):
         finally:
             Logger.json_output = original_json
             Logger.ndjson_output = original_ndjson
+
+
+# ==============================================================================
+# FINAL QA VALIDATOR TESTS
+# ==============================================================================
+
+
+class TestFinalQAValidator(TempConfigTestCase):
+    """Tests for FinalQAValidator class."""
+
+    def setUp(self):
+        super().setUp()
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
+        self.checklist_path = CONF.QA_CHECKLIST_FILE
+        self.prd_path = self.temp_path / ".ralph" / "prd.json"
+        self.prd_manager = PRDManager(self.prd_path)
+        self.checklist_manager = QAChecklistManager(self.checklist_path, self.prd_manager)
+        self.hooks_dir = self.temp_path / ".ralph" / "hooks"
+        self.hooks_dir.mkdir(parents=True, exist_ok=True)
+        self.hook_manager = HookManager(self.hooks_dir)
+        self.validator = FinalQAValidator(
+            self.checklist_manager,
+            self.prd_manager,
+            self.hook_manager
+        )
+
+    def _write_prd(self, data):
+        """Helper to write PRD JSON to disk."""
+        self.prd_path.parent.mkdir(parents=True, exist_ok=True)
+        self.prd_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def _write_checklist(self, data):
+        """Helper to write checklist JSON to disk."""
+        self.checklist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.checklist_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+    def test_validate_all_passed(self):
+        """Test validation when all requirements pass."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+                {"id": "TASK-001-AC02", "description": "Criteria 2", "status": "passed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        report = self.validator.validate()
+
+        self.assertTrue(report.all_passed)
+        self.assertEqual(report.total_requirements, 2)
+        self.assertEqual(report.passed, 2)
+        self.assertEqual(report.failed, 0)
+        self.assertEqual(report.coverage_percentage, 100.0)
+        self.assertEqual(report.failed_requirements, [])
+
+    def test_validate_some_failed(self):
+        """Test validation when some requirements fail."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+                {"id": "TASK-001-AC02", "description": "Criteria 2", "status": "failed"},
+                {"id": "TASK-001-AC03", "description": "Criteria 3", "status": "pending"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        report = self.validator.validate()
+
+        self.assertFalse(report.all_passed)
+        self.assertEqual(report.total_requirements, 3)
+        self.assertEqual(report.passed, 1)
+        self.assertEqual(report.failed, 2)
+        self.assertAlmostEqual(report.coverage_percentage, 33.33, places=1)
+        self.assertEqual(len(report.failed_requirements), 2)
+        failed_ids = [r[0] for r in report.failed_requirements]
+        self.assertIn("TASK-001-AC02", failed_ids)
+        self.assertIn("TASK-001-AC03", failed_ids)
+
+    def test_validate_emits_prd_complete_event(self):
+        """Test that PRD_COMPLETE event is emitted when all pass."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        events_received = []
+        def capture_event(event):
+            events_received.append(event)
+            return None
+
+        self.hook_manager.register_hook(
+            name="test_capture",
+            handler=capture_event,
+            events=["PRD_COMPLETE"]
+        )
+
+        self.validator.validate()
+
+        prd_complete_events = [e for e in events_received if e.event_type == EventType.PRD_COMPLETE]
+        self.assertEqual(len(prd_complete_events), 1)
+        self.assertIn("report", prd_complete_events[0].metadata)
+
+    def test_validate_emits_prd_incomplete_event(self):
+        """Test that PRD_INCOMPLETE event is emitted when some fail."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "failed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        events_received = []
+        def capture_event(event):
+            events_received.append(event)
+            return None
+
+        self.hook_manager.register_hook(
+            name="test_capture",
+            handler=capture_event,
+            events=["PRD_INCOMPLETE"]
+        )
+
+        self.validator.validate()
+
+        prd_incomplete_events = [e for e in events_received if e.event_type == EventType.PRD_INCOMPLETE]
+        self.assertEqual(len(prd_incomplete_events), 1)
+        self.assertIn("failed_requirements", prd_incomplete_events[0].metadata)
+
+    def test_edge_case_checklist_never_created(self):
+        """Test validation when checklist was never created - generates and evaluates in one pass."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {
+                    "id": "TASK-001",
+                    "description": "Task 1",
+                    "status": "completed",
+                    "acceptanceCriteria": ["Criteria 1", "Criteria 2"]
+                }
+            ]
+        }
+        self._write_prd(prd)
+        # No checklist file exists
+
+        report = self.validator.validate()
+
+        # Checklist should be generated and all requirements should be pending (failed)
+        self.assertFalse(report.all_passed)
+        self.assertEqual(report.total_requirements, 2)
+        self.assertEqual(report.passed, 0)
+        self.assertEqual(report.failed, 2)
+
+    def test_edge_case_empty_requirements(self):
+        """Test validation with no requirements in checklist."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": []
+        }
+        self._write_prd(prd)
+        checklist = {"requirements": []}
+        self._write_checklist(checklist)
+
+        report = self.validator.validate()
+
+        self.assertTrue(report.all_passed)
+        self.assertEqual(report.total_requirements, 0)
+        self.assertEqual(report.coverage_percentage, 100.0)
+
+    def test_catastrophic_failure_preserves_partial_results(self):
+        """Test that catastrophic failure preserves partial results."""
+        mock_checklist_manager = MagicMock()
+        mock_checklist_manager.exists.return_value = True
+        mock_checklist_manager.get_all_requirements.side_effect = Exception("Database crash")
+
+        mock_prd_manager = MagicMock()
+        validator = FinalQAValidator(mock_checklist_manager, mock_prd_manager)
+
+        report = validator.validate()
+
+        self.assertFalse(report.all_passed)
+        self.assertIsNotNone(report.error)
+        self.assertIn("Database crash", report.error)
+        self.assertIsNotNone(report.partial_results)
+
+    def test_are_all_tasks_completed_true(self):
+        """Test _are_all_tasks_completed returns True when all complete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"},
+                {"id": "TASK-002", "description": "Task 2", "status": "completed"},
+            ]
+        }
+        self._write_prd(prd)
+
+        self.assertTrue(self.validator._are_all_tasks_completed())
+
+    def test_are_all_tasks_completed_false_pending(self):
+        """Test _are_all_tasks_completed returns False with pending tasks."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"},
+                {"id": "TASK-002", "description": "Task 2", "status": "pending"},
+            ]
+        }
+        self._write_prd(prd)
+
+        self.assertFalse(self.validator._are_all_tasks_completed())
+
+    def test_are_all_tasks_completed_false_no_prd(self):
+        """Test _are_all_tasks_completed returns False when no PRD."""
+        self.assertFalse(self.validator._are_all_tasks_completed())
+
+    def test_check_and_validate_triggers_when_all_complete(self):
+        """Test check_and_validate triggers validation when all tasks complete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        report = self.validator.check_and_validate()
+
+        self.assertIsNotNone(report)
+        self.assertTrue(report.all_passed)
+
+    def test_check_and_validate_returns_none_when_incomplete(self):
+        """Test check_and_validate returns None when tasks not complete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "pending"}
+            ]
+        }
+        self._write_prd(prd)
+
+        report = self.validator.check_and_validate()
+
+        self.assertIsNone(report)
+
+    def test_register_succeeds(self):
+        """Test validator registration with HookManager."""
+        result = self.validator.register(self.hook_manager)
+        self.assertTrue(result)
+        hooks = self.hook_manager.get_all_hooks()
+        hook_names = [h.name for h in hooks]
+        self.assertIn("final_qa_validator", hook_names)
+
+    def test_register_fails_if_already_registered(self):
+        """Test that double registration fails."""
+        self.validator.register(self.hook_manager)
+        result = self.validator.register(self.hook_manager)
+        self.assertFalse(result)
+
+    def test_unregister_succeeds(self):
+        """Test validator unregistration."""
+        self.validator.register(self.hook_manager)
+        result = self.validator.unregister(self.hook_manager)
+        self.assertTrue(result)
+        hooks = self.hook_manager.get_all_hooks()
+        hook_names = [h.name for h in hooks]
+        self.assertNotIn("final_qa_validator", hook_names)
+
+    def test_unregister_fails_if_not_registered(self):
+        """Test unregistration without registration fails."""
+        result = self.validator.unregister(self.hook_manager)
+        self.assertFalse(result)
+
+    def test_on_task_success_triggers_validation_when_all_complete(self):
+        """Test that TASK_SUCCESS triggers validation when all tasks complete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"}
+            ]
+        }
+        self._write_prd(prd)
+        checklist = {
+            "requirements": [
+                {"id": "TASK-001-AC01", "description": "Criteria 1", "status": "passed"},
+            ]
+        }
+        self._write_checklist(checklist)
+
+        events_received = []
+        def capture_event(event):
+            events_received.append(event)
+            return None
+
+        self.hook_manager.register_hook(
+            name="test_capture",
+            handler=capture_event,
+            events=["PRD_COMPLETE"]
+        )
+
+        self.validator.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        prd_complete_events = [e for e in events_received if e.event_type == EventType.PRD_COMPLETE]
+        self.assertEqual(len(prd_complete_events), 1)
+
+    def test_on_task_success_does_not_trigger_when_incomplete(self):
+        """Test that TASK_SUCCESS does not trigger validation when tasks incomplete."""
+        prd = {
+            "id": "PRD-001",
+            "description": "Test PRD",
+            "userStories": [
+                {"id": "TASK-001", "description": "Task 1", "status": "completed"},
+                {"id": "TASK-002", "description": "Task 2", "status": "pending"},
+            ]
+        }
+        self._write_prd(prd)
+
+        events_received = []
+        def capture_event(event):
+            events_received.append(event)
+            return None
+
+        self.hook_manager.register_hook(
+            name="test_capture",
+            handler=capture_event,
+            events=["PRD_COMPLETE", "PRD_INCOMPLETE"]
+        )
+
+        self.validator.register(self.hook_manager)
+        event = Event(EventType.TASK_SUCCESS, task_id="TASK-001")
+        self.hook_manager.emit(event)
+
+        prd_events = [e for e in events_received if e.event_type in (EventType.PRD_COMPLETE, EventType.PRD_INCOMPLETE)]
+        self.assertEqual(len(prd_events), 0)
+
+    def test_report_to_dict(self):
+        """Test FinalQAReport.to_dict serialization."""
+        report = FinalQAReport(
+            total_requirements=5,
+            passed=3,
+            failed=2,
+            coverage_percentage=60.0,
+            failed_requirements=[("REQ-001", "Desc 1"), ("REQ-002", "Desc 2")],
+            all_passed=False,
+            error=None,
+            partial_results=None
+        )
+
+        d = report.to_dict()
+
+        self.assertEqual(d["total_requirements"], 5)
+        self.assertEqual(d["passed"], 3)
+        self.assertEqual(d["failed"], 2)
+        self.assertEqual(d["coverage_percentage"], 60.0)
+        self.assertEqual(len(d["failed_requirements"]), 2)
+        self.assertEqual(d["failed_requirements"][0]["id"], "REQ-001")
+        self.assertFalse(d["all_passed"])
+
+    def test_validator_logs_on_error(self):
+        """Test that validator logs warnings on error."""
+        mock_logger = MagicMock()
+        mock_checklist_manager = MagicMock()
+        mock_checklist_manager.exists.return_value = True
+        mock_checklist_manager.get_all_requirements.side_effect = Exception("Test error")
+
+        validator = FinalQAValidator(
+            mock_checklist_manager,
+            MagicMock(),
+            logger=mock_logger
+        )
+        validator.validate()
+
+        mock_logger.error.assert_called()
+
+
+class TestFinalQAValidatorEventTypes(unittest.TestCase):
+    """Tests for PRD_COMPLETE and PRD_INCOMPLETE event types."""
+
+    def test_prd_complete_event_exists(self):
+        """Test that PRD_COMPLETE event type exists."""
+        self.assertTrue(hasattr(EventType, 'PRD_COMPLETE'))
+
+    def test_prd_incomplete_event_exists(self):
+        """Test that PRD_INCOMPLETE event type exists."""
+        self.assertTrue(hasattr(EventType, 'PRD_INCOMPLETE'))
+
+    def test_event_types_are_unique(self):
+        """Test that PRD_COMPLETE and PRD_INCOMPLETE have different values."""
+        self.assertNotEqual(EventType.PRD_COMPLETE, EventType.PRD_INCOMPLETE)
 
 
 if __name__ == '__main__':

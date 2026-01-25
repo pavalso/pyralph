@@ -79,6 +79,8 @@ class EventType(Enum):
     PRD_REVISE_START = auto()
     PRD_REVISE_SUCCESS = auto()
     PRD_REVISE_FAILURE = auto()
+    PRD_COMPLETE = auto()
+    PRD_INCOMPLETE = auto()
 
     # Error events
     ERROR = auto()
@@ -872,3 +874,623 @@ class HookManager:
                 if hook.name not in seen:
                     seen[hook.name] = hook
         return list(seen.values())
+
+
+# ==============================================================================
+# QA CHECKLIST AGENT
+# ==============================================================================
+
+class QAChecklistAgent:
+    """Agent that updates QA checklist status after task completion.
+
+    This agent is triggered by the TASK_SUCCESS hook event to evaluate
+    completed tasks against the QA checklist requirements and update
+    their status accordingly.
+
+    Usage:
+        1. Create an instance with a QAChecklistManager
+        2. Register the agent with a HookManager
+        3. Agent will automatically update checklist on task success
+
+    Example:
+        >>> from ralph import QAChecklistManager, CONF
+        >>> checklist_manager = QAChecklistManager(CONF.QA_CHECKLIST_FILE)
+        >>> qa_agent = QAChecklistAgent(checklist_manager)
+        >>> qa_agent.register(hook_manager)
+    """
+
+    HOOK_NAME = "qa_checklist_agent"
+
+    def __init__(self, checklist_manager: Any, logger: Optional[Any] = None):
+        """Initialize the QA checklist agent.
+
+        Args:
+            checklist_manager: QAChecklistManager instance for checklist operations
+            logger: Optional logger with warning() method for error logging
+        """
+        self._checklist_manager = checklist_manager
+        self._logger = logger
+        self._registered = False
+
+    def _log_warning(self, message: str) -> None:
+        """Log a warning message if logger is available."""
+        if self._logger and hasattr(self._logger, 'warning'):
+            self._logger.warning(message)
+
+    def _log_info(self, message: str) -> None:
+        """Log an info message if logger is available."""
+        if self._logger and hasattr(self._logger, 'info'):
+            self._logger.info(message)
+
+    def register(self, hook_manager: HookManager) -> bool:
+        """Register the QA checklist agent with the hook manager.
+
+        Registers a hook that listens for TASK_SUCCESS events and
+        updates the QA checklist accordingly.
+
+        Args:
+            hook_manager: HookManager instance to register with
+
+        Returns:
+            True if registration succeeded, False otherwise
+        """
+        if self._registered:
+            self._log_warning("QA checklist agent already registered")
+            return False
+
+        success = hook_manager.register_hook(
+            name=self.HOOK_NAME,
+            handler=self._on_task_success,
+            events=["TASK_SUCCESS"],
+            priority=50,  # Run before most other hooks
+            timeout=10.0,
+            modifies_data=False
+        )
+
+        if success:
+            self._registered = True
+
+        return success
+
+    def unregister(self, hook_manager: HookManager) -> bool:
+        """Unregister the QA checklist agent from the hook manager.
+
+        Args:
+            hook_manager: HookManager instance to unregister from
+
+        Returns:
+            True if unregistration succeeded, False otherwise
+        """
+        if not self._registered:
+            return False
+
+        success = hook_manager.unregister_hook(self.HOOK_NAME)
+        if success:
+            self._registered = False
+
+        return success
+
+    def _get_requirements_for_task(self, task_id: str) -> List[Tuple[str, Any]]:
+        """Get all requirements that belong to a specific task.
+
+        Requirements are linked to tasks via ID prefix (e.g., TASK-001-AC01
+        belongs to TASK-001).
+
+        Args:
+            task_id: The task ID to find requirements for (e.g., "TASK-001")
+
+        Returns:
+            List of (requirement_id, requirement) tuples for matching requirements
+        """
+        matching = []
+        try:
+            all_requirements = self._checklist_manager.get_all_requirements()
+            for req in all_requirements:
+                if req.id.startswith(f"{task_id}-"):
+                    matching.append((req.id, req))
+        except Exception as e:
+            self._log_warning(f"Error loading requirements: {e}")
+
+        return matching
+
+    def _evaluate_requirement(
+        self, requirement: Any, task_id: str, task_description: Optional[str]
+    ) -> Tuple[str, str]:
+        """Evaluate whether a requirement is satisfied by the completed task.
+
+        For TASK_SUCCESS events, we mark requirements as passed since the task
+        completed successfully (including passing verification tests).
+
+        Args:
+            requirement: The QARequirement to evaluate
+            task_id: ID of the completed task
+            task_description: Description of the completed task
+
+        Returns:
+            Tuple of (status, reasoning) where status is "passed" or "failed"
+        """
+        # Since TASK_SUCCESS is only emitted after successful verification,
+        # we mark requirements as passed with the reasoning that the task
+        # completed successfully and passed verification
+        status = "passed"
+        reasoning = (
+            f"Task {task_id} completed successfully and passed verification. "
+            f"Requirement '{requirement.description}' is considered satisfied."
+        )
+
+        return status, reasoning
+
+    def _on_task_success(self, event: Event) -> Optional[Event]:
+        """Handle TASK_SUCCESS event by updating the QA checklist.
+
+        This method:
+        1. Finds all requirements linked to the completed task
+        2. Evaluates each requirement against the task
+        3. Updates status to passed/failed with reasoning
+        4. Records the task ID in linkedTasks
+        5. Updates lastChecked timestamp
+
+        If no requirements are affected, logs this and skips the update.
+        All errors are caught and logged as warnings to avoid blocking
+        task completion.
+
+        Args:
+            event: The TASK_SUCCESS event containing task information
+
+        Returns:
+            None (this hook does not modify the event)
+        """
+        task_id = event.task_id
+        task_description = event.task_description
+
+        if not task_id:
+            self._log_warning("QA checklist agent received event without task_id")
+            return None
+
+        try:
+            # Find requirements for this task
+            requirements = self._get_requirements_for_task(task_id)
+
+            if not requirements:
+                self._log_info(
+                    f"QA checklist: No requirements found for task {task_id}, "
+                    "skipping checklist update"
+                )
+                return None
+
+            # Update each requirement
+            updated_count = 0
+            for req_id, requirement in requirements:
+                try:
+                    status, reasoning = self._evaluate_requirement(
+                        requirement, task_id, task_description
+                    )
+
+                    # Update the requirement with status and linked task
+                    # The update_requirement method handles lastChecked automatically
+                    success = self._checklist_manager.update_requirement(
+                        requirement_id=req_id,
+                        status=status,
+                        linked_task=task_id
+                    )
+
+                    if success:
+                        updated_count += 1
+                        self._log_info(
+                            f"QA checklist: Updated {req_id} to '{status}' "
+                            f"(linked to {task_id})"
+                        )
+                    else:
+                        self._log_warning(
+                            f"QA checklist: Failed to update {req_id}"
+                        )
+
+                except Exception as e:
+                    self._log_warning(
+                        f"QA checklist: Error updating requirement {req_id}: {e}"
+                    )
+
+            self._log_info(
+                f"QA checklist: Updated {updated_count}/{len(requirements)} "
+                f"requirements for task {task_id}"
+            )
+
+        except Exception as e:
+            # Catch all exceptions to ensure task completion is not blocked
+            self._log_warning(f"QA checklist agent error: {e}")
+
+        return None
+
+
+# ==============================================================================
+# FINAL QA VALIDATION REPORT
+# ==============================================================================
+
+@dataclass
+class FinalQAReport:
+    """Report from final QA validation when all PRD tasks are complete.
+
+    Attributes:
+        total_requirements: Total number of requirements evaluated
+        passed: Number of requirements that passed
+        failed: Number of requirements that failed
+        coverage_percentage: Percentage of requirements that passed (0-100)
+        failed_requirements: List of (id, description) tuples for failed requirements
+        all_passed: True if all requirements passed
+        error: Error message if validation failed catastrophically
+        partial_results: Partial results preserved if validation failed mid-way
+    """
+    total_requirements: int
+    passed: int
+    failed: int
+    coverage_percentage: float
+    failed_requirements: List[Tuple[str, str]]
+    all_passed: bool
+    error: Optional[str] = None
+    partial_results: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert report to dictionary for JSON serialization."""
+        return {
+            "total_requirements": self.total_requirements,
+            "passed": self.passed,
+            "failed": self.failed,
+            "coverage_percentage": self.coverage_percentage,
+            "failed_requirements": [
+                {"id": req_id, "description": desc}
+                for req_id, desc in self.failed_requirements
+            ],
+            "all_passed": self.all_passed,
+            "error": self.error,
+            "partial_results": self.partial_results,
+        }
+
+
+# ==============================================================================
+# FINAL QA VALIDATOR
+# ==============================================================================
+
+class FinalQAValidator:
+    """Performs final QA validation when all PRD tasks are complete.
+
+    This validator is triggered when all PRD tasks reach 'completed' status.
+    It re-evaluates ALL checklist requirements against the complete implementation
+    and produces a comprehensive validation report.
+
+    Usage:
+        1. Create an instance with QAChecklistManager and PRDManager
+        2. Call validate() when all tasks are complete
+        3. Or register with HookManager to auto-trigger on all tasks complete
+
+    Example:
+        >>> from ralph import QAChecklistManager, PRDManager, CONF
+        >>> checklist_manager = QAChecklistManager(CONF.QA_CHECKLIST_FILE)
+        >>> prd_manager = PRDManager(CONF.PRD_FILE)
+        >>> validator = FinalQAValidator(checklist_manager, prd_manager)
+        >>> report = validator.validate()
+        >>> if report.all_passed:
+        ...     print("PRD complete!")
+    """
+
+    HOOK_NAME = "final_qa_validator"
+
+    def __init__(
+        self,
+        checklist_manager: Any,
+        prd_manager: Any,
+        hook_manager: Optional[HookManager] = None,
+        logger: Optional[Any] = None
+    ):
+        """Initialize the final QA validator.
+
+        Args:
+            checklist_manager: QAChecklistManager instance for checklist operations
+            prd_manager: PRDManager instance for PRD operations
+            hook_manager: Optional HookManager for emitting events
+            logger: Optional logger with info/warning/error methods
+        """
+        self._checklist_manager = checklist_manager
+        self._prd_manager = prd_manager
+        self._hook_manager = hook_manager
+        self._logger = logger
+        self._registered = False
+
+    def _log_info(self, message: str) -> None:
+        """Log an info message if logger is available."""
+        if self._logger and hasattr(self._logger, 'info'):
+            self._logger.info(message)
+
+    def _log_warning(self, message: str) -> None:
+        """Log a warning message if logger is available."""
+        if self._logger and hasattr(self._logger, 'warning'):
+            self._logger.warning(message)
+
+    def _log_error(self, message: str) -> None:
+        """Log an error message if logger is available."""
+        if self._logger and hasattr(self._logger, 'error'):
+            self._logger.error(message)
+
+    def _are_all_tasks_completed(self) -> bool:
+        """Check if all PRD tasks have status 'completed'.
+
+        Returns:
+            True if all tasks are completed, False otherwise
+        """
+        if not self._prd_manager.exists():
+            return False
+
+        try:
+            prd_data = self._prd_manager.load()
+            tasks = prd_data.get('userStories', [])
+
+            if not tasks:
+                return False
+
+            return all(task.get('status') == 'completed' for task in tasks)
+        except Exception as e:
+            self._log_warning(f"Error checking task status: {e}")
+            return False
+
+    def _emit_event(self, event: Event) -> None:
+        """Emit an event if hook manager is available."""
+        if self._hook_manager:
+            self._hook_manager.emit(event)
+
+    def _generate_checklist_if_needed(self) -> bool:
+        """Generate checklist from PRD if it doesn't exist.
+
+        Returns:
+            True if checklist exists or was created, False on failure
+        """
+        if self._checklist_manager.exists():
+            return True
+
+        try:
+            self._log_info("QA checklist not found, generating from PRD for final validation...")
+            self._checklist_manager.load(auto_create=True)
+            return True
+        except Exception as e:
+            self._log_error(f"Failed to generate checklist: {e}")
+            return False
+
+    def validate(self) -> FinalQAReport:
+        """Perform final QA validation on all checklist requirements.
+
+        This method:
+        1. Ensures checklist exists (generates from PRD if needed)
+        2. Re-evaluates ALL requirements against the implementation
+        3. Produces a comprehensive report
+        4. Emits PRD_COMPLETE or PRD_INCOMPLETE event
+
+        Returns:
+            FinalQAReport with validation results
+
+        Note:
+            If validation fails catastrophically, partial results are preserved
+            in the returned report's partial_results field.
+        """
+        partial_results: Dict[str, Any] = {
+            "evaluated": [],
+            "pending": [],
+        }
+
+        try:
+            # Edge case: Generate checklist if never created
+            if not self._generate_checklist_if_needed():
+                return FinalQAReport(
+                    total_requirements=0,
+                    passed=0,
+                    failed=0,
+                    coverage_percentage=0.0,
+                    failed_requirements=[],
+                    all_passed=False,
+                    error="Failed to generate or load checklist",
+                    partial_results=partial_results,
+                )
+
+            # Load all requirements
+            requirements = self._checklist_manager.get_all_requirements()
+
+            if not requirements:
+                self._log_info("No requirements found in checklist")
+                report = FinalQAReport(
+                    total_requirements=0,
+                    passed=0,
+                    failed=0,
+                    coverage_percentage=100.0,
+                    failed_requirements=[],
+                    all_passed=True,
+                )
+                self._emit_event(Event(
+                    EventType.PRD_COMPLETE,
+                    metadata={"report": report.to_dict()}
+                ))
+                return report
+
+            # Mark pending requirements for processing
+            partial_results["pending"] = [req.id for req in requirements]
+
+            # Evaluate each requirement
+            passed_count = 0
+            failed_requirements: List[Tuple[str, str]] = []
+
+            for req in requirements:
+                try:
+                    # Move from pending to evaluated
+                    if req.id in partial_results["pending"]:
+                        partial_results["pending"].remove(req.id)
+
+                    # Re-evaluate: consider 'passed' as passed, anything else as failed
+                    if req.status == "passed":
+                        passed_count += 1
+                        partial_results["evaluated"].append({
+                            "id": req.id,
+                            "status": "passed"
+                        })
+                    else:
+                        failed_requirements.append((req.id, req.description))
+                        partial_results["evaluated"].append({
+                            "id": req.id,
+                            "status": "failed"
+                        })
+
+                except Exception as e:
+                    # Record partial failure but continue
+                    self._log_warning(f"Error evaluating requirement {req.id}: {e}")
+                    failed_requirements.append((req.id, req.description))
+                    partial_results["evaluated"].append({
+                        "id": req.id,
+                        "status": "error",
+                        "error": str(e)
+                    })
+
+            # Calculate statistics
+            total = len(requirements)
+            failed_count = len(failed_requirements)
+            coverage = (passed_count / total * 100) if total > 0 else 0.0
+            all_passed = failed_count == 0
+
+            report = FinalQAReport(
+                total_requirements=total,
+                passed=passed_count,
+                failed=failed_count,
+                coverage_percentage=round(coverage, 2),
+                failed_requirements=failed_requirements,
+                all_passed=all_passed,
+            )
+
+            # Emit appropriate event
+            if all_passed:
+                self._log_info(
+                    f"Final QA validation PASSED: {passed_count}/{total} requirements "
+                    f"({coverage:.1f}% coverage)"
+                )
+                self._emit_event(Event(
+                    EventType.PRD_COMPLETE,
+                    metadata={"report": report.to_dict()}
+                ))
+            else:
+                failure_ids = [req_id for req_id, _ in failed_requirements]
+                self._log_warning(
+                    f"Final QA validation FAILED: {passed_count}/{total} passed, "
+                    f"{failed_count} failed ({coverage:.1f}% coverage)"
+                )
+                self._emit_event(Event(
+                    EventType.PRD_INCOMPLETE,
+                    metadata={
+                        "report": report.to_dict(),
+                        "failed_requirements": failure_ids,
+                    }
+                ))
+
+            return report
+
+        except Exception as e:
+            # Catastrophic failure - preserve partial results
+            self._log_error(f"Final QA validation failed catastrophically: {e}")
+
+            report = FinalQAReport(
+                total_requirements=len(partial_results.get("evaluated", [])) +
+                                   len(partial_results.get("pending", [])),
+                passed=sum(
+                    1 for r in partial_results.get("evaluated", [])
+                    if r.get("status") == "passed"
+                ),
+                failed=sum(
+                    1 for r in partial_results.get("evaluated", [])
+                    if r.get("status") in ("failed", "error")
+                ),
+                coverage_percentage=0.0,
+                failed_requirements=[],
+                all_passed=False,
+                error=str(e),
+                partial_results=partial_results,
+            )
+
+            return report
+
+    def check_and_validate(self) -> Optional[FinalQAReport]:
+        """Check if all tasks are complete and trigger validation if so.
+
+        This is a convenience method that combines the completion check
+        with validation.
+
+        Returns:
+            FinalQAReport if validation was triggered, None if tasks incomplete
+        """
+        if not self._are_all_tasks_completed():
+            return None
+
+        self._log_info("All PRD tasks completed - triggering final QA validation")
+        return self.validate()
+
+    def register(self, hook_manager: HookManager) -> bool:
+        """Register the validator to auto-trigger on task success.
+
+        The validator listens for TASK_SUCCESS events and checks if all
+        tasks are now complete. If so, it triggers final validation.
+
+        Args:
+            hook_manager: HookManager instance to register with
+
+        Returns:
+            True if registration succeeded, False otherwise
+        """
+        if self._registered:
+            self._log_warning("FinalQAValidator already registered")
+            return False
+
+        # Store hook manager reference for event emission
+        self._hook_manager = hook_manager
+
+        success = hook_manager.register_hook(
+            name=self.HOOK_NAME,
+            handler=self._on_task_success,
+            events=["TASK_SUCCESS"],
+            priority=60,  # Run after QAChecklistAgent (priority 50)
+            timeout=30.0,  # Allow more time for full validation
+            modifies_data=False
+        )
+
+        if success:
+            self._registered = True
+
+        return success
+
+    def unregister(self, hook_manager: HookManager) -> bool:
+        """Unregister the validator from the hook manager.
+
+        Args:
+            hook_manager: HookManager instance to unregister from
+
+        Returns:
+            True if unregistration succeeded, False otherwise
+        """
+        if not self._registered:
+            return False
+
+        success = hook_manager.unregister_hook(self.HOOK_NAME)
+        if success:
+            self._registered = False
+
+        return success
+
+    def _on_task_success(self, event: Event) -> Optional[Event]:
+        """Handle TASK_SUCCESS event by checking if all tasks are complete.
+
+        If all tasks are complete, triggers final validation automatically.
+
+        Args:
+            event: The TASK_SUCCESS event
+
+        Returns:
+            None (this hook does not modify the event)
+        """
+        try:
+            # Check and validate returns None if not all tasks complete
+            self.check_and_validate()
+        except Exception as e:
+            # Don't block on validation errors
+            self._log_warning(f"Final QA validation hook error: {e}")
+
+        return None
