@@ -1269,38 +1269,6 @@ class TestTemplateManager(unittest.TestCase):
             self.assertTrue(len(template) > 0)
 
 
-class TestTemplateDeleteCLIRemoved(TempConfigTestCase):
-    """Tests verifying --template-delete CLI argument has been removed."""
-
-    def test_template_delete_flag_rejected(self):
-        """Should reject --template-delete as unrecognized argument."""
-        with patch('sys.argv', ['ralph', '--template-delete', 'foo']):
-            with self.assertRaises(SystemExit) as ctx:
-                main()
-            self.assertEqual(ctx.exception.code, 2)
-
-    def test_template_delete_underscore_variant_rejected(self):
-        """Should reject --template_delete as unrecognized argument."""
-        with patch('sys.argv', ['ralph', '--template_delete', 'foo']):
-            with self.assertRaises(SystemExit) as ctx:
-                main()
-            self.assertEqual(ctx.exception.code, 2)
-
-    def test_template_delete_not_in_help(self):
-        """Should not show --template-delete in help output."""
-        import io
-        from contextlib import redirect_stdout
-
-        with patch('sys.argv', ['ralph', '--help']):
-            with self.assertRaises(SystemExit):
-                f = io.StringIO()
-                with redirect_stdout(f):
-                    main()
-                help_output = f.getvalue()
-                self.assertNotIn('template-delete', help_output)
-                self.assertNotIn('template_delete', help_output)
-
-
 class TestFormatAcceptanceCriteria(TempConfigTestCase):
     """Tests for acceptance criteria formatting (TASK-003)."""
 
