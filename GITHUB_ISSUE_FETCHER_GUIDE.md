@@ -116,14 +116,62 @@ ralph-watch process
 
 ---
 
+## Programmatic Usage
+
+The issue fetcher module is located at `src/pyralph/fetch_ready_issues.py`. You can import and use its components directly:
+
+```python
+from pyralph.fetch_ready_issues import (
+    fetch_ready_issues,
+    check_gh_cli,
+    Issue,
+    GitHubCLIError,
+)
+
+# Check GitHub CLI is authenticated
+if check_gh_cli():
+    # Fetch issues with 'ready' label
+    issues = fetch_ready_issues(label="ready")
+    for issue in issues:
+        print(f"Issue #{issue.number}: {issue.title}")
+```
+
+### Ralph Orchestrator Integration
+
+When integrating with Ralph's orchestration system:
+
+```python
+from pyralph.fetch_ready_issues import (
+    IssueStore,
+    ProcessingQueue,
+    PromptTransformer,
+    BatchProcessor,
+)
+
+# Initialize components
+store = IssueStore()
+queue = ProcessingQueue()
+transformer = PromptTransformer()
+
+# Store and queue issues for processing
+for issue in issues:
+    store.save(issue)
+    queue.add(issue.number)
+
+# Transform issue to Ralph prompt format
+prompt = transformer.transform(issue)
+```
+
+---
+
 ## How It Works
 
 ### Data Flow
 ```
 GitHub Issues (label: "ready")
        |
-  fetch_ready_issues()  <- uses `gh issue list`
-       |
+  fetch_ready_issues()  <- src/pyralph/fetch_ready_issues.py
+       |                   uses `gh issue list`
   IssueStore (.ralph/issues/)  <- persists for audit
        |
   ProcessingQueue (.ralph/queue/)  <- FIFO ordering
