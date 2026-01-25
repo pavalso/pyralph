@@ -4088,6 +4088,178 @@ class RalphOrchestrator:
                 Logger.warning(f"Tasks incomplete: {completed}/{total} completed, {failed} failed, {pending} pending.")
             return 1
 
+    def _run_qa_status(self) -> int:
+        """
+        Display QA checklist status and return appropriate exit code.
+
+        Shows all requirements with their current status (pending/passed/failed),
+        linked tasks, and a summary line with fulfillment percentage.
+
+        Respects the following flags:
+        - --json: Output in machine-parseable JSON format
+        - --verbose: Include lastChecked timestamps and additional details
+
+        Returns:
+            0 if all requirements passed
+            1 if some requirements are pending or failed
+            2 if no checklist exists and user declined generation
+        """
+        checklist_path = self.qa_checklist_path
+        checklist_manager = QAChecklistManager(checklist_path, self._prd)
+
+        # Edge case: checklist doesn't exist
+        if not checklist_manager.exists():
+            # Check if PRD exists to offer generation
+            if self._prd.exists():
+                if Logger.json_output or Logger.ndjson_output:
+                    print(Logger._format_json_message(
+                        "No QA checklist found. Use 'ralph qa-status' with PRD to generate.",
+                        "info",
+                        status="no_checklist",
+                        can_generate=True,
+                        prd_exists=True,
+                        exit_code=2
+                    ))
+                else:
+                    Logger.info("No QA checklist found.", "YELLOW")
+                    Logger.info(f"A PRD exists at: {self._prd._path}")
+                    if not self._non_interactive:
+                        response = input(f"{Logger.COLORS['YELLOW']}Generate checklist from PRD? (y/n): {Logger.COLORS['RESET']}").strip().lower()
+                        if response == 'y':
+                            try:
+                                checklist_manager.load(auto_create=True)
+                                Logger.info(f"Generated QA checklist at: {checklist_path}", "GREEN")
+                                # Continue to display the newly generated checklist
+                            except QAChecklistError as e:
+                                Logger.error(f"Failed to generate checklist: {e}")
+                                return 2
+                        else:
+                            Logger.info("Checklist generation skipped.")
+                            return 2
+                    else:
+                        Logger.info("Run in interactive mode to generate checklist from PRD.")
+                        return 2
+            else:
+                if Logger.json_output or Logger.ndjson_output:
+                    print(Logger._format_json_message(
+                        "No QA checklist found and no PRD available to generate one.",
+                        "error",
+                        status="no_checklist",
+                        can_generate=False,
+                        prd_exists=False,
+                        exit_code=2
+                    ))
+                else:
+                    Logger.error("No QA checklist found.")
+                    Logger.error("No PRD available to generate checklist. Run planner first.")
+                return 2
+
+        # Load the checklist
+        try:
+            checklist_manager.load(auto_create=False)
+        except (QAChecklistError, QAChecklistCorruptedError) as e:
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(
+                    f"Failed to load QA checklist: {e}",
+                    "error",
+                    status="load_error",
+                    exit_code=1
+                ))
+            else:
+                Logger.error(f"Failed to load QA checklist: {e}")
+            return 1
+
+        requirements = checklist_manager.get_all_requirements()
+
+        if not requirements:
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message(
+                    "QA checklist is empty",
+                    "warn",
+                    status="empty",
+                    total=0,
+                    passed=0,
+                    failed=0,
+                    pending=0,
+                    percentage=0,
+                    exit_code=1
+                ))
+            else:
+                Logger.warning("QA checklist is empty.")
+            return 1
+
+        # Calculate statistics
+        total = len(requirements)
+        passed = sum(1 for r in requirements if r.status == "passed")
+        failed = sum(1 for r in requirements if r.status == "failed")
+        pending = sum(1 for r in requirements if r.status == "pending")
+        percentage = round((passed / total) * 100) if total > 0 else 0
+
+        # Prepare output data
+        if Logger.json_output or Logger.ndjson_output:
+            # JSON output mode
+            requirements_data = []
+            for req in requirements:
+                req_data = {
+                    "id": req.id,
+                    "description": req.description,
+                    "status": req.status,
+                    "linkedTasks": req.linkedTasks
+                }
+                if Logger.verbosity > 0:
+                    req_data["lastChecked"] = req.lastChecked
+                requirements_data.append(req_data)
+
+            output_data = {
+                "requirements": requirements_data,
+                "summary": {
+                    "total": total,
+                    "passed": passed,
+                    "failed": failed,
+                    "pending": pending,
+                    "percentage": percentage
+                },
+                "status": "complete" if passed == total else "incomplete",
+                "exit_code": 0 if passed == total else 1
+            }
+            print(json.dumps(output_data, indent=2))
+        else:
+            # Human-readable output
+            Logger.info("QA Checklist Status", "CYAN")
+            Logger.info("=" * 60)
+
+            # Status symbols and colors
+            status_display = {
+                "passed": ("✅", "GREEN"),
+                "failed": ("❌", "RED"),
+                "pending": ("⏳", "YELLOW")
+            }
+
+            for req in requirements:
+                symbol, color = status_display.get(req.status, ("?", "WHITE"))
+                status_line = f"{symbol} [{req.status.upper():7}] {req.id}: {req.description}"
+                Logger.info(status_line, color)
+
+                # Show linked tasks if any
+                if req.linkedTasks:
+                    tasks_str = ", ".join(req.linkedTasks)
+                    Logger.info(f"   └─ Tasks: {tasks_str}")
+
+                # Show lastChecked in verbose mode
+                if Logger.verbosity > 0 and req.lastChecked:
+                    Logger.info(f"   └─ Last checked: {req.lastChecked}")
+
+            Logger.info("=" * 60)
+            Logger.info(f"Summary: {passed} of {total} requirements fulfilled ({percentage}%)",
+                       "GREEN" if passed == total else "YELLOW")
+
+            if failed > 0:
+                Logger.info(f"  Failed: {failed}", "RED")
+            if pending > 0:
+                Logger.info(f"  Pending: {pending}", "YELLOW")
+
+        return 0 if passed == total else 1
+
     def _validate_memory_on_startup(self) -> None:
         if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
             return
@@ -4294,7 +4466,7 @@ class RalphOrchestrator:
         Start the Ralph orchestrator.
 
         Args:
-            phase: Which phase to run ("architect", "planner", "execute", or "all")
+            phase: Which phase to run ("architect", "planner", "execute", "all", or "qa-status")
             accept_all: If True, skip user confirmation prompts
 
         Respects the following flags:
@@ -4302,6 +4474,11 @@ class RalphOrchestrator:
         - --prd-out: Export PRD to specified file and continue
         - --status-check: Check PRD status and exit with appropriate code
         """
+        # Handle qa-status command: show QA checklist status and exit
+        if phase == "qa-status":
+            exit_code = self._run_qa_status()
+            sys.exit(exit_code)
+
         # Handle --status-check flag: check PRD status and exit
         if self._status_check:
             exit_code = self._check_prd_status()
@@ -4346,7 +4523,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ralph - Autonomous Software Development Agent",
         epilog="Examples: ralph | ralph architect | ralph -y execute | ralph -vvv --no-emoji execute",
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("phase", choices=["architect", "planner", "execute", "all"], default="all", nargs="?", help="Phase to run")
+    parser.add_argument("phase", choices=["architect", "planner", "execute", "all", "qa-status"], default="all", nargs="?", help="Phase to run")
     parser.add_argument("--version", action="version", version=f"Ralph {get_version()}")
     parser.add_argument("--accept-all", "-y", action="store_true", help="Skip prompts")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v, -vv, -vvv)")

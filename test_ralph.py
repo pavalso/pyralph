@@ -36,7 +36,7 @@ from hooks import (
 class TempConfigTestCase(unittest.TestCase):
     """Base test class providing temporary directory and CONF management."""
 
-    config_attrs = ('BASE_DIR', 'ROOT_DIR', 'MEMORY_DIR', 'ARCHIVE_DIR', 'PRD_FILE')
+    config_attrs = ('BASE_DIR', 'ROOT_DIR', 'MEMORY_DIR', 'ARCHIVE_DIR', 'PRD_FILE', 'QA_CHECKLIST_FILE')
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -47,6 +47,7 @@ class TempConfigTestCase(unittest.TestCase):
         CONF.MEMORY_DIR = self.temp_path / ".ralph" / "memory"
         CONF.ARCHIVE_DIR = self.temp_path / ".ralph" / "archive"
         CONF.PRD_FILE = self.temp_path / ".ralph" / "prd.json"
+        CONF.QA_CHECKLIST_FILE = self.temp_path / ".ralph" / "qa-checklist.json"
 
     def tearDown(self):
         for attr, value in self._original_conf.items():
@@ -6574,6 +6575,397 @@ class TestQAChecklistOrchestrator(TempConfigTestCase):
     def test_qa_checklist_path_property_returns_default_when_none(self):
         orch = self.create_mock_orchestrator()
         self.assertEqual(orch.qa_checklist_path, CONF.QA_CHECKLIST_FILE)
+
+
+# ==============================================================================
+# QA-STATUS COMMAND TESTS
+# ==============================================================================
+
+
+class TestQAStatusCLI(unittest.TestCase):
+    """Tests for qa-status CLI command parsing."""
+
+    def setUp(self):
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("phase", choices=["architect", "planner", "execute", "all", "qa-status"], default="all", nargs="?")
+
+    def test_qa_status_is_valid_phase(self):
+        args = self.parser.parse_args(["qa-status"])
+        self.assertEqual(args.phase, "qa-status")
+
+    def test_qa_status_default_is_all(self):
+        args = self.parser.parse_args([])
+        self.assertEqual(args.phase, "all")
+
+
+class TestQAStatusCLIPassthrough(unittest.TestCase):
+    """Tests for qa-status command passed through to orchestrator."""
+
+    def test_qa_status_calls_start_with_correct_phase(self):
+        with patch('ralph.RalphOrchestrator') as mock_orch:
+            mock_instance = MagicMock()
+            mock_orch.return_value = mock_instance
+            with patch('sys.argv', ['ralph', 'qa-status']):
+                try:
+                    main()
+                except SystemExit:
+                    pass  # Expected from qa-status command
+            mock_instance.start.assert_called_once()
+            call_args = mock_instance.start.call_args
+            self.assertEqual(call_args[1].get('phase') or call_args[0][0], 'qa-status')
+
+
+class TestQAStatusNoChecklist(TempConfigTestCase):
+    """Tests for qa-status when no checklist exists."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def test_no_checklist_no_prd_exits_with_code_2(self):
+        """When no checklist and no PRD, exit code 2."""
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 2)
+
+    def test_no_checklist_with_prd_offers_generation_non_interactive(self):
+        """When no checklist but PRD exists in non-interactive mode, exits with code 2."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd_data = {"userStories": [{"id": "TASK-001", "acceptanceCriteria": ["Test criterion"]}]}
+        CONF.PRD_FILE.write_text(json.dumps(prd_data), encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(non_interactive=True)
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 2)
+
+    def test_no_checklist_with_prd_generates_when_user_accepts(self):
+        """When no checklist but PRD exists, generate checklist if user accepts."""
+        # Create PRD file
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        prd_data = {"userStories": [{"id": "TASK-001", "acceptanceCriteria": ["Test criterion"]}]}
+        CONF.PRD_FILE.write_text(json.dumps(prd_data), encoding='utf-8')
+
+        orch = self.create_mock_orchestrator(non_interactive=False)
+
+        # Mock user input to accept generation
+        with patch('builtins.input', return_value='y'):
+            exit_code = orch._run_qa_status()
+
+        # Should have generated checklist and returned 1 (pending requirements)
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(orch.qa_checklist_path.exists())
+
+
+class TestQAStatusDisplay(TempConfigTestCase):
+    """Tests for qa-status display functionality."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def _create_checklist(self, requirements_data):
+        """Helper to create a checklist file with given requirements."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        checklist_path = CONF.QA_CHECKLIST_FILE
+        checklist_path.write_text(json.dumps({"requirements": requirements_data}), encoding='utf-8')
+        return checklist_path
+
+    def test_all_passed_returns_exit_code_0(self):
+        """When all requirements passed, exit code is 0."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": ["TASK-001"]},
+            {"id": "REQ-002", "description": "Test 2", "status": "passed", "linkedTasks": ["TASK-001"]}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 0)
+
+    def test_some_pending_returns_exit_code_1(self):
+        """When some requirements pending, exit code is 1."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-002", "description": "Test 2", "status": "pending", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_some_failed_returns_exit_code_1(self):
+        """When some requirements failed, exit code is 1."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-002", "description": "Test 2", "status": "failed", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_empty_checklist_returns_exit_code_1(self):
+        """When checklist is empty, exit code is 1."""
+        self._create_checklist([])
+
+        orch = self.create_mock_orchestrator()
+        exit_code = orch._run_qa_status()
+        self.assertEqual(exit_code, 1)
+
+    def test_displays_linked_tasks(self):
+        """Verify linked tasks are included in output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": ["TASK-001", "TASK-002"]}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        with patch('ralph.Logger.info') as mock_logger:
+            orch._run_qa_status()
+            # Check that linked tasks were logged
+            call_args_list = [str(call) for call in mock_logger.call_args_list]
+            tasks_logged = any("TASK-001" in str(call) and "TASK-002" in str(call) for call in call_args_list)
+            self.assertTrue(tasks_logged)
+
+
+class TestQAStatusJSONOutput(TempConfigTestCase):
+    """Tests for qa-status JSON output mode."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def _create_checklist(self, requirements_data):
+        """Helper to create a checklist file with given requirements."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        checklist_path = CONF.QA_CHECKLIST_FILE
+        checklist_path.write_text(json.dumps({"requirements": requirements_data}), encoding='utf-8')
+        return checklist_path
+
+    def test_json_output_is_valid_json(self):
+        """Verify --json flag produces valid JSON output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": ["TASK-001"]}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+        self.assertIn("requirements", parsed)
+        self.assertIn("summary", parsed)
+
+    def test_json_output_contains_all_fields(self):
+        """Verify JSON output contains all required fields."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": ["TASK-001"]},
+            {"id": "REQ-002", "description": "Test 2", "status": "pending", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        # Check requirements structure
+        self.assertEqual(len(parsed["requirements"]), 2)
+        req = parsed["requirements"][0]
+        self.assertIn("id", req)
+        self.assertIn("description", req)
+        self.assertIn("status", req)
+        self.assertIn("linkedTasks", req)
+
+        # Check summary structure
+        summary = parsed["summary"]
+        self.assertIn("total", summary)
+        self.assertIn("passed", summary)
+        self.assertIn("failed", summary)
+        self.assertIn("pending", summary)
+        self.assertIn("percentage", summary)
+
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(summary["passed"], 1)
+        self.assertEqual(summary["pending"], 1)
+
+    def test_json_output_no_checklist(self):
+        """Verify JSON output when no checklist exists."""
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        self.assertEqual(parsed.get("status"), "no_checklist")
+        self.assertEqual(parsed.get("exit_code"), 2)
+
+
+class TestQAStatusVerbose(TempConfigTestCase):
+    """Tests for qa-status --verbose flag."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def _create_checklist(self, requirements_data):
+        """Helper to create a checklist file with given requirements."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        checklist_path = CONF.QA_CHECKLIST_FILE
+        checklist_path.write_text(json.dumps({"requirements": requirements_data}), encoding='utf-8')
+        return checklist_path
+
+    def test_verbose_includes_last_checked_in_json(self):
+        """Verify --verbose includes lastChecked in JSON output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed",
+             "linkedTasks": [], "lastChecked": "2024-01-15T10:30:00"}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+        Logger.verbosity = 1
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        Logger.verbosity = 0
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        req = parsed["requirements"][0]
+        self.assertIn("lastChecked", req)
+        self.assertEqual(req["lastChecked"], "2024-01-15T10:30:00")
+
+    def test_non_verbose_excludes_last_checked_in_json(self):
+        """Verify non-verbose mode excludes lastChecked from JSON output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed",
+             "linkedTasks": [], "lastChecked": "2024-01-15T10:30:00"}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+        Logger.verbosity = 0
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        req = parsed["requirements"][0]
+        self.assertNotIn("lastChecked", req)
+
+    def test_verbose_displays_last_checked_in_text(self):
+        """Verify --verbose displays lastChecked timestamp in text output."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed",
+             "linkedTasks": [], "lastChecked": "2024-01-15T10:30:00"}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.verbosity = 1
+
+        with patch('ralph.Logger.info') as mock_logger:
+            orch._run_qa_status()
+            call_args_list = [str(call) for call in mock_logger.call_args_list]
+            last_checked_logged = any("2024-01-15T10:30:00" in str(call) for call in call_args_list)
+            self.assertTrue(last_checked_logged)
+
+        Logger.verbosity = 0
+
+
+class TestQAStatusSummary(TempConfigTestCase):
+    """Tests for qa-status summary calculation."""
+
+    def setUp(self):
+        super().setUp()
+        # Reset Logger state to ensure clean test environment
+        Logger.json_output = False
+        Logger.ndjson_output = False
+        Logger.verbosity = 0
+
+    def _create_checklist(self, requirements_data):
+        """Helper to create a checklist file with given requirements."""
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        checklist_path = CONF.QA_CHECKLIST_FILE
+        checklist_path.write_text(json.dumps({"requirements": requirements_data}), encoding='utf-8')
+        return checklist_path
+
+    def test_percentage_calculation(self):
+        """Verify percentage is calculated correctly."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-002", "description": "Test 2", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-003", "description": "Test 3", "status": "pending", "linkedTasks": []},
+            {"id": "REQ-004", "description": "Test 4", "status": "failed", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        # 2 passed out of 4 = 50%
+        self.assertEqual(parsed["summary"]["percentage"], 50)
+
+    def test_all_passed_percentage_is_100(self):
+        """Verify 100% when all requirements passed."""
+        self._create_checklist([
+            {"id": "REQ-001", "description": "Test 1", "status": "passed", "linkedTasks": []},
+            {"id": "REQ-002", "description": "Test 2", "status": "passed", "linkedTasks": []}
+        ])
+
+        orch = self.create_mock_orchestrator()
+        Logger.json_output = True
+
+        captured_output = StringIO()
+        with patch('sys.stdout', captured_output):
+            orch._run_qa_status()
+
+        Logger.json_output = False
+        output = captured_output.getvalue()
+        parsed = json.loads(output)
+
+        self.assertEqual(parsed["summary"]["percentage"], 100)
+        self.assertEqual(parsed["status"], "complete")
 
 
 if __name__ == '__main__':
