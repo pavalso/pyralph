@@ -1,2 +1,25 @@
-sphinx>=7.0.0
-sphinx_rtd_theme>=2.0.0
+# Documentation dependencies for pyralph
+# Compatible with Python 3.8-3.12 as specified in pyproject.toml
+#
+# Install with: pip install -r docs/requirements.txt
+
+# Core Sphinx documentation generator
+# Version range: >=5.0 for Python 3.8 support, <8.0 to avoid breaking changes
+# Note: Sphinx 7.2+ requires Python 3.9+, so we use >=5.0 for Python 3.8 compatibility
+sphinx>=5.0,<8.0
+
+# Read the Docs theme for consistent styling
+# Version range: >=1.0 for stability, <3.0 to avoid breaking changes
+sphinx-rtd-theme>=1.0,<3.0
+
+# Extensions (built-in to Sphinx, no separate packages needed):
+# - sphinx.ext.autodoc: Auto-generate API documentation from docstrings
+# - sphinx.ext.viewcode: Add links to source code
+# - sphinx.ext.napoleon: Support for Google/NumPy docstring formats
+
+# ---
+# Dependency conflict notes:
+# - Project requires pyyaml>=6.0 (from pyproject.toml)
+# - Sphinx may install pyyaml as an optional dependency; no conflict expected
+#   as both allow pyyaml>=6.0
+# - If conflicts occur, ensure pyyaml>=6.0 is installed first, then docs deps
