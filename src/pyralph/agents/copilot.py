@@ -8,7 +8,7 @@ from .base import BaseAgent, AgentError
 class GithubAgent(BaseAgent):
     """Interface to the Copilot CLI agent."""
 
-    def __init__(self, timeout_seconds: int = 600, model: Optional[str] = None) -> None:
+    def __init__(self, *args, **kwargs):
         """
         Initialize the Copilot agent.
 
@@ -16,7 +16,7 @@ class GithubAgent(BaseAgent):
             timeout_seconds: Maximum time to wait for Copilot to respond
             model: Model identifier to use for LLM requests
         """
-        super().__init__(timeout_seconds, model)
+        super().__init__(*args, **kwargs)
         self._temp_file_path: Optional[str] = None
 
     def get_name(self) -> str:
@@ -42,7 +42,7 @@ class GithubAgent(BaseAgent):
         return cmd
 
     def _prepare_input(self, prompt: str) -> Optional[str]:
-        return None
+        return prompt
 
     def run(self, prompt: str, tag: str) -> Tuple[bool, str, Optional[AgentError]]:
         with tempfile.NamedTemporaryFile(mode='w+', delete=True, encoding='utf-8') as f:

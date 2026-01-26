@@ -45,3 +45,27 @@ where = ["src"]
 package-dir = {"" = "src"}
 include-package-data = true
 
+[tool.coverage.run]
+source = ["src/pyralph"]
+omit = [
+    "tests/*",
+    "venv/*",
+    "venv/**",
+    ".venv/*",
+    ".venv/**",
+]
+relative_files = true
+
+[tool.coverage.report]
+fail_under = 48
+show_missing = true
+omit = [
+    "tests/*",
+    "venv/*",
+    "venv/**",
+    ".venv/*",
+    ".venv/**",
+]
+
+[tool.coverage.xml]
+output = "coverage.xml"

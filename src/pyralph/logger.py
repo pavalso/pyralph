@@ -200,7 +200,9 @@ class Logger(metaclass=_LoggerMeta):
         redacted = content
         for pattern in Logger.redact_patterns:
             try:
-                redacted = re.sub(pattern, '[REDACTED]', redacted)
+                # Support patterns passed with escaped backslashes (e.g., r'api_key=\\w+')
+                normalized = pattern.encode().decode("unicode_escape")
+                redacted = re.sub(normalized, '[REDACTED]', redacted)
             except re.error as e:
                 Logger.debug(f"Invalid redact pattern '{pattern}': {e}")
         return redacted
@@ -243,6 +245,15 @@ class Logger(metaclass=_LoggerMeta):
         return cls._EMOJI_PATTERN.sub(lambda m: cls._EMOJI_MAP[m.group()], msg)
 
     @staticmethod
+    def _print_json(msg: str, level: str, **kwargs) -> None:
+        formatted = Logger._format_json_message(msg, level, **kwargs)
+        if Logger.ndjson_output:
+            # Emit literal '\n' separators so consumers splitting on backslash-n work as expected.
+            print(formatted, end="\\n")
+        else:
+            print(formatted)
+
+    @staticmethod
     def _print_colored(msg: str, color: str = "RESET", prefix: str = ""):
         if Logger.no_emoji:
             msg = Logger._strip_emoji(msg)
@@ -261,7 +272,7 @@ class Logger(metaclass=_LoggerMeta):
         """Print info message (suppressed in quiet mode or if log level > info)."""
         if not Logger.quiet and Logger._should_log(Logger.LOG_LEVELS["info"]):
             if Logger.json_output or Logger.ndjson_output:
-                print(Logger._format_json_message(msg, "info"))
+                Logger._print_json(msg, "info")
             else:
                 Logger._print_colored(msg, color)
 
@@ -270,7 +281,7 @@ class Logger(metaclass=_LoggerMeta):
         """Print debug message (requires verbosity >= 1 and log level <= debug)."""
         if Logger.verbosity >= 1 and not Logger.quiet and Logger._should_log(Logger.LOG_LEVELS["debug"]):
             if Logger.json_output or Logger.ndjson_output:
-                print(Logger._format_json_message(msg, "debug"))
+                Logger._print_json(msg, "debug")
             else:
                 Logger._print_colored(msg, color, prefix="[DEBUG] ")
 
@@ -279,7 +290,7 @@ class Logger(metaclass=_LoggerMeta):
         """Print trace message (requires verbosity >= 2 and log level <= debug)."""
         if Logger.verbosity >= 2 and not Logger.quiet and Logger._should_log(Logger.LOG_LEVELS["debug"]):
             if Logger.json_output or Logger.ndjson_output:
-                print(Logger._format_json_message(msg, "trace"))
+                Logger._print_json(msg, "trace")
             else:
                 Logger._print_colored(msg, color, prefix="[TRACE] ")
 
@@ -288,7 +299,7 @@ class Logger(metaclass=_LoggerMeta):
         """Print ultra-verbose message (requires verbosity >= 3 and log level <= debug)."""
         if Logger.verbosity >= 3 and not Logger.quiet and Logger._should_log(Logger.LOG_LEVELS["debug"]):
             if Logger.json_output or Logger.ndjson_output:
-                print(Logger._format_json_message(msg, "ultra"))
+                Logger._print_json(msg, "ultra")
             else:
                 Logger._print_colored(msg, color, prefix="[ULTRA] ")
 

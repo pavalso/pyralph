@@ -84,6 +84,8 @@ class RalphOrchestrator:
         # Store intent flags for non-interactive runs
         self._intent = intent
         self._intent_file = intent_file
+        # Backwards compatibility for legacy flag name used in tests
+        self._intent_file_override = intent_file
         self._prompt_file_override = prompt_file
         self._enhance_intent = enhance_intent
         self._enhance_intent_strict = enhance_intent_strict
