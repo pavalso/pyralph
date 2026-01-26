@@ -11,27 +11,27 @@ Yes. This is being developed using Ralph itself...
 Ralph operates through a continuous loop of three distinct phases:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐         │
-│   │   ARCHITECT  │───▶│    PLANNER   │───▶│   EXECUTE    │         │
-│   │              │    │              │    │              │         │
-│   │ • Explore    │    │ • Generate   │    │ • Run tasks  │         │
-│   │   codebase   │    │   PRD with   │    │ • Verify via │         │
-│   │ • Initialize │    │   user       │    │   tests      │         │
-│   │   memory     │    │   stories    │    │ • Retry on   │         │
-│   │ • Build      │    │ • Define     │    │   failure    │         │
-│   │   context    │    │   acceptance │    │ • Commit on  │         │
-│   │              │    │   criteria   │    │   success    │         │
-│   └──────────────┘    └──────────────┘    └──────────────┘         │
-│                                                    │                │
-│                                                    ▼                │
-│                                          ┌──────────────┐          │
-│                                          │   Complete   │          │
-│                                          │   or retry   │          │
-│                                          └──────────────┘          │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                                                                │
+│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐     │
+│   │   ARCHITECT  │───▶│    PLANNER   │───▶│   EXECUTE    │     │
+│   │              │    │              │    │              │     │
+│   │ • Explore    │    │ • Generate   │    │ • Run tasks  │     │
+│   │   codebase   │    │   PRD with   │    │ • Verify via │     │
+│   │ • Initialize │    │   user       │    │   tests      │     │
+│   │   memory     │    │   stories    │    │ • Retry on   │     │
+│   │ • Build      │    │ • Define     │    │   failure    │     │
+│   │   context    │    │   acceptance │    │ • Commit on  │     │
+│   │              │    │   criteria   │    │   success    │     │
+│   └──────────────┘    └──────────────┘    └──────────────┘     │
+│                                                    │           │
+│                                                    ▼           │
+│                                          ┌──────────────┐      │
+│                                          │   Complete   │      │
+│                                          │   or retry   │      │
+│                                          └──────────────┘      │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 1. **Architect Phase**: Initializes memory with project context by exploring the codebase and building a knowledge base
