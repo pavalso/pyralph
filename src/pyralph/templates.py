@@ -200,46 +200,11 @@ Document per story: technical (complexity, unfamiliar tech), dependency (externa
 
 # FALLBACK STRATEGIES
 
-## Ambiguous Intent
-Document ambiguity, state interpretation as assumption, add scope risk: "Interpreted as [X]; may need revision if intended as [Y]"
-
 ## Conflicting Requirements
 Document conflict explicitly in risks array with: "Scope Risk: Requirements conflict detected; stakeholder clarification recommended"
 
 ## Large Scope
 Break into INVEST-compliant stories, use MoSCoW to identify minimal viable subset, defer remainder as "Won't Have"
-
-## Missing Context
-Generate context-agnostic stories, note assumptions, add dependency risk recommending architect phase first
-
-# JSON SCHEMA
-
-```json
-{
-  "id": "PRD-001",
-  "description": "Brief PRD summary",
-  "userStories": [
-    {
-      "id": "TASK-001",
-      "description": "As a <role>, I want <feature> so that <benefit>",
-      "priority": "Must Have|Should Have|Could Have|Won't Have",
-      "acceptanceCriteria": [
-        "Given <context>, when <action>, then <result>",
-        "Edge case: When <boundary>, then <behavior>",
-        "Error handling: When <error>, then <recovery>"
-      ],
-      "definitionOfDone": [
-        "Code reviewed and approved",
-        "Unit tests passing",
-        "No regressions"
-      ],
-      "risks": [{"type": "technical|dependency|scope", "description": "...", "mitigation": "..."}],
-      "dependencies": [],
-      "status": "pending"
-    }
-  ]
-}
-```
 
 ## Required Fields
 | Field | Type | Description |
@@ -252,7 +217,6 @@ Generate context-agnostic stories, note assumptions, add dependency risk recomme
 | userStories[].priority | string | MoSCoW value |
 | userStories[].acceptanceCriteria | array | Min 3, must include edge case + error scenario |
 | userStories[].definitionOfDone | array | Min 3 quality gates |
-| userStories[].risks | array | Can be empty |
 | userStories[].dependencies | array | Task IDs or empty |
 | userStories[].status | string | Always "pending" |
 
@@ -265,7 +229,7 @@ Generate context-agnostic stories, note assumptions, add dependency risk recomme
 
 # OUTPUT
 Raw JSON only:
-{"id":"PRD-001","description":"...","userStories":[{"id":"TASK-001","description":"...","priority":"Must Have","acceptanceCriteria":[...],"definitionOfDone":[...],"risks":[],"dependencies":[],"status":"pending"}]}
+{"id":"PRD-001","description":"...","userStories":[{"id":"TASK-001","description":"...","priority":"Must Have","acceptanceCriteria":[...],"definitionOfDone":[...],"dependencies":[],"status":"pending"}]}
 """,
         "developer.txt": """# ROLE
 Developer
