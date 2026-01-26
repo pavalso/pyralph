@@ -50,14 +50,14 @@ Ralph operates through a continuous loop of three distinct phases:
 ## Installation
 
 ```bash
-pip install ralph
+pip install pyralph
 ```
 
 Or install from source:
 
 ```bash
-git clone https://github.com/pavalso/ralph.git
-cd ralph
+git clone https://github.com/pavalso/pyralph.git
+cd pyralph
 pip install -e .
 ```
 
@@ -740,82 +740,6 @@ ralph --non-interactive --no-color --no-emoji --json
 | 0 | All tasks complete |
 | 1 | Tasks incomplete |
 | 2 | No PRD found |
-
-#### GitHub Actions Example
-
-```yaml
-name: Ralph CI
-on: [push, pull_request]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install ralph
-          pip install -r requirements.txt
-
-      - name: Run Ralph
-        run: |
-          ralph --ci --intent-file requirements.txt all
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-
-      - name: Check completion status
-        run: ralph --status-check
-```
-
-#### GitLab CI Example
-
-```yaml
-stages:
-  - build
-
-ralph-build:
-  stage: build
-  image: python:3.11
-  script:
-    - pip install ralph
-    - ralph --ci --intent-file requirements.txt all
-    - ralph --status-check
-  variables:
-    ANTHROPIC_API_KEY: $CI_ANTHROPIC_API_KEY
-```
-
-#### Jenkins Pipeline Example
-
-```groovy
-pipeline {
-    agent any
-
-    environment {
-        ANTHROPIC_API_KEY = credentials('anthropic-api-key')
-    }
-
-    stages {
-        stage('Build with Ralph') {
-            steps {
-                sh 'pip install ralph'
-                sh 'ralph --ci --intent-file requirements.txt all'
-            }
-        }
-
-        stage('Verify Completion') {
-            steps {
-                sh 'ralph --status-check'
-            }
-        }
-    }
-}
-```
 
 #### JSON Output Format
 
