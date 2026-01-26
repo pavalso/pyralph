@@ -52,3 +52,7 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 html_theme = 'sphinx_rtd_theme'
 html_static_path = []
+
+# -- Search configuration ----------------------------------------------------
+# Enable English language search with stemming support for partial word matches
+html_search_language = 'en'
