@@ -29,6 +29,21 @@ extensions = [
     'sphinx.ext.napoleon',
 ]
 
+# -- Napoleon configuration --------------------------------------------------
+# Support both Google and NumPy docstring formats
+napoleon_google_docstring = True
+napoleon_numpy_docstring = True
+
+# -- Autodoc configuration ---------------------------------------------------
+# Order members by source order for consistent documentation
+autodoc_member_order = 'bysource'
+
+# Handle modules with no docstrings
+autodoc_default_options = {
+    'undoc-members': True,
+    'show-inheritance': True,
+}
+
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
