@@ -1,9 +1,15 @@
 Welcome to pyralph's documentation!
 ===================================
 
+*"I'm helping!"* — Ralph Wiggum
+
 **pyralph** is an autonomous software development agent that iteratively builds projects through a structured three-phase loop. It acts as a self-directing AI assistant that can understand project requirements, create detailed plans, and execute development tasks with built-in verification and error recovery.
 
 Based on `Ralph Wiggum as a "Software engineer" <https://ghuntley.com/ralph/>`_.
+
+.. tip::
+
+   *"Me fail English? That's unpossible!"* — Just like Ralph, pyralph learns from its mistakes and keeps trying until it gets things right.
 
 Getting Started
 ---------------
@@ -38,6 +44,8 @@ New to Ralph? Start here:
 
 Key Features
 ------------
+
+*"I bent my Wookiee."* — Ralph breaks things so you don't have to.
 
 - **Three-Phase Workflow**: Architect -> Planner -> Execute loop for autonomous development
 - **File-based State**: All context persisted to ``.ralph/`` directory for session resumability

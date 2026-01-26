@@ -1,3 +1,5 @@
+[![Documentation Status](https://readthedocs.org/projects/pyralph/badge/?version=latest)](https://pyralph.readthedocs.io/en/latest/?badge=latest)
+
 # Ralph
 
 **Ralph** is an autonomous software development agent that iteratively builds projects through a structured three-phase loop. It acts as a self-directing AI assistant that can understand project requirements, create detailed plans, and execute development tasks with built-in verification and error recovery.

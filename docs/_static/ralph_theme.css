@@ -1,0 +1,373 @@
+/* Ralph Wiggum Theme - "I'm helping!" */
+/* Inspired by Ralph's iconic look: light blue shirt, salmon pants, Simpsons yellow */
+/* Optimized for readability while keeping the Ralph spirit */
+
+:root {
+    --ralph-blue: #5BA3C9;       /* Ralph's shirt - slightly deeper for better contrast */
+    --ralph-blue-dark: #3D7A9E;  /* Darker blue for hover */
+    --ralph-blue-light: #E8F4FA; /* Light blue for subtle backgrounds */
+    --ralph-salmon: #E07A62;     /* Ralph's pants - deeper for readability */
+    --ralph-salmon-dark: #C45A42;
+    --ralph-salmon-light: #FDF0ED;
+    --simpsons-yellow: #FED90F;  /* Classic Simpsons yellow */
+    --simpsons-yellow-muted: #F5E6A3; /* Softer yellow for backgrounds */
+    --ralph-white: #FFFFFF;
+    --ralph-bg: #FAFAFA;         /* Soft off-white for main content */
+    --ralph-text: #2D3436;       /* Darker text for better readability */
+    --ralph-text-light: #636E72; /* Secondary text */
+}
+
+/* Sidebar / Navigation */
+.wy-side-nav-search {
+    background-color: var(--ralph-blue) !important;
+}
+
+.wy-side-nav-search input[type="text"] {
+    border-color: var(--ralph-blue-dark) !important;
+    background-color: var(--ralph-white) !important;
+}
+
+.wy-nav-side {
+    background-color: #3D3D3D !important; /* Darker sidebar for better contrast */
+}
+
+.wy-menu-vertical header,
+.wy-menu-vertical p.caption {
+    color: var(--ralph-salmon) !important; /* Salmon accent for captions */
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.85em;
+    letter-spacing: 0.5px;
+}
+
+.wy-menu-vertical a {
+    color: #E0E0E0 !important; /* Light gray for readability on dark */
+    font-size: 0.95em;
+    padding: 0.5em 1.5em !important;
+}
+
+.wy-menu-vertical a:hover {
+    background-color: #4A4A4A !important;
+    color: var(--ralph-white) !important;
+}
+
+.wy-menu-vertical li.current {
+    background-color: #4A4A4A !important;
+}
+
+.wy-menu-vertical li.current > a {
+    color: var(--ralph-white) !important;
+    border-left: 3px solid var(--ralph-blue) !important;
+    border-right: none !important;
+    background-color: transparent !important;
+}
+
+.wy-menu-vertical li.current > a:hover {
+    background-color: #555555 !important;
+}
+
+.wy-menu-vertical li.toctree-l1.current > a {
+    background-color: transparent !important;
+    border-bottom: none !important;
+    border-left: 3px solid var(--ralph-salmon) !important;
+}
+
+.wy-menu-vertical li.toctree-l2.current > a,
+.wy-menu-vertical li.toctree-l2.current li.toctree-l3 > a {
+    background-color: #555555 !important;
+    border-left: 3px solid var(--ralph-blue) !important;
+}
+
+/* Main content area */
+.wy-nav-content {
+    background-color: var(--ralph-bg) !important;
+    max-width: 900px !important; /* Better line length for reading */
+}
+
+.wy-nav-content-wrap {
+    background-color: var(--ralph-bg) !important;
+}
+
+/* Typography improvements */
+.rst-content {
+    font-size: 16px;
+    line-height: 1.7;
+    color: var(--ralph-text);
+}
+
+/* Headers */
+h1, h2, h3, h4, h5, h6 {
+    color: var(--ralph-salmon-dark) !important;
+    font-weight: 600 !important;
+    margin-top: 1.5em !important;
+    margin-bottom: 0.75em !important;
+}
+
+h1 {
+    border-bottom: 2px solid var(--ralph-blue) !important;
+    padding-bottom: 0.3em !important;
+}
+
+h2 {
+    border-bottom: 1px solid var(--ralph-salmon-light) !important;
+    padding-bottom: 0.2em !important;
+}
+
+/* Links */
+.rst-content a,
+.wy-nav-content a {
+    color: var(--ralph-blue-dark) !important;
+    text-decoration: none !important;
+}
+
+.rst-content a:hover,
+.wy-nav-content a:hover {
+    color: var(--ralph-salmon) !important;
+    text-decoration: underline !important;
+}
+
+/* Code blocks */
+.highlight {
+    background-color: #F8F8F8 !important;
+    border: 1px solid #E1E4E8 !important;
+    border-radius: 6px !important;
+}
+
+.highlight pre {
+    padding: 1em !important;
+    line-height: 1.5 !important;
+    font-size: 0.9em !important;
+}
+
+code.literal,
+.rst-content code.literal {
+    background-color: var(--ralph-blue-light) !important;
+    color: var(--ralph-text) !important;
+    border: none !important;
+    padding: 0.2em 0.4em !important;
+    border-radius: 4px !important;
+    font-size: 0.9em !important;
+}
+
+/* Admonitions / Notes */
+.admonition {
+    background-color: var(--ralph-white) !important;
+    border-radius: 6px !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08) !important;
+    margin: 1.5em 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+
+.admonition-title {
+    background-color: var(--ralph-blue) !important;
+    color: var(--ralph-white) !important;
+    font-weight: 600 !important;
+    padding: 0.6em 1em !important;
+    margin: 0 !important;
+}
+
+.admonition > p,
+.admonition > ul,
+.admonition > ol {
+    padding: 0.8em 1em !important;
+    margin: 0 !important;
+}
+
+.admonition.note {
+    border-left: 4px solid var(--ralph-blue) !important;
+}
+
+.admonition.tip,
+.admonition.hint {
+    border-left: 4px solid #27AE60 !important;
+}
+
+.admonition.tip > .admonition-title,
+.admonition.hint > .admonition-title {
+    background-color: #27AE60 !important;
+}
+
+.admonition.warning {
+    border-left: 4px solid #F39C12 !important;
+}
+
+.admonition.warning > .admonition-title {
+    background-color: #F39C12 !important;
+    color: var(--ralph-white) !important;
+}
+
+.admonition.danger,
+.admonition.error {
+    border-left: 4px solid var(--ralph-salmon) !important;
+}
+
+.admonition.danger > .admonition-title,
+.admonition.error > .admonition-title {
+    background-color: var(--ralph-salmon) !important;
+    color: var(--ralph-white) !important;
+}
+
+/* Buttons and badges */
+.btn {
+    background-color: var(--ralph-blue) !important;
+    border-color: var(--ralph-blue-dark) !important;
+}
+
+.btn:hover {
+    background-color: var(--ralph-blue-dark) !important;
+}
+
+/* Footer */
+footer {
+    color: var(--ralph-text) !important;
+}
+
+/* Tables */
+table.docutils {
+    border: none !important;
+    border-collapse: collapse !important;
+    width: 100% !important;
+    margin: 1em 0 !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08) !important;
+    border-radius: 6px !important;
+    overflow: hidden !important;
+}
+
+table.docutils thead {
+    background-color: var(--ralph-blue) !important;
+}
+
+table.docutils th {
+    background-color: var(--ralph-blue) !important;
+    color: var(--ralph-white) !important;
+    font-weight: 600 !important;
+    padding: 0.75em 1em !important;
+    text-align: left !important;
+    border: none !important;
+}
+
+table.docutils td {
+    padding: 0.75em 1em !important;
+    border-bottom: 1px solid #E8E8E8 !important;
+    border-left: none !important;
+    border-right: none !important;
+}
+
+table.docutils tbody tr:nth-child(even) {
+    background-color: var(--ralph-blue-light) !important;
+}
+
+table.docutils tbody tr:hover {
+    background-color: var(--ralph-salmon-light) !important;
+}
+
+/* Version badge */
+.rst-versions {
+    background-color: #2D2D2D !important;
+}
+
+.rst-versions a {
+    color: #E0E0E0 !important;
+}
+
+.rst-versions .rst-current-version {
+    background-color: var(--ralph-salmon-dark) !important;
+    color: var(--ralph-white) !important;
+}
+
+/* Scrollbar styling (webkit browsers) */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #F0F0F0;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #C0C0C0;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--ralph-salmon);
+}
+
+/* Search results highlight */
+.highlighted {
+    background-color: var(--simpsons-yellow-muted) !important;
+    padding: 2px 4px !important;
+    border-radius: 2px !important;
+}
+
+/* Breadcrumbs */
+.wy-breadcrumbs {
+    margin-bottom: 1.5em !important;
+}
+
+.wy-breadcrumbs li {
+    color: var(--ralph-text-light) !important;
+}
+
+.wy-breadcrumbs li a {
+    color: var(--ralph-blue-dark) !important;
+}
+
+/* Mobile nav toggle */
+.wy-nav-top {
+    background-color: var(--ralph-blue) !important;
+}
+
+/* Paragraph spacing */
+.rst-content p {
+    margin-bottom: 1em !important;
+}
+
+/* List improvements */
+.rst-content ul,
+.rst-content ol {
+    margin-bottom: 1em !important;
+    padding-left: 1.5em !important;
+}
+
+.rst-content li {
+    margin-bottom: 0.4em !important;
+}
+
+/* Definition lists (for API docs) */
+.rst-content dl dt {
+    background-color: var(--ralph-blue-light) !important;
+    border-left: 3px solid var(--ralph-blue) !important;
+    padding: 0.5em 0.75em !important;
+    margin-top: 1em !important;
+    font-weight: 600 !important;
+}
+
+.rst-content dl dd {
+    padding: 0.5em 0 0.5em 1em !important;
+    margin-left: 0 !important;
+}
+
+/* Method/function signatures */
+.rst-content dl.py dt,
+.rst-content dl.function dt,
+.rst-content dl.method dt,
+.rst-content dl.class dt {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace !important;
+    font-size: 0.9em !important;
+}
+
+/* Footer */
+footer {
+    color: var(--ralph-text-light) !important;
+    margin-top: 2em !important;
+    padding-top: 1em !important;
+    border-top: 1px solid #E8E8E8 !important;
+}
+
+/* Smooth transitions */
+a, .btn, .wy-menu-vertical a {
+    transition: color 0.15s ease, background-color 0.15s ease !important;
+}
