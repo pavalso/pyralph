@@ -21,7 +21,6 @@ Public API:
         Shell - Safe wrapper for subprocess calls
         PRDManager - PRD file operations with caching
         JsonUtils - Robust JSON parsing of LLM outputs
-        MemoryManager - Memory file operations with filtering
         PromptFormatter - Utility for consistent prompt formatting
         TemplateManager - Template loading and management
 
@@ -59,8 +58,7 @@ try:
     from logger import Logger
     from shell import Shell
     from prd import PRDManager, JsonUtils
-    from memory import MemoryManager
-    from templates import PromptFormatter, TemplateManager
+    from templates import TemplateManager
     from hooks import (
         HookManager,
         Event,
@@ -85,8 +83,7 @@ except ImportError:
     from .logger import Logger
     from .shell import Shell
     from .prd import PRDManager, JsonUtils
-    from .memory import MemoryManager
-    from .templates import PromptFormatter, TemplateManager
+    from .templates import TemplateManager
     from .hooks import (
         HookManager,
         Event,
@@ -124,8 +121,6 @@ __all__ = [
     "Shell",
     "PRDManager",
     "JsonUtils",
-    "MemoryManager",
-    "PromptFormatter",
     "TemplateManager",
     # Hooks
     "HookManager",

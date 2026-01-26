@@ -1,7 +1,4 @@
-from pyralph.fetch_ready_issues import (
-    Issue, IssueStore, IssueStoreError, StoredIssue,
-    ProcessingQueue, ProcessingQueueError, QueueItem,
-)
+from pyralph.fetch_ready_issues import IssueStore, ProcessingQueue
 
 from .helpers import IssueWatcherTestCase
 

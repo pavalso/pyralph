@@ -130,15 +130,3 @@ When starting work on a PRD, create a single dedicated PRD branch from master. T
 - Communicate about overlapping work
 
 ---
-
-## Supplemental: Memory Management
-
-Guidelines for managing memory entries:
-
-1. Use filename format: `<tag1>_<tag2>.md`
-2. Categorize with relevant tags
-3. Review and prune regularly
-4. Use specific tags when retrieving
-5. Prioritize updating existing entries over creating new ones
-6. Focus on actionable information
-7. Write memories for every important decision or lesson learned

@@ -1,5 +1,4 @@
 import argparse
-from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,7 +25,6 @@ class TestCliArguments:
         self.parser.add_argument("--prompt-file", type=str)
         self.parser.add_argument("--tree-depth", type=int, default=2)
         self.parser.add_argument("--tree-ignore", nargs="+")
-        self.parser.add_argument("--memory-out", type=str)
         self.parser.add_argument("--test-cmd", type=str)
         self.parser.add_argument("--skip-verify", action="store_true")
         self.parser.add_argument("--retries", type=int)
@@ -34,8 +32,6 @@ class TestCliArguments:
         self.parser.add_argument("--only", nargs="+")
         self.parser.add_argument("--except", dest="except_tasks", nargs="+")
         self.parser.add_argument("--resume", type=str)
-        self.parser.add_argument("--include-memory", nargs="+")
-        self.parser.add_argument("--exclude-memory", nargs="+")
         self.parser.add_argument("--non-interactive", action="store_true")
         self.parser.add_argument("--ci", action="store_true")
         self.parser.add_argument("--status-check", action="store_true")

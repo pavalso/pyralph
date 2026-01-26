@@ -12,7 +12,6 @@ from dataclasses import dataclass
 class Config:
     BASE_DIR: Path = Path.cwd()
     ROOT_DIR: Path = BASE_DIR / ".ralph"
-    MEMORY_DIR: Path = ROOT_DIR / "memory"
     ARCHIVE_DIR: Path = ROOT_DIR / "archive"
     TEMPLATES_DIR: Path = ROOT_DIR / "templates"
     HOOKS_DIR: Path = ROOT_DIR / "hooks"
@@ -25,7 +24,7 @@ class Config:
     TIMEOUT_SECONDS: int = 600
 
     def ensure_directories(self) -> None:
-        for path in [self.ROOT_DIR, self.MEMORY_DIR, self.ARCHIVE_DIR, self.TEMPLATES_DIR, self.HOOKS_DIR]:
+        for path in [self.ROOT_DIR, self.ARCHIVE_DIR, self.TEMPLATES_DIR, self.HOOKS_DIR]:
             path.mkdir(exist_ok=True, parents=True)
 
 

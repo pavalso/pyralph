@@ -1,5 +1,3 @@
-from pyralph.orchestrator import RalphOrchestrator
-
 from .helpers import TempConfigTestCase
 
 

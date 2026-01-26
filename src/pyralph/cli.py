@@ -51,7 +51,6 @@ def main() -> None:
     # Architect control flags for context generation
     parser.add_argument("--tree-depth", type=int, default=2, metavar="N", help="File tree depth for architect (default: 2)")
     parser.add_argument("--tree-ignore", nargs="+", metavar="PATTERN", help="Patterns to ignore in file tree (default: node_modules, venv, .git, .ralph, __pycache__)")
-    parser.add_argument("--memory-out", type=str, metavar="FILE", help="Export memory contents to file after architect phase")
     # Execution and verification flags for task control
     parser.add_argument("--test-cmd", type=str, metavar="CMD", help="Override test command for verification")
     parser.add_argument("--skip-verify", action="store_true", help="Skip verification step after task execution")
@@ -60,7 +59,7 @@ def main() -> None:
     parser.add_argument("--only", nargs="+", metavar="TASK_ID", help="Execute only specified task IDs")
     parser.add_argument("--except", dest="except_tasks", nargs="+", metavar="TASK_ID", help="Skip specified task IDs")
     parser.add_argument("--resume", type=str, metavar="TASK_ID", help="Resume execution from a specific task ID")
-    # Context and memory control flags for file filtering
+    # Context control flags for file filtering
     parser.add_argument("--include", nargs="+", metavar="PATTERN", help="Include only files matching these glob patterns in context")
     parser.add_argument("--exclude", nargs="+", metavar="PATTERN", help="Exclude files matching these glob patterns from context")
     parser.add_argument("--context-limit", type=int, metavar="N", help="Limit maximum number of context files considered")
@@ -191,7 +190,6 @@ def main() -> None:
         enhance_intent_strict=args.enhance_intent_strict,
         tree_depth=args.tree_depth,
         tree_ignore=args.tree_ignore,
-        memory_out=args.memory_out,
         test_cmd=args.test_cmd,
         skip_verify=args.skip_verify,
         retries=args.retries,

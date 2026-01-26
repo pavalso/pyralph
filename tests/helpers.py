@@ -31,14 +31,13 @@ class TempDirectoryMixin:
 class TempConfigTestCase(TempDirectoryMixin, unittest.TestCase):
     """Base test class providing temporary directory and CONF management."""
 
-    config_attrs = ('BASE_DIR', 'ROOT_DIR', 'MEMORY_DIR', 'ARCHIVE_DIR', 'PRD_FILE')
+    config_attrs = ('BASE_DIR', 'ROOT_DIR', 'ARCHIVE_DIR', 'PRD_FILE')
 
     def setUp(self):
         super().setUp()
         self._original_conf = {attr: getattr(CONF, attr) for attr in self.config_attrs if hasattr(CONF, attr)}
         CONF.BASE_DIR = self.temp_path
         CONF.ROOT_DIR = self.temp_path / ".ralph"
-        CONF.MEMORY_DIR = self.temp_path / ".ralph" / "memory"
         CONF.ARCHIVE_DIR = self.temp_path / ".ralph" / "archive"
         CONF.PRD_FILE = self.temp_path / ".ralph" / "prd.json"
 

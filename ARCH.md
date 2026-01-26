@@ -33,7 +33,6 @@ Ralph is an autonomous software development agent that iteratively builds projec
 | `src/pyralph/logger.py` | Centralized Logger class with metaclass-based properties |
 | `src/pyralph/shell.py` | Shell class for safe subprocess execution |
 | `src/pyralph/prd.py` | PRDManager for PRD file operations with caching |
-| `src/pyralph/memory.py` | MemoryManager for context file operations |
 | `src/pyralph/templates.py` | PromptFormatter and TemplateManager for prompt generation |
 
 ## SOLID Principles Assessment
@@ -47,8 +46,8 @@ Ralph is an autonomous software development agent that iteratively builds projec
 
 ## API Boundaries & Integration Points
 - **External Integrations**: Claude CLI (LLM queries), GitHub Copilot CLI (LLM queries), GitHub CLI (issue management), git (version control)
-- **Internal Interfaces**: BaseAgent (agent abstraction), HookManager (event system), PRDManager (PRD persistence), MemoryManager (context files)
-- **Data Formats**: JSON (PRD, hook payloads), Markdown (memory files, templates), YAML (frontmatter)
+- **Internal Interfaces**: BaseAgent (agent abstraction), HookManager (event system), PRDManager (PRD persistence), TemplateManager (prompt templates)
+- **Data Formats**: JSON (PRD, hook payloads), Markdown (templates), YAML (frontmatter)
 - **Protocols**: CLI subprocess communication (stdin/stdout), file-based state persistence
 
 ## Error Handling & Logging

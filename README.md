@@ -18,10 +18,10 @@ Ralph operates through a continuous loop of three distinct phases:
 │   │              │    │              │    │              │     │
 │   │ • Explore    │    │ • Generate   │    │ • Run tasks  │     │
 │   │   codebase   │    │   PRD with   │    │ • Verify via │     │
-│   │ • Initialize │    │   user       │    │   tests      │     │
-│   │   memory     │    │   stories    │    │ • Retry on   │     │
+│   │ • Gather     │    │   user       │    │   tests      │     │
+│   │   context    │    │   stories    │    │ • Retry on   │     │
 │   │ • Build      │    │ • Define     │    │   failure    │     │
-│   │   context    │    │   acceptance │    │ • Commit on  │     │
+│   │   plan       │    │   acceptance │    │ • Commit on  │     │
 │   │              │    │   criteria   │    │   success    │     │
 │   └──────────────┘    └──────────────┘    └──────────────┘     │
 │                                                    │           │
@@ -34,16 +34,16 @@ Ralph operates through a continuous loop of three distinct phases:
 └────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Architect Phase**: Initializes memory with project context by exploring the codebase and building a knowledge base
+1. **Architect Phase**: Generates architecture documentation with project context
 2. **Planner Phase**: Generates a Product Requirements Document (PRD) with user stories and acceptance criteria
 3. **Execute Phase**: Iterates through tasks, running verification tests after each, and retrying on failure until completion
 
 ## Core Features
 
-- **File-based memory**: All context persisted to `.ralph/` directory for session resumability and crash recovery
+- **File-based state**: All context persisted to `.ralph/` directory for session resumability and crash recovery
 - **Verification gate**: Agent claims validated by running actual tests (`pytest` by default) before accepting task completion
 - **Retry mechanism**: Failed tasks automatically retry with error feedback injected into the next attempt
-- **Knowledge injection**: Drop `.md` files in `.ralph/memory/` to teach the agent project-specific context
+- **Knowledge injection**: Provide context directly via prompts or existing files.
 - **Hook system**: Extensible event system for custom integrations—subscribe to lifecycle events (task start/success/failure, verification, phase transitions) via Python modules or executables
 - **CI/CD support**: Headless mode with `--ci` flag, non-interactive execution, JSON/NDJSON output formats, and status checks for pipeline integration
 
@@ -89,7 +89,7 @@ You can use the `--accept-all` flag (or its shortcut `-y`) to skip all prompts a
 # Hard reset - clears all state
 rm -rf .ralph/
 
-# Re-plan - keeps memory, regenerates user stories
+# Re-plan - regenerate user stories
 rm .ralph/prd.json
 ```
 
@@ -158,7 +158,6 @@ Configure the architect phase behavior.
 |------|-------------|
 | `--tree-depth N` | File tree depth for architect (default: 2) |
 | `--tree-ignore PATTERN...` | Patterns to ignore in file tree |
-| `--memory-out FILE` | Export memory contents to file after architect phase |
 
 **Example**: Generate deeper file tree analysis while ignoring test directories:
 ```bash
@@ -184,7 +183,7 @@ Fine-tune how Ralph executes tasks.
 ralph --only TASK-001 TASK-003 --test-cmd "npm test" --timeout 900 execute
 ```
 
-### Context/Memory
+### Context
 
 Control which files Ralph considers and how context is managed.
 
@@ -467,7 +466,7 @@ def on_event(event: Event) -> None:
 
 ## How It Works
 
-1. **Architect phase**: Initializes memory with project context
+1. **Architect phase**: Generates architecture documentation with project context
 2. **Planner phase**: Generates PRD with user stories
 3. **Execute loop**: Iterates tasks until completion or max retries
 
@@ -486,7 +485,6 @@ pyralph/
 │   ├── logger.py             # Logging with verbosity, color, JSON support
 │   ├── shell.py              # Shell command execution utilities
 │   ├── prd.py                # PRD dataclasses (UserStory, PRD)
-│   ├── memory.py             # Memory manager for .ralph/memory/
 │   ├── templates.py          # Prompt template management
 │   ├── hooks.py              # Event/hook system for extensibility
 │   ├── fetch_ready_issues.py # GitHub issue fetcher utility
@@ -500,7 +498,6 @@ pyralph/
 ├── pyproject.toml            # Build configuration
 ├── ARCH.md                   # Architecture decision record
 └── .ralph/                   # Runtime state directory
-    ├── memory/               # Knowledge base (wiki files)
     ├── archive/              # Completed PRD archives
     ├── hooks/                # Custom hook scripts
     ├── templates/            # Prompt templates
@@ -530,7 +527,6 @@ Ralph follows a modular architecture with clear separation of concerns. For deta
 | **Agent System** | `src/pyralph/agents/` | Pluggable agent backends for LLM interaction. Includes `BaseAgent` abstract class and implementations for Claude CLI and GitHub Copilot CLI. Agents handle prompt execution with configurable timeout, model selection, and error recovery. |
 | **Hook System** | `src/pyralph/hooks.py` | Event-driven extensibility layer. Supports Python module hooks and executable hooks with priority ordering, timeout protection, and optional data modification. Subscribes to lifecycle events (phase, task, verification, PRD). |
 | **Logger** | `src/pyralph/logger.py` | Static logging class with CLI-controlled verbosity levels, color output, JSON/NDJSON formats, sensitive data redaction, and both console and file output. |
-| **MemoryManager** | `src/pyralph/memory.py` | Manages the `.ralph/memory/` knowledge base. Handles memory validation, tag-based retrieval, file tree generation, and context injection for prompts. |
 | **Config** | `src/pyralph/config.py` | Dataclass holding all path constants and default limits (retry count, timeout). Ensures required directories exist on startup. |
 | **PRD** | `src/pyralph/prd.py` | Dataclasses for PRD and UserStory structures. |
 | **Templates** | `src/pyralph/templates.py` | Prompt template management and rendering. |
@@ -558,16 +554,13 @@ Ralph follows a modular architecture with clear separation of concerns. For deta
 
 ### Data Flow
 
-1. **Architect Phase**: Scans codebase → Generates memory files → Builds project context
-2. **Planner Phase**: Reads memory + intent → Generates PRD with user stories → Validates acceptance criteria
+1. **Architect Phase**: Scans codebase → Generates context documents → Builds project context
+2. **Planner Phase**: Reads context + intent → Generates PRD with user stories → Validates acceptance criteria
 3. **Execute Phase**: Iterates tasks → Runs agent → Verifies via tests → Commits on success or retries on failure
 
 ## Knowledge Injection
 
-To teach Ralph without repeating context in prompts:
-
-1. Create a markdown file in `.ralph/memory/`
-2. Ralph reads it on the next turn if relevant
+Provide necessary context within prompts or repository files.
 
 ## Debug
 

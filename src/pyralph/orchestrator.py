@@ -27,14 +27,12 @@ from .shell import Shell
 # Import PRD utilities
 from .prd import PRDManager, JsonUtils
 
-# Import memory management
-from .memory import MemoryManager
 
 # Import templates
-from .templates import PromptFormatter, TemplateManager
+from .templates import TemplateManager
 
 # Import agents
-from .agents import get_agent, list_agents
+from .agents import get_agent
 from .agents.base import AgentError
 
 # Import hooks
@@ -45,7 +43,7 @@ class RalphOrchestrator:
     def __init__(self, agent_name: str = "claude", enable_hooks: bool = True, enabled_hook_names: Optional[List[str]] = None,
                  intent: Optional[str] = None, intent_file: Optional[str] = None, prompt_file: Optional[str] = None,
                  enhance_intent: bool = False, enhance_intent_strict: bool = False,
-                 tree_depth: int = 2, tree_ignore: Optional[List[str]] = None, memory_out: Optional[str] = None,
+                 tree_depth: int = 2, tree_ignore: Optional[List[str]] = None,
                  test_cmd: Optional[str] = None, skip_verify: bool = False, retries: Optional[int] = None,
                  timeout: Optional[int] = None, only: Optional[List[str]] = None, except_tasks: Optional[List[str]] = None,
                  resume: Optional[str] = None, include: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
@@ -72,9 +70,7 @@ class RalphOrchestrator:
         if not self.agent.check_dependencies():
             Logger.info(f"❌ Agent '{self.agent.get_name()}' dependencies not satisfied.", "RED")
             sys.exit(1)
-        self.memory = MemoryManager()
         CONF.ensure_directories()
-        self._validate_memory_on_startup()
         # Initialize hook system
         self.hooks = HookManager(CONF.HOOKS_DIR, Logger)
         if not enable_hooks:
@@ -92,7 +88,7 @@ class RalphOrchestrator:
         # Store architect control flags
         self._tree_depth = tree_depth
         self._tree_ignore = tree_ignore
-        self._memory_out = memory_out
+        # memory feature removed; maintain compatibility without memory exports
         # Store execution and verification flags
         self._test_cmd_override = test_cmd
         self._skip_verify = skip_verify
@@ -101,7 +97,7 @@ class RalphOrchestrator:
         self._only_tasks = only
         self._except_tasks = except_tasks
         self._resume_from = resume
-        # Store context and memory control flags
+        # Store context control flags
         self._include_patterns = include
         self._exclude_patterns = exclude
         self._context_limit = context_limit
@@ -286,16 +282,15 @@ class RalphOrchestrator:
 
     def run_architect(self, user_intent: str) -> None:
         """
-        Run the architect phase to initialize project memory.
+        Run the architect phase to generate architecture documentation.
 
-        Creates both .ralph/memory/architecture.md (internal memory) and
-        ARCH.md (git-tracked documentation) with project structure,
+        Generates ARCHITECTURE.md and ARCH.md with project structure,
         tech stack, and test command configuration.
 
         Args:
             user_intent: Description of what the user wants to build
         """
-        Logger.info("\n🕵️  Architect: Initializing Memory...", "CYAN")
+        Logger.info("\n🕵️  Architect: Generating Architecture...", "CYAN")
         self.hooks.emit(Event(EventType.PHASE_START, phase="architect"))
         self.hooks.emit(Event(EventType.ARCHITECT_START, phase="architect"))
 
@@ -307,7 +302,6 @@ class RalphOrchestrator:
             self._run_post_commands("architect", success=False)
             sys.exit(1)
 
-        # Generate file tree with customizable depth and ignore patterns
         file_tree = Shell.get_file_tree(depth=self._tree_depth, ignore=self._tree_ignore)
 
         prompt = TemplateManager.render(
@@ -317,7 +311,7 @@ class RalphOrchestrator:
         )
 
         success, _, _ = self.agent.run(prompt, "ARCHITECT")
-        if not success or not any(CONF.MEMORY_DIR.iterdir()):
+        if not success:
             Logger.info("⚠️ Architect failed.", "RED")
             self.hooks.emit(Event(EventType.ARCHITECT_FAILURE, phase="architect"))
             self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
@@ -332,11 +326,7 @@ class RalphOrchestrator:
             self._run_post_commands("architect", success=False)
             sys.exit(1)
 
-        # Export memory to --memory-out path if specified
-        if self._memory_out:
-            self._export_memory(self._memory_out)
-
-        Logger.info("✅ Memory Initialized.", "GREEN")
+        Logger.info("✅ Architect completed.", "GREEN")
         self.hooks.emit(Event(EventType.ARCHITECT_SUCCESS, phase="architect"))
         self.hooks.emit(Event(EventType.PHASE_END, phase="architect"))
         self._run_post_commands("architect", success=True)
@@ -606,16 +596,9 @@ class RalphOrchestrator:
             self._run_post_commands("planner", success=False)
             sys.exit(1)
 
-        memory_map = self.memory.get_structure(
-            include=self._include_patterns,
-            exclude=self._exclude_patterns,
-            limit=self._context_limit
-        )
-
         prompt = TemplateManager.render(
             "planner.txt",
-            user_intent=user_intent,
-            memory_map=memory_map
+            user_intent=user_intent
         )
 
         for attempt in range(3):
@@ -678,7 +661,7 @@ class RalphOrchestrator:
         of terminating. Archives the PRD upon completion.
 
         Respects the following flags:
-        - --test-cmd: Override the test command from memory
+        - --test-cmd: Override the test command
         - --skip-verify: Skip verification step after task execution
         - --retries: Override max retry count
         - --only: Execute only specified task IDs
@@ -688,8 +671,7 @@ class RalphOrchestrator:
         - --post: Run post-commands after phase completion
         """
         prd = self._prd.load()
-        # Use --test-cmd override if provided, otherwise extract from memory
-        test_cmd = self._test_cmd_override if self._test_cmd_override else self.memory.extract_test_command()
+        test_cmd = self._test_cmd_override if self._test_cmd_override else "pytest"
 
         Logger.info(f"\n🚀 Starting Loop. Verify Command: '{test_cmd}'", "YELLOW")
         if self._skip_verify:
@@ -868,11 +850,6 @@ class RalphOrchestrator:
                 "developer.txt",
                 task_id=task['id'], task_description=task['description'],
                 acceptance_criteria=self._format_acceptance_criteria(task),
-                memory_tree=self.memory.get_structure(
-                    include=self._include_patterns,
-                    exclude=self._exclude_patterns,
-                    limit=self._context_limit
-                ),
                 user_context=self._load_user_context(prd, task, test_cmd),
                 test_cmd=test_cmd, prev_errors=prev_errors if prev_errors else "(No previous errors)"
             )
@@ -998,34 +975,6 @@ class RalphOrchestrator:
         self._prd.invalidate_cache()
         Logger.info(f"📦 PRD Archived to {dest}", "MAGENTA")
         self.hooks.emit(Event(EventType.PRD_ARCHIVED, prd_path=str(dest)))
-
-    def _export_memory(self, output_path: str) -> None:
-        """
-        Export memory contents to a file.
-
-        Concatenates all memory files into a single output file for external use.
-
-        Args:
-            output_path: Path to write the exported memory content
-        """
-        out_path = Path(output_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        content_parts = []
-        for path in sorted(CONF.MEMORY_DIR.rglob('*')):
-            if path.is_file() and not path.name.startswith('.'):
-                try:
-                    rel_path = path.relative_to(CONF.MEMORY_DIR)
-                    file_content = path.read_text(encoding='utf-8')
-                    content_parts.append(f"# {rel_path}\n\n{file_content}")
-                except Exception as e:
-                    Logger.warning(f"Could not read memory file {path}: {e}")
-
-        if content_parts:
-            out_path.write_text("\n\n---\n\n".join(content_parts), encoding='utf-8')
-            Logger.info(f"📋 Memory exported to {out_path}", "MAGENTA")
-        else:
-            Logger.warning("No memory files to export.")
 
     def _print_prd(self) -> None:
         """
@@ -1198,18 +1147,6 @@ class RalphOrchestrator:
                 Logger.warning(f"Tasks incomplete: {completed}/{total} completed, {failed} failed, {pending} pending.")
             return 1
 
-    def _validate_memory_on_startup(self) -> None:
-        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
-            return
-        result = self.memory.validate_memory()
-        if result['total'] == 0:
-            return
-        for key, label in [('corrupted', 'corrupted'), ('empty', 'empty')]:
-            if result[key]:
-                Logger.info(f"⚠️ Memory: {len(result[key])} {label} file(s): {', '.join(result[key])}", "YELLOW")
-        if result['valid']:
-            Logger.debug(f"✅ Memory OK ({result['total']} files)", "GREEN")
-
     def _prompt_user_for_phase(self, phase_name: str) -> bool:
         """Prompt user to run a phase, or fail in non-interactive mode."""
         if self._non_interactive:
@@ -1350,8 +1287,8 @@ class RalphOrchestrator:
         """Run a single specified phase with prerequisite checks."""
         Logger.info(f"📋 Phase: {phase} only", "YELLOW")
 
-        if phase == "planner" and not any(CONF.MEMORY_DIR.iterdir()):
-            Logger.info("❌ Memory missing. Run architect first.", "RED")
+        if phase == "planner" and not (CONF.BASE_DIR / "ARCH.md").exists():
+            Logger.info("❌ Architecture doc missing. Run architect first.", "RED")
             sys.exit(1)
         if phase == "execute" and not self._prd.exists():
             Logger.info("❌ PRD missing. Run planner first.", "RED")
@@ -1374,8 +1311,8 @@ class RalphOrchestrator:
         user_intent = None
 
         # Architect phase
-        if any(CONF.MEMORY_DIR.iterdir()):
-            Logger.info("📋 Memory exists, skipping architect.", "YELLOW")
+        if (CONF.BASE_DIR / "ARCH.md").exists():
+            Logger.info("📋 Architecture doc exists, skipping architect.", "YELLOW")
         elif accept_all or self._prompt_user_for_phase("Architect"):
             user_intent = self._get_and_enhance_intent()
             self.run_architect(user_intent)

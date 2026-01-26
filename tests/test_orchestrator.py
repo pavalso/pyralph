@@ -1,22 +1,10 @@
-import argparse
-import json
-from datetime import datetime as dt
-from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from pyralph import RalphOrchestrator, get_version, list_agents
+from pyralph import RalphOrchestrator
 from pyralph.agents import get_agent
-from pyralph.agents.base import AgentError
-from pyralph.agents.claude import ClaudeAgent
-from pyralph.agents.copilot import GithubAgent
-from pyralph.hooks import Event, EventType
 from pyralph.logger import Logger
-from pyralph.memory import MemoryManager
-from pyralph.prd import PRDManager, JsonUtils
-from pyralph.shell import Shell
-from pyralph.templates import TemplateManager, PromptFormatter
 
 from .helpers import TempConfigTestCase
 
@@ -27,7 +15,6 @@ class TestRalphOrchestrator(TempConfigTestCase):
         with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
             orch = RalphOrchestrator(agent_name="mock")
             assert orch.agent is not None
-            assert isinstance(orch.memory, MemoryManager)
             mock_agent.check_dependencies.assert_called_once()
             mock_agent.set_logger.assert_called_once_with(Logger)
             mock_agent.set_config.assert_called_once_with(__import__("pyralph.config", fromlist=["CONF"]).CONF)
@@ -44,7 +31,7 @@ class TestRalphOrchestrator(TempConfigTestCase):
         assert not CONF.ROOT_DIR.exists()
         with patch('pyralph.orchestrator.get_agent', return_value=self.create_mock_agent()):
             RalphOrchestrator(agent_name="mock")
-            for p in [CONF.ROOT_DIR, CONF.MEMORY_DIR, CONF.ARCHIVE_DIR]:
+            for p in [CONF.ROOT_DIR, CONF.ARCHIVE_DIR]:
                 assert p.exists()
 
     def test_unknown_agent_raises(self):
@@ -64,11 +51,10 @@ class TestRalphOrchestrator(TempConfigTestCase):
 
     def test_architect_requires_arch_md(self):
         mock_agent = self.create_mock_agent()
-        mock_agent.run.return_value = (True, "STATUS: CREATED", None)
+        mock_agent.run.return_value = (True, "STATUS: CREATED ARCHITECTURE.md", None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent)
         CONF = __import__("pyralph.config", fromlist=["CONF"]).CONF
-        CONF.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-        (CONF.MEMORY_DIR / "arch.md").write_text("c", encoding="utf-8")
+        (CONF.BASE_DIR / "ARCH.md").unlink(missing_ok=True)
         with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.info'):
             orch.run_architect("test")
             mock_exit.assert_called_once_with(1)
@@ -77,12 +63,10 @@ class TestRalphOrchestrator(TempConfigTestCase):
             orch.run_architect("test")
             mock_exit.assert_not_called()
 
-
 class TestOrchestratorFlags(TempConfigTestCase):
     FLAG_CASES = [
         ('tree_depth', '_tree_depth', 5, 2),
         ('tree_ignore', '_tree_ignore', ["build"], None),
-        ('memory_out', '_memory_out', "/out.md", None),
         ('test_cmd', '_test_cmd_override', "npm test", None),
         ('skip_verify', '_skip_verify', True, False),
         ('retries', '_retries_override', 5, None),
@@ -143,4 +127,3 @@ class TestOrchestratorIntentHandling(TempConfigTestCase):
         with patch('pyralph.orchestrator.sys.exit', side_effect=SystemExit(1)), patch('pyralph.logger.Logger.error'):
             with pytest.raises(SystemExit):
                 orch._get_intent()
-

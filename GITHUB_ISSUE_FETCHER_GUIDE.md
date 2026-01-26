@@ -9,7 +9,7 @@ The GitHub issue fetcher is a system that automatically fetches issues from GitH
    gh auth status
    ```
 
-2. **Ralph must have been initialized** (architect phase completed) - requires `.ralph/memory/` directory to exist.
+2. **Ralph must have been initialized** (architect phase completed) - requires `ARCH.md` to exist.
 
 ---
 
@@ -243,6 +243,6 @@ ralph-batch --dry-run --verbose
 | Issue | Solution |
 |-------|----------|
 | "gh CLI not authenticated" | Run `gh auth login` |
-| "MEMORY_DIR not found" | Run Ralph's architect phase first |
+| "ARCH.md not found" | Run Ralph's architect phase first |
 | Issues not being fetched | Check label spelling matches exactly |
 | Watcher not processing | Check `ralph-watch status` for queue state |

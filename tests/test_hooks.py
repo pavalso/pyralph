@@ -1,8 +1,6 @@
 import threading
 from unittest.mock import MagicMock
 
-import pytest
-
 from pyralph.hooks import (
     Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook
 )

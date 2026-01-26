@@ -354,10 +354,10 @@ def invoke_planner(
     except ImportError as e:
         raise PlannerError(f"Failed to import Ralph components: {e}")
 
-    # Check that memory exists (architect phase must have run)
-    if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
+    # Ensure architect prerequisites are satisfied (ARCH.md must exist)
+    if not (CONF.BASE_DIR / "ARCH.md").exists():
         raise PlannerError(
-            "Memory directory is missing or empty. "
+            "Architecture documentation missing. "
             "Run the architect phase first."
         )
 
@@ -445,7 +445,7 @@ def invoke_orchestration(
             - error: Error message if orchestration failed, None otherwise
 
     Raises:
-        OrchestrationError: If critical setup fails (e.g., missing memory).
+        OrchestrationError: If critical setup fails (e.g., missing architecture docs).
     """
     try:
         from .orchestrator import RalphOrchestrator
@@ -454,10 +454,10 @@ def invoke_orchestration(
     except ImportError as e:
         raise OrchestrationError(f"Failed to import Ralph components: {e}")
 
-    # Check that memory exists (architect phase must have run)
-    if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
+    # Ensure architect prerequisites are satisfied (ARCH.md must exist)
+    if not (CONF.BASE_DIR / "ARCH.md").exists():
         raise OrchestrationError(
-            "Memory directory is missing or empty. "
+            "Architecture documentation missing. "
             "Run the architect phase first."
         )
 
@@ -3519,12 +3519,12 @@ def batch_main(args: Optional[List[str]] = None) -> int:
         )
         return 1
 
-    # Check memory directory exists (architect phase must have run)
+    # Ensure architect prerequisites are satisfied (ARCH.md must exist)
     try:
         from .config import CONF
-        if not CONF.MEMORY_DIR.exists() or not any(CONF.MEMORY_DIR.iterdir()):
+        if not (CONF.BASE_DIR / "ARCH.md").exists():
             raise PlannerError(
-                "Memory directory is missing or empty. "
+                "Architecture documentation missing. "
                 "Run the architect phase first: ralph --architect"
             )
     except ImportError as e:

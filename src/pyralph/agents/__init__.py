@@ -8,6 +8,7 @@ from .copilot import GithubAgent
 
 AVAILABLE_AGENTS = {"claude": ClaudeAgent, "copilot": GithubAgent}
 
+
 def get_agent(agent_name: str, **kwargs) -> BaseAgent:
     agent_name = agent_name.lower()
     if agent_name not in AVAILABLE_AGENTS:
@@ -26,5 +27,6 @@ def list_agents() -> List[str]:
         List of available agent names
     """
     return list(AVAILABLE_AGENTS.keys())
+
 
 __all__ = ["BaseAgent", "AgentError", "ClaudeAgent", "get_agent", "list_agents", "AVAILABLE_AGENTS"]

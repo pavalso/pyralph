@@ -16,12 +16,10 @@ class PromptFormatter:
     DELIMITERS: Dict[str, Tuple[str, str]] = {
         'user_intent': ('USER_INTENT', 'User-provided intent/goal'),
         'file_tree': ('FILE_TREE', 'Project directory structure'),
-        'memory_map': ('MEMORY_MAP', 'Available memory files'),
         'task_id': ('TASK_ID', 'Task identifier'),
         'task_description': ('TASK_DESC', 'Task description'),
         'acceptance_criteria': ('ACCEPTANCE_CRITERIA', 'Task acceptance criteria'),
         'user_context': ('USER_CONTEXT', 'User preferences and instructions'),
-        'memory_tree': ('MEMORY_TREE', 'Memory file contents'),
         'prev_errors': ('PREV_ERRORS', 'Previous error messages'),
         'test_cmd': ('TEST_CMD', 'Verification command'),
     }
@@ -87,7 +85,7 @@ When information cannot be determined from the file tree:
 - For test commands: `[Unable to determine - manual verification required]`
 
 # CONSTRAINTS
-- Create exactly two files: .ralph/memory/architecture.md and ARCH.md
+# Create ARCHITECTURE.md in project root
 - Use exact YAML frontmatter format below
 - Include ALL required sections
 - Detect actual test command (pytest, npm test, etc.)
@@ -96,7 +94,7 @@ When information cannot be determined from the file tree:
 
 # OUTPUT SPECIFICATION
 
-## File 1: .ralph/memory/architecture.md
+## File 1: ARCHITECTURE.md
 
 ```markdown
 ---
@@ -159,9 +157,9 @@ Test Command: `[actual test command]`
 Create a copy of the architecture documentation in the project root for git tracking.
 
 # RESPONSE FORMAT
-After creating the files, output EXACTLY:
+After creating the file, output EXACTLY:
 ```
-STATUS: CREATED .ralph/memory/architecture.md
+STATUS: CREATED ARCHITECTURE.md
 ```
 """,
         "planner.txt": """# ROLE
@@ -174,10 +172,6 @@ Create a PRD in JSON format following product management best practices.
 <USER_INTENT>
 {{user_intent}}
 </USER_INTENT>
-
-<MEMORY_MAP>
-{{memory_map}}
-</MEMORY_MAP>
 
 # REQUIREMENTS
 
@@ -289,7 +283,6 @@ Implement assigned task per acceptance criteria while following software enginee
 <USER_CONTEXT>{{user_context}}</USER_CONTEXT>
 
 # AVAILABLE CONTEXT
-<MEMORY_TREE>{{memory_tree}}</MEMORY_TREE>
 <PREV_ERRORS>{{prev_errors}}</PREV_ERRORS>
 
 # CODE QUALITY PRINCIPLES

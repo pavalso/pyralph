@@ -1,12 +1,9 @@
-from pathlib import Path
 from io import StringIO
 from unittest.mock import patch
 
 from pyralph.fetch_ready_issues import IssueWatcher, WatcherConfig
-from pyralph.hooks import EventType
 
 from .helpers import IssueWatcherTestCase
-from .test_issue_watcher_base import IssueWatcherBase
 
 
 class TestIssueWatcher(IssueWatcherTestCase):
