@@ -3,11 +3,52 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
+import logging
 import os
+import subprocess
 import sys
 
 # Add the source directory to the path for autodoc
 sys.path.insert(0, os.path.abspath('../src'))
+
+
+def get_github_repo_url():
+    """Derive GitHub repository URL from git remote origin.
+
+    Returns the HTTPS URL for the GitHub repository, or None if it cannot
+    be determined.
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'remote', 'get-url', 'origin'],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=10
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            # Convert SSH URL to HTTPS if needed
+            if url.startswith('git@github.com:'):
+                url = url.replace('git@github.com:', 'https://github.com/')
+            # Remove .git suffix if present
+            if url.endswith('.git'):
+                url = url[:-4]
+            return url
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return None
+
+
+# -- GitHub Repository Configuration -----------------------------------------
+# Derive repository URL from git remote or use explicit configuration
+GITHUB_REPO_URL = get_github_repo_url()
+
+if GITHUB_REPO_URL is None:
+    logging.warning(
+        "Could not determine GitHub repository URL from git remote. "
+        "GitHub link will not be displayed in documentation."
+    )
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -64,6 +105,18 @@ html_theme_options = {
     'navigation_depth': 4,  # Show more depth in navigation
     'collapse_navigation': False,  # Keep navigation expanded
 }
+
+# -- GitHub repository link --------------------------------------------------
+# Display GitHub link in the documentation header/navigation
+# The sphinx_rtd_theme uses html_context to configure the repository link
+if GITHUB_REPO_URL:
+    html_context = {
+        'display_github': True,
+        'github_user': GITHUB_REPO_URL.split('/')[-2] if '/' in GITHUB_REPO_URL else '',
+        'github_repo': GITHUB_REPO_URL.split('/')[-1] if '/' in GITHUB_REPO_URL else '',
+        'github_version': 'master',
+        'conf_py_path': '/docs/',
+    }
 
 # -- Search configuration ----------------------------------------------------
 # Enable English language search with stemming support for partial word matches

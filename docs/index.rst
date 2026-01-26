@@ -42,6 +42,12 @@ New to Ralph? Start here:
 
    changelog
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Links:
+
+   GitHub Repository <https://github.com/pavalso/pyralph>
+
 Key Features
 ------------
 
