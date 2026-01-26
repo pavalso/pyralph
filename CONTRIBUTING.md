@@ -2,6 +2,12 @@
 
 Thank you for your interest in contributing to Ralph! This guide will help you set up your development environment and build the documentation locally.
 
+## Getting Started
+
+1. **Fork and clone the repository**: Visit [github.com/pavalso/pyralph](https://github.com/pavalso/pyralph) to fork the project, then clone your fork locally.
+
+2. **Review the documentation**: For comprehensive guides and API reference, see the [full documentation](https://pyralph.readthedocs.io/en/latest/).
+
 ## Building Documentation
 
 Ralph uses [Sphinx](https://www.sphinx-doc.org/) to generate documentation. Follow these instructions to build and preview the documentation locally before submitting changes.
