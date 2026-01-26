@@ -30,6 +30,12 @@ New to Ralph? Start here:
    api
    architecture
 
+.. toctree::
+   :maxdepth: 2
+   :caption: Project Info:
+
+   changelog
+
 Key Features
 ------------
 
