@@ -11,6 +11,16 @@ from .rules import (
     SEVERITY_LEVELS,
     DEFAULT_SEVERITY,
 )
+from .executor import (
+    QAExecutor,
+    QAResult,
+    QAViolation,
+    QAExecutorError,
+    AgentTimeoutError,
+    AgentUnavailableError,
+    MalformedResponseError,
+)
+from .cli import main as qa_main
 
 __all__ = [
     "QARule",
@@ -18,4 +28,12 @@ __all__ = [
     "SUPPORTED_EXTENSIONS",
     "SEVERITY_LEVELS",
     "DEFAULT_SEVERITY",
+    "QAExecutor",
+    "QAResult",
+    "QAViolation",
+    "QAExecutorError",
+    "AgentTimeoutError",
+    "AgentUnavailableError",
+    "MalformedResponseError",
+    "qa_main",
 ]
