@@ -20,6 +20,7 @@ from .executor import (
     AgentUnavailableError,
     MalformedResponseError,
 )
+from .report import QAReportWriter, ReportWriteError
 from .cli import main as qa_main
 
 __all__ = [
@@ -35,5 +36,7 @@ __all__ = [
     "AgentTimeoutError",
     "AgentUnavailableError",
     "MalformedResponseError",
+    "QAReportWriter",
+    "ReportWriteError",
     "qa_main",
 ]

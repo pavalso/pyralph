@@ -17,6 +17,7 @@ from .executor import (
     AgentUnavailableError,
     MalformedResponseError,
 )
+from .report import QAReportWriter
 
 
 def get_version() -> str:
@@ -195,6 +196,13 @@ def main(args: Optional[list] = None) -> int:
                 print("")
                 if result.summary:
                     Logger.info(result.summary)
+
+        # Generate failure report if there are violations
+        if not result.success and len(result.violations) > 0:
+            report_writer = QAReportWriter()
+            report_path = report_writer.write_report(result)
+            if not parsed_args.quiet:
+                Logger.info(f"Failure report written to: {report_path}")
 
         # Return appropriate exit code
         if result.rules_checked == 0:

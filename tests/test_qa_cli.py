@@ -182,6 +182,64 @@ name: Test Rule
 
         assert exit_code == 1
 
+    def test_validation_with_violations_generates_report(self):
+        """Test CLI generates report when violations found."""
+        yaml_content = """
+id: test-rule
+name: Test Rule
+"""
+        self.create_rule_file("test.yaml", yaml_content)
+
+        mock_result = QAResult(
+            success=False,
+            rules_checked=1,
+            violations=[
+                QAViolation(
+                    rule_id="test-rule",
+                    rule_name="Test Rule",
+                    severity="major",
+                    message="Violation found",
+                )
+            ],
+            summary="1 violation",
+        )
+
+        reports_dir = self.temp_path / ".ralph" / "qa" / "reports"
+
+        with patch("pyralph.qa.cli.QAExecutor") as mock_executor:
+            mock_executor.return_value.run.return_value = mock_result
+            with patch("pyralph.qa.cli.QAReportWriter") as mock_writer:
+                mock_writer.return_value.write_report.return_value = reports_dir / "test-report.json"
+                with patch("pyralph.qa.cli.Logger"):
+                    exit_code = main(["--agent", "claude"])
+
+        assert exit_code == 1
+        mock_writer.return_value.write_report.assert_called_once_with(mock_result)
+
+    def test_successful_validation_no_report(self):
+        """Test CLI does not generate report when validation passes."""
+        yaml_content = """
+id: test-rule
+name: Test Rule
+"""
+        self.create_rule_file("test.yaml", yaml_content)
+
+        mock_result = QAResult(
+            success=True,
+            rules_checked=1,
+            violations=[],
+            summary="All passed",
+        )
+
+        with patch("pyralph.qa.cli.QAExecutor") as mock_executor:
+            mock_executor.return_value.run.return_value = mock_result
+            with patch("pyralph.qa.cli.QAReportWriter") as mock_writer:
+                with patch("pyralph.qa.cli.Logger"):
+                    exit_code = main(["--agent", "claude"])
+
+        assert exit_code == 0
+        mock_writer.return_value.write_report.assert_not_called()
+
 
 class TestCLIErrorScenarios(QACLITestCase):
     """Tests for CLI error scenarios."""
@@ -289,6 +347,39 @@ name: Test Rule
         printed_json = mock_print.call_args[0][0]
         data = json.loads(printed_json)
         assert data["error"] == "malformed_response"
+
+    def test_report_write_permission_error(self):
+        """Test CLI handles report write permission error with exit code 2."""
+        yaml_content = """
+id: test-rule
+name: Test Rule
+"""
+        self.create_rule_file("test.yaml", yaml_content)
+
+        mock_result = QAResult(
+            success=False,
+            rules_checked=1,
+            violations=[
+                QAViolation(
+                    rule_id="test-rule",
+                    rule_name="Test Rule",
+                    severity="major",
+                    message="Violation found",
+                )
+            ],
+            summary="1 violation",
+        )
+
+        with patch("pyralph.qa.cli.QAExecutor") as mock_executor:
+            mock_executor.return_value.run.return_value = mock_result
+            with patch("pyralph.qa.cli.QAReportWriter") as mock_writer:
+                mock_writer.return_value.write_report.side_effect = PermissionError(
+                    "Permission denied: Cannot write to .ralph/qa/reports/"
+                )
+                with patch("pyralph.qa.cli.Logger"):
+                    exit_code = main(["--agent", "claude"])
+
+        assert exit_code == 2
 
 
 class TestCLIArguments(QACLITestCase):
