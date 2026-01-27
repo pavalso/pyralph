@@ -9,11 +9,12 @@ class TestConfig:
         ("BASE_DIR", Path.cwd(), None), ("ROOT_DIR", ".ralph", "BASE_DIR"),
         ("ARCHIVE_DIR", "archive", "ROOT_DIR"),
         ("TEMPLATES_DIR", "templates", "ROOT_DIR"), ("HOOKS_DIR", "hooks", "ROOT_DIR"),
+        ("QA_RULES_DIR", "qa", "ROOT_DIR"),
         ("PRD_FILE", "prd.json", "ROOT_DIR"), ("PROGRESS_FILE", "progress.txt", "ROOT_DIR"),
         ("LOG_FILE", "ralph_log.txt", "ROOT_DIR"),
     ]
     SCALAR_CASES = [("MAX_RETRIES", 3), ("TIMEOUT_SECONDS", 600)]
-    CREATED_DIRS = ["ROOT_DIR", "ARCHIVE_DIR", "TEMPLATES_DIR", "HOOKS_DIR"]
+    CREATED_DIRS = ["ROOT_DIR", "ARCHIVE_DIR", "TEMPLATES_DIR", "HOOKS_DIR", "QA_RULES_DIR"]
 
     def test_defaults(self):
         config = Config()
@@ -28,7 +29,7 @@ class TestConfig:
             base = Path(temp_dir)
             config = Config(BASE_DIR=base, ROOT_DIR=base/".ralph",
                             ARCHIVE_DIR=base/".ralph"/"archive", TEMPLATES_DIR=base/".ralph"/"templates",
-                            HOOKS_DIR=base/".ralph"/"hooks")
+                            HOOKS_DIR=base/".ralph"/"hooks", QA_RULES_DIR=base/".ralph"/"qa")
             for d in self.CREATED_DIRS:
                 assert not getattr(config, d).exists()
             config.ensure_directories()

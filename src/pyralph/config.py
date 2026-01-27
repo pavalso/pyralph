@@ -15,6 +15,7 @@ class Config:
     ARCHIVE_DIR: Path = ROOT_DIR / "archive"
     TEMPLATES_DIR: Path = ROOT_DIR / "templates"
     HOOKS_DIR: Path = ROOT_DIR / "hooks"
+    QA_RULES_DIR: Path = ROOT_DIR / "qa"
     PRD_FILE: Path = ROOT_DIR / "prd.json"
     PROGRESS_FILE: Path = ROOT_DIR / "progress.txt"
     LOG_FILE: Path = ROOT_DIR / "ralph_log.txt"
@@ -24,7 +25,7 @@ class Config:
     TIMEOUT_SECONDS: int = 600
 
     def ensure_directories(self) -> None:
-        for path in [self.ROOT_DIR, self.ARCHIVE_DIR, self.TEMPLATES_DIR, self.HOOKS_DIR]:
+        for path in [self.ROOT_DIR, self.ARCHIVE_DIR, self.TEMPLATES_DIR, self.HOOKS_DIR, self.QA_RULES_DIR]:
             path.mkdir(exist_ok=True, parents=True)
 
 
