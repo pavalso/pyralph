@@ -32,8 +32,10 @@ Public API:
     Agents:
         BaseAgent - Abstract base class for agents
         AgentError - Agent execution error
-        get_agent - Factory function to get agent instances
-        list_agents - List available agent names
+        AgentFactory - Factory for creating agent instances with explicit registration
+        UnregisteredAgentError - Exception for unregistered agent names
+        get_agent - Factory function to get agent instances (deprecated, use AgentFactory.create)
+        list_agents - List available agent names (deprecated, use AgentFactory.list_registered)
 
     Phases:
         Phase - Abstract base class for phase execution (Strategy pattern)
@@ -78,6 +80,8 @@ try:
     from agents import (
         BaseAgent,
         AgentError,
+        AgentFactory,
+        UnregisteredAgentError,
         get_agent,
         list_agents,
         AVAILABLE_AGENTS,
@@ -111,6 +115,8 @@ except ImportError:
     from .agents import (
         BaseAgent,
         AgentError,
+        AgentFactory,
+        UnregisteredAgentError,
         get_agent,
         list_agents,
         AVAILABLE_AGENTS,
@@ -156,6 +162,8 @@ __all__ = [
     # Agents
     "BaseAgent",
     "AgentError",
+    "AgentFactory",
+    "UnregisteredAgentError",
     "get_agent",
     "list_agents",
     "AVAILABLE_AGENTS",
