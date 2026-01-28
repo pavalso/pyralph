@@ -35,6 +35,14 @@ Public API:
         get_agent - Factory function to get agent instances
         list_agents - List available agent names
 
+    Phases:
+        Phase - Abstract base class for phase execution (Strategy pattern)
+        PhaseContext - Context object passed to phases during execution
+        PhaseStrategyRunner - Runner for executing phases
+        ArchitectPhase - Phase for generating architecture documentation
+        PlannerPhase - Phase for generating PRD
+        ExecutePhase - Phase for executing tasks from PRD
+
 Example:
     >>> from ralph import RalphOrchestrator, Logger
     >>> Logger.set_verbosity(1)
@@ -76,6 +84,14 @@ try:
     )
     from cli import main, get_version
     from orchestrator import RalphOrchestrator
+    from phases import (
+        Phase,
+        PhaseContext,
+        PhaseStrategyRunner,
+        ArchitectPhase,
+        PlannerPhase,
+        ExecutePhase,
+    )
 except ImportError:
     # Fall back to relative imports (for package installation mode)
     from .config import Config, CONF
@@ -101,6 +117,14 @@ except ImportError:
     )
     from .cli import main, get_version
     from .orchestrator import RalphOrchestrator
+    from .phases import (
+        Phase,
+        PhaseContext,
+        PhaseStrategyRunner,
+        ArchitectPhase,
+        PlannerPhase,
+        ExecutePhase,
+    )
 
 # Version for package metadata
 __version__ = get_version()
@@ -135,6 +159,13 @@ __all__ = [
     "get_agent",
     "list_agents",
     "AVAILABLE_AGENTS",
+    # Phases
+    "Phase",
+    "PhaseContext",
+    "PhaseStrategyRunner",
+    "ArchitectPhase",
+    "PlannerPhase",
+    "ExecutePhase",
     # Version
     "__version__",
 ]
