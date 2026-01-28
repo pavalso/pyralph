@@ -43,17 +43,6 @@ class TestLogger(LoggerTestCase):
             Logger.file_log("Content", log_type, tag) if tag else Logger.file_log("Content", log_type)
             assert icon in self.log_file.read_text(encoding="utf-8")
 
-    def test_verbosity_levels(self):
-        cases = [(0, 'debug', False), (1, 'debug', True), (0, 'trace', False), (2, 'trace', True),
-                 (0, 'ultra', False), (3, 'ultra', True)]
-        for verbosity, method, should_output in cases:
-            with CaptureStdout() as captured:
-                Logger.set_verbosity(verbosity)
-                Logger.set_no_color(True)
-                getattr(Logger, method)("test")
-                output = captured.getvalue()
-            assert ("test" in output) == should_output
-
     def test_verbosity_sync_and_clamp(self):
         Logger.set_verbosity(0)
         assert not Logger.verbose
@@ -286,3 +275,74 @@ def test_info_debug_output(logger_reset, verbose, no_color, method, msg, color, 
         assert e in output, f"Expected '{e}' in output: {output!r}"
     for e in exp_not:
         assert e not in output, f"Expected '{e}' not in output: {output!r}"
+
+
+# Parametrized test for verbosity level behavior
+# Format: (verbosity_level, method, should_output)
+VERBOSITY_LEVEL_CASES = [
+    # Edge case: minimum verbosity (0) - no debug output
+    pytest.param(0, 'debug', False, id="verbosity_0_debug_suppressed"),
+    pytest.param(0, 'trace', False, id="verbosity_0_trace_suppressed"),
+    pytest.param(0, 'ultra', False, id="verbosity_0_ultra_suppressed"),
+    # Verbosity 1: debug enabled, trace/ultra suppressed
+    pytest.param(1, 'debug', True, id="verbosity_1_debug_shown"),
+    pytest.param(1, 'trace', False, id="verbosity_1_trace_suppressed"),
+    pytest.param(1, 'ultra', False, id="verbosity_1_ultra_suppressed"),
+    # Verbosity 2: debug and trace enabled, ultra suppressed
+    pytest.param(2, 'debug', True, id="verbosity_2_debug_shown"),
+    pytest.param(2, 'trace', True, id="verbosity_2_trace_shown"),
+    pytest.param(2, 'ultra', False, id="verbosity_2_ultra_suppressed"),
+    # Edge case: maximum verbosity (3) - all output enabled
+    pytest.param(3, 'debug', True, id="verbosity_3_debug_shown"),
+    pytest.param(3, 'trace', True, id="verbosity_3_trace_shown"),
+    pytest.param(3, 'ultra', True, id="verbosity_3_ultra_shown"),
+]
+
+
+@pytest.mark.parametrize("verbosity,method,should_output", VERBOSITY_LEVEL_CASES)
+def test_verbosity_levels(logger_reset, verbosity, method, should_output):
+    """Test that each verbosity level enables the correct log methods.
+
+    Verbosity levels control which log methods produce output:
+    - 0 (normal): debug, trace, ultra all suppressed
+    - 1 (verbose): debug shown, trace/ultra suppressed
+    - 2 (very verbose): debug/trace shown, ultra suppressed
+    - 3 (debug): all shown (debug, trace, ultra)
+    """
+    Logger.json_output = False
+    Logger.ndjson_output = False
+    Logger.quiet = False
+
+    with CaptureStdout() as captured:
+        Logger.set_verbosity(verbosity)
+        Logger.set_no_color(True)
+        getattr(Logger, method)("test")
+        output = captured.getvalue()
+    assert ("test" in output) == should_output, (
+        f"verbosity={verbosity}, method={method}: "
+        f"expected {'output' if should_output else 'no output'}, got {output!r}"
+    )
+
+
+# Parametrized test for invalid verbosity level handling
+INVALID_VERBOSITY_CASES = [
+    pytest.param(-1, 0, id="negative_clamped_to_min"),
+    pytest.param(-100, 0, id="large_negative_clamped_to_min"),
+    pytest.param(4, 3, id="above_max_clamped_to_max"),
+    pytest.param(100, 3, id="large_positive_clamped_to_max"),
+]
+
+
+@pytest.mark.parametrize("invalid_level,expected_level", INVALID_VERBOSITY_CASES)
+def test_verbosity_invalid_levels(logger_reset, invalid_level, expected_level):
+    """Test that invalid verbosity levels are clamped to valid range [0, 3].
+
+    Invalid levels are handled gracefully:
+    - Negative values are clamped to 0 (minimum)
+    - Values above 3 are clamped to 3 (maximum)
+    """
+    Logger.set_verbosity(invalid_level)
+    assert Logger.verbosity == expected_level, (
+        f"Expected verbosity {expected_level} after setting {invalid_level}, "
+        f"got {Logger.verbosity}"
+    )
