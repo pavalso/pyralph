@@ -35,24 +35,6 @@ class TestLogger(LoggerTestCase):
     def test_colors_keys(self):
         assert set(Logger.COLORS.keys()) == {"RESET", "GREEN", "RED", "CYAN", "YELLOW", "MAGENTA"}
 
-    def test_info_debug_output(self):
-        cases = [
-            (False, True, 'info', "Plain", None, ["Plain"], ["\033["]),
-            (False, False, 'info', "Colored", "GREEN", ["\033[92m", "Colored"], []),
-            (False, False, 'debug', "Debug", None, [], ["Debug"]),
-            (True, True, 'debug', "Debug", None, ["[DEBUG] Debug"], ["\033["]),
-        ]
-        for verbose, no_color, method, msg, color, exp_in, exp_not in cases:
-            with CaptureStdout() as captured:
-                Logger.set_verbosity(1 if verbose else 0)
-                Logger.set_no_color(no_color)
-                getattr(Logger, method)(msg, color) if color else getattr(Logger, method)(msg)
-                output = captured.getvalue()
-            for e in exp_in:
-                assert e in output
-            for e in exp_not:
-                assert e not in output
-
     def test_file_log(self):
         cases = [("PROMPT", "TAG", "➡️"), ("RESPONSE", "TAG", "⬅️"), ("ERROR", "TAG", "❌"), ("INFO", None, "ℹ️")]
         for log_type, tag, icon in cases:
@@ -264,3 +246,43 @@ class TestCaptureStdoutEdgeCases(unittest.TestCase):
             print("test", end="")
         assert captured.output == "test"
         assert captured.output == captured.getvalue()
+
+
+# Parametrized test for info/debug output combinations
+INFO_DEBUG_OUTPUT_CASES = [
+    pytest.param(False, True, 'info', "Plain", None, ["Plain"], ["\033["], id="info_plain_no_color"),
+    pytest.param(False, False, 'info', "Colored", "GREEN", ["\033[92m", "Colored"], [], id="info_colored"),
+    pytest.param(False, False, 'debug', "Debug", None, [], ["Debug"], id="debug_hidden_not_verbose"),
+    pytest.param(True, True, 'debug', "Debug", None, ["[DEBUG] Debug"], ["\033["], id="debug_verbose_no_color"),
+]
+
+
+@pytest.mark.parametrize("verbose,no_color,method,msg,color,exp_in,exp_not", INFO_DEBUG_OUTPUT_CASES)
+def test_info_debug_output(logger_reset, verbose, no_color, method, msg, color, exp_in, exp_not):
+    """Test info and debug output with various verbosity and color settings.
+
+    Tests 4 combinations:
+    - info message with no_color=True: plain text without ANSI codes
+    - info message with color: includes ANSI escape sequences
+    - debug message with verbose=False: suppressed (not shown)
+    - debug message with verbose=True and no_color=True: shows [DEBUG] prefix
+    """
+    # Reset Logger state for clean test environment
+    Logger.json_output = False
+    Logger.ndjson_output = False
+    Logger.quiet = False
+
+    with CaptureStdout() as captured:
+        Logger.set_verbosity(1 if verbose else 0)
+        Logger.set_no_color(no_color)
+        if not hasattr(Logger, method):
+            raise AttributeError(f"Logger has no method '{method}'")
+        if color:
+            getattr(Logger, method)(msg, color)
+        else:
+            getattr(Logger, method)(msg)
+        output = captured.getvalue()
+    for e in exp_in:
+        assert e in output, f"Expected '{e}' in output: {output!r}"
+    for e in exp_not:
+        assert e not in output, f"Expected '{e}' not in output: {output!r}"
