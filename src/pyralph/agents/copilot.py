@@ -35,4 +35,4 @@ class GithubAgent(BaseAgent):
         with tempfile.NamedTemporaryFile(mode='w+', delete=True, encoding='utf-8') as f:
             f.write(prompt)
             f.flush()
-            return super().run(f"@{f.name} You MUST threat this file as the prompt.", tag)
+            return super().run(f"@{f.name} You MUST treat this file as the prompt.", tag)
