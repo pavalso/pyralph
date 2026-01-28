@@ -113,11 +113,19 @@ def capture_stdout():
 def logger_reset():
     """Save and restore all Logger class attributes after each test.
 
-    Saves all 10 Logger class attributes before the test and restores
+    Saves all 12 Logger class attributes before the test and restores
     them after completion. Handles edge case where redact_patterns is
     None by providing an empty list fallback.
 
+    Also sets Logger to clean initial state before the test:
+    - no_color, quiet, no_emoji, json_output, ndjson_output: False
+    - verbosity: 0
+    - log_level: 20 (info)
+    - redact_patterns: []
+    - no_log_prompts, no_log_responses: False
+
     This ensures complete test isolation for Logger state.
+    State restoration occurs even on test failure via try/finally.
     """
     saved_state = {
         '_verbosity_value': Logger._verbosity_value,
@@ -135,11 +143,65 @@ def logger_reset():
         'no_log_responses': Logger.no_log_responses,
     }
 
+    # Set clean initial Logger state
+    Logger.no_color = False
+    Logger.quiet = False
+    Logger.no_emoji = False
+    Logger._verbosity_value = 0
+    Logger.log_level = 20
+    Logger.json_output = False
+    Logger.ndjson_output = False
+    Logger.redact_patterns = []
+    Logger.no_log_prompts = False
+    Logger.no_log_responses = False
+
     try:
         yield
     finally:
         for attr, value in saved_state.items():
             setattr(Logger, attr, value)
+
+
+@pytest.fixture
+def logger_test_env(tmp_path, logger_reset):
+    """Provide a complete Logger test environment with temp log file.
+
+    Combines logger_reset fixture for Logger state management with
+    temporary log file setup and CONF.LOG_FILE management.
+
+    Sets Logger to clean initial state:
+    - no_color, quiet, no_emoji, json_output, ndjson_output: False
+    - verbosity: 0
+    - log_level: 20 (info)
+    - redact_patterns: []
+    - no_log_prompts, no_log_responses: False
+
+    Yields a dict with:
+    - temp_dir: Path to temporary directory
+    - log_file: Path to temporary log file
+
+    CONF.LOG_FILE is restored after the test even on failure.
+    """
+    original_log_file = CONF.LOG_FILE
+    log_file = tmp_path / "test_log.txt"
+    CONF.LOG_FILE = log_file
+
+    # Set clean initial Logger state
+    Logger.no_color = False
+    Logger.quiet = False
+    Logger.no_emoji = False
+    Logger.verbosity = 0
+    Logger.log_level = 20
+    Logger.json_output = False
+    Logger.ndjson_output = False
+    Logger.redact_patterns = []
+    Logger.no_log_prompts = False
+    Logger.no_log_responses = False
+
+    try:
+        yield {'temp_dir': tmp_path, 'log_file': log_file}
+    finally:
+        CONF.LOG_FILE = original_log_file
 
 
 class IssueWatcherEnv:

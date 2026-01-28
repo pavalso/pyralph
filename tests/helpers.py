@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 from pyralph.config import CONF
 from pyralph.hooks import HookManager
-from pyralph.logger import Logger
 from pyralph.orchestrator import RalphOrchestrator
 
 
@@ -123,36 +122,3 @@ class TempHooksTestCase(TempDirectoryMixin, unittest.TestCase):
         hook_file = self.hooks_dir / name
         hook_file.write_text(content, encoding='utf-8')
         return hook_file
-
-
-class LoggerTestCase(TempDirectoryMixin, unittest.TestCase):
-    """Base test class for Logger tests with proper state reset."""
-
-    def setUp(self):
-        super().setUp()
-        self._logger_state = {
-            'no_color': Logger.no_color,
-            '_verbosity_value': Logger._verbosity_value,
-            'quiet': Logger.quiet, 'no_emoji': Logger.no_emoji, 'log_level': Logger.log_level,
-            'json_output': Logger.json_output, 'ndjson_output': Logger.ndjson_output,
-            'redact_patterns': Logger.redact_patterns.copy() if Logger.redact_patterns else [],
-            'no_log_prompts': Logger.no_log_prompts, 'no_log_responses': Logger.no_log_responses,
-        }
-        Logger.no_color = Logger.quiet = Logger.no_emoji = False
-        Logger.verbosity = 0
-        Logger.log_level = 20
-        Logger.json_output = Logger.ndjson_output = Logger.no_log_prompts = Logger.no_log_responses = False
-        Logger.redact_patterns = []
-        self.temp_dir = tempfile.mkdtemp()
-        self.log_file = Path(self.temp_dir) / "test_log.txt"
-        self._original_log_file = CONF.LOG_FILE
-        CONF.LOG_FILE = self.log_file
-        self.held_output = StringIO()
-        self.original_stdout = sys.stdout
-
-    def tearDown(self):
-        sys.stdout = self.original_stdout
-        for attr, value in self._logger_state.items():
-            setattr(Logger, attr, value)
-        CONF.LOG_FILE = self._original_log_file
-        super().tearDown()

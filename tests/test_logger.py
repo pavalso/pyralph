@@ -6,11 +6,13 @@ import pytest
 
 from pyralph.logger import Logger
 
-from .helpers import CaptureStdout, LoggerTestCase
+from .helpers import CaptureStdout
 
 
-class TestLogger(LoggerTestCase):
-    def test_toggles(self):
+class TestLogger:
+    """Tests for Logger basic functionality."""
+
+    def test_toggles(self, logger_reset):
         # Test non-deprecated setter
         Logger.set_no_color(True)
         assert Logger.no_color
@@ -32,18 +34,19 @@ class TestLogger(LoggerTestCase):
             assert issubclass(w[0].category, DeprecationWarning)
         assert not Logger.verbose
 
-    def test_colors_keys(self):
+    def test_colors_keys(self, logger_reset):
         assert set(Logger.COLORS.keys()) == {"RESET", "GREEN", "RED", "CYAN", "YELLOW", "MAGENTA"}
 
-    def test_file_log(self):
+    def test_file_log(self, logger_test_env):
+        log_file = logger_test_env['log_file']
         cases = [("PROMPT", "TAG", "➡️"), ("RESPONSE", "TAG", "⬅️"), ("ERROR", "TAG", "❌"), ("INFO", None, "ℹ️")]
         for log_type, tag, icon in cases:
-            if self.log_file.exists():
-                self.log_file.unlink()
+            if log_file.exists():
+                log_file.unlink()
             Logger.file_log("Content", log_type, tag) if tag else Logger.file_log("Content", log_type)
-            assert icon in self.log_file.read_text(encoding="utf-8")
+            assert icon in log_file.read_text(encoding="utf-8")
 
-    def test_verbosity_sync_and_clamp(self):
+    def test_verbosity_sync_and_clamp(self, logger_reset):
         Logger.set_verbosity(0)
         assert not Logger.verbose
         Logger.set_verbosity(1)
@@ -53,9 +56,7 @@ class TestLogger(LoggerTestCase):
         Logger.set_verbosity(10)
         assert Logger.verbosity == 3
 
-    def test_verbosity_property_sync_direct_assignment(self):
-        import warnings
-
+    def test_verbosity_property_sync_direct_assignment(self, logger_reset):
         Logger.verbosity = 0
         assert not Logger.verbose
         assert Logger.verbosity == 0
@@ -90,7 +91,7 @@ class TestLogger(LoggerTestCase):
         assert Logger.verbosity == 3
         assert Logger.verbose
 
-    def test_quiet_mode(self):
+    def test_quiet_mode(self, logger_reset):
         Logger.set_no_color(True)
         Logger.set_quiet(True)
         with CaptureStdout() as captured:
@@ -102,7 +103,7 @@ class TestLogger(LoggerTestCase):
         assert "warning" in output
         assert "error" in output
 
-    def test_no_emoji(self):
+    def test_no_emoji(self, logger_reset):
         Logger.set_no_color(True)
         Logger.set_no_emoji(True)
         with CaptureStdout() as captured:
@@ -111,21 +112,23 @@ class TestLogger(LoggerTestCase):
         assert "[BOT]" in output
         assert "🤖" not in output
 
-    def test_strip_emoji_all(self):
+    def test_strip_emoji_all(self, logger_reset):
         emojis = ["🤖", "🕵️", "🧠", "🚀", "✅", "❌", "⚠️", "▶️", "🔒", "🛑", "⏭️", "📋", "📦", "🎉", "➡️", "⬅️", "ℹ️", "❓"]
         for emoji in emojis:
             result = Logger._strip_emoji(f"Test {emoji} msg")
             assert emoji not in result
 
 
-class TestLoggerRedaction(LoggerTestCase):
-    def test_set_redact_patterns(self):
+class TestLoggerRedaction:
+    """Tests for Logger redaction functionality."""
+
+    def test_set_redact_patterns(self, logger_reset):
         Logger.set_redact_patterns(['p1', 'p2'])
         assert Logger.redact_patterns == ['p1', 'p2']
         Logger.set_redact_patterns(['new'])
         assert Logger.redact_patterns == ['new']
 
-    def test_redact_content(self):
+    def test_redact_content(self, logger_reset):
         cases = [
             ([], "api_key=secret", "api_key=secret"),
             ([r'api_key=\\w+'], "The api_key=secret here", "The [REDACTED] here"),
@@ -136,38 +139,41 @@ class TestLoggerRedaction(LoggerTestCase):
             Logger.redact_patterns = patterns
             assert Logger._redact_content(content) == expected
 
-    def test_redact_from_file(self):
-        import tempfile
-        from pathlib import Path
-        redact_file = Path(self.temp_dir) / "redact.txt"
+    def test_redact_from_file(self, logger_test_env):
+        temp_dir = logger_test_env['temp_dir']
+        redact_file = temp_dir / "redact.txt"
         redact_file.write_text("pattern1\n\n# comment\npattern2\n", encoding='utf-8')
         Logger.add_redact_patterns_from_file(str(redact_file))
         assert Logger.redact_patterns == ['pattern1', 'pattern2']
 
-    def test_no_log_prompts_responses(self):
+    def test_no_log_prompts_responses(self, logger_test_env):
+        log_file = logger_test_env['log_file']
         for flag, log_type, other_type in [
             ('no_log_prompts', 'PROMPT', 'RESPONSE'),
             ('no_log_responses', 'RESPONSE', 'PROMPT'),
         ]:
-            if self.log_file.exists():
-                self.log_file.unlink()
+            if log_file.exists():
+                log_file.unlink()
             setattr(Logger, flag, True)
             Logger.file_log("skip", log_type, "T")
-            assert not self.log_file.exists()
+            assert not log_file.exists()
             Logger.file_log("keep", other_type, "T")
-            assert "keep" in self.log_file.read_text(encoding='utf-8')
+            assert "keep" in log_file.read_text(encoding='utf-8')
             setattr(Logger, flag, False)
 
-    def test_file_log_redaction(self):
+    def test_file_log_redaction(self, logger_test_env):
+        log_file = logger_test_env['log_file']
         Logger.set_redact_patterns([r'secret_key=\\w+'])
         Logger.file_log("secret_key=abc123", "INFO", "T")
-        content = self.log_file.read_text(encoding="utf-8")
+        content = log_file.read_text(encoding="utf-8")
         assert "[REDACTED]" in content
         assert "abc123" not in content
 
 
-class TestLoggerJsonOutput(LoggerTestCase):
-    def test_json_output_mode(self):
+class TestLoggerJsonOutput:
+    """Tests for Logger JSON output functionality."""
+
+    def test_json_output_mode(self, logger_reset):
         Logger.json_output = True
         with CaptureStdout() as captured:
             Logger.info("test message")
@@ -176,7 +182,7 @@ class TestLoggerJsonOutput(LoggerTestCase):
         assert parsed["message"] == "test message"
         assert parsed["level"] == "info"
 
-    def test_ndjson_output_mode(self):
+    def test_ndjson_output_mode(self, logger_reset):
         Logger.ndjson_output = True
         with CaptureStdout() as captured:
             Logger.info("msg1")
