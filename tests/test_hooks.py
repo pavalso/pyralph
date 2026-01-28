@@ -1,6 +1,8 @@
 import threading
 from unittest.mock import MagicMock
 
+import pytest
+
 from pyralph.hooks import (
     Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook
 )
@@ -21,14 +23,17 @@ class TestHookManager:
         temp_hooks.create_hook_file("valid.py", 'EVENTS = ["TASK_START"]\ndef on_event(e): pass')
         assert HookManager(temp_hooks.hooks_dir).discover() == 1
 
-    def test_discover_rejects_invalid(self, tmp_path):
-        for name, content in [("no_ev.py", 'def on_event(e): pass'), ("no_h.py", 'EVENTS = ["TASK_START"]')]:
-            hooks_dir = tmp_path / f"hooks_{name}"
-            hooks_dir.mkdir(parents=True)
-            hook_file = hooks_dir / name
-            hook_file.write_text(content, encoding='utf-8')
-            manager = HookManager(hooks_dir, MagicMock())
-            assert manager.discover() == 0
+    @pytest.mark.parametrize("hook_name,content,description", [
+        ("no_events.py", 'def on_event(e): pass', "hook with only handler, no EVENTS list"),
+        ("no_handler.py", 'EVENTS = ["TASK_START"]', "hook with only EVENTS list, no handler"),
+    ])
+    def test_discover_rejects_invalid(self, tmp_path, hook_name, content, description):
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir(parents=True)
+        hook_file = hooks_dir / hook_name
+        hook_file.write_text(content, encoding='utf-8')
+        manager = HookManager(hooks_dir, MagicMock())
+        assert manager.discover() == 0, f"Expected 0 hooks discovered for {description}"
 
     def test_emit_priority_order(self, temp_hooks):
         import tests.test_hooks as test_module
