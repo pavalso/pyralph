@@ -3,6 +3,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pyralph.phases import (
     Phase,
     PhaseContext,
@@ -11,6 +13,14 @@ from pyralph.phases import (
     PlannerPhase,
     ExecutePhase,
 )
+
+# Phase configurations: (phase_cls, name, method, context_key, intent_req)
+# intent_req is True if the phase requires user_intent, None otherwise
+PHASE_CONFIGS = [
+    (ArchitectPhase, "architect", "run_architect", "phase_runner", True),
+    (PlannerPhase, "planner", "run_planner", "phase_runner", True),
+    (ExecutePhase, "execute", "execute_loop", "task_executor", None),
+]
 
 
 class TestPhaseContext(unittest.TestCase):
@@ -84,14 +94,78 @@ class TestPhaseABC(unittest.TestCase):
         self.assertEqual(phase.name, "custom")
 
 
-class TestArchitectPhase(unittest.TestCase):
-    """Tests for ArchitectPhase class."""
+class TestPhaseImplementations:
+    """Parametrized tests for all concrete Phase implementations."""
 
-    def test_name_property(self):
-        phase = ArchitectPhase()
-        self.assertEqual(phase.name, "architect")
+    @pytest.mark.parametrize(
+        "phase_cls,expected_name",
+        [(cfg[0], cfg[1]) for cfg in PHASE_CONFIGS],
+        ids=["ArchitectPhase", "PlannerPhase", "ExecutePhase"],
+    )
+    def test_name_property(self, phase_cls, expected_name):
+        """Test that each phase returns its correct name."""
+        phase = phase_cls()
+        assert phase.name == expected_name
 
-    def test_execute_calls_run_architect(self):
+    @pytest.mark.parametrize(
+        "phase_cls",
+        [cfg[0] for cfg in PHASE_CONFIGS],
+        ids=["ArchitectPhase", "PlannerPhase", "ExecutePhase"],
+    )
+    def test_is_phase_subclass(self, phase_cls):
+        """Test that each phase is a proper Phase subclass."""
+        phase = phase_cls()
+        assert isinstance(phase, Phase)
+
+    @pytest.mark.parametrize(
+        "phase_cls,context_key",
+        [(cfg[0], cfg[3]) for cfg in PHASE_CONFIGS],
+        ids=["ArchitectPhase", "PlannerPhase", "ExecutePhase"],
+    )
+    def test_execute_raises_without_dependency(self, phase_cls, context_key):
+        """Test that each phase raises RuntimeError when its required dependency is missing."""
+        # For phases requiring user_intent, provide it so we test the context_key error
+        if context_key == "phase_runner":
+            context = PhaseContext(user_intent="Test intent")
+        else:
+            context = PhaseContext()
+        phase = phase_cls()
+
+        with pytest.raises(RuntimeError) as exc_info:
+            phase.execute(context)
+        assert context_key in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "phase_cls,intent_req",
+        [(cfg[0], cfg[4]) for cfg in PHASE_CONFIGS if cfg[4] is True],
+        ids=["ArchitectPhase", "PlannerPhase"],
+    )
+    def test_execute_raises_without_user_intent(self, phase_cls, intent_req):
+        """Test that phases requiring user_intent raise RuntimeError when it's missing."""
+        mock_runner = MagicMock()
+        context = PhaseContext(phase_runner=mock_runner, user_intent="")
+        phase = phase_cls()
+
+        with pytest.raises(RuntimeError) as exc_info:
+            phase.execute(context)
+        assert "user_intent" in str(exc_info.value)
+
+    def test_execute_phase_does_not_require_user_intent(self):
+        """Test that ExecutePhase works without user_intent (edge case: intent_req=None)."""
+        mock_executor = MagicMock()
+        context = PhaseContext(task_executor=mock_executor, user_intent="")
+        phase = ExecutePhase()
+
+        # Should not raise - ExecutePhase doesn't require user_intent
+        phase.execute(context)
+        mock_executor.execute_loop.assert_called_once()
+
+
+class TestPhaseExecution:
+    """Tests for phase execution behavior."""
+
+    def test_architect_phase_calls_run_architect(self):
+        """Test ArchitectPhase calls run_architect with user_intent."""
         mock_runner = MagicMock()
         context = PhaseContext(phase_runner=mock_runner, user_intent="Build an app")
         phase = ArchitectPhase()
@@ -100,36 +174,8 @@ class TestArchitectPhase(unittest.TestCase):
 
         mock_runner.run_architect.assert_called_once_with("Build an app")
 
-    def test_execute_raises_without_phase_runner(self):
-        context = PhaseContext(user_intent="Build an app")
-        phase = ArchitectPhase()
-
-        with self.assertRaises(RuntimeError) as cm:
-            phase.execute(context)
-        self.assertIn("phase_runner", str(cm.exception))
-
-    def test_execute_raises_without_user_intent(self):
-        mock_runner = MagicMock()
-        context = PhaseContext(phase_runner=mock_runner, user_intent="")
-        phase = ArchitectPhase()
-
-        with self.assertRaises(RuntimeError) as cm:
-            phase.execute(context)
-        self.assertIn("user_intent", str(cm.exception))
-
-    def test_is_phase_subclass(self):
-        phase = ArchitectPhase()
-        self.assertIsInstance(phase, Phase)
-
-
-class TestPlannerPhase(unittest.TestCase):
-    """Tests for PlannerPhase class."""
-
-    def test_name_property(self):
-        phase = PlannerPhase()
-        self.assertEqual(phase.name, "planner")
-
-    def test_execute_calls_run_planner(self):
+    def test_planner_phase_calls_run_planner(self):
+        """Test PlannerPhase calls run_planner with user_intent."""
         mock_runner = MagicMock()
         context = PhaseContext(phase_runner=mock_runner, user_intent="Create a webapp")
         phase = PlannerPhase()
@@ -138,36 +184,8 @@ class TestPlannerPhase(unittest.TestCase):
 
         mock_runner.run_planner.assert_called_once_with("Create a webapp")
 
-    def test_execute_raises_without_phase_runner(self):
-        context = PhaseContext(user_intent="Create a webapp")
-        phase = PlannerPhase()
-
-        with self.assertRaises(RuntimeError) as cm:
-            phase.execute(context)
-        self.assertIn("phase_runner", str(cm.exception))
-
-    def test_execute_raises_without_user_intent(self):
-        mock_runner = MagicMock()
-        context = PhaseContext(phase_runner=mock_runner, user_intent="")
-        phase = PlannerPhase()
-
-        with self.assertRaises(RuntimeError) as cm:
-            phase.execute(context)
-        self.assertIn("user_intent", str(cm.exception))
-
-    def test_is_phase_subclass(self):
-        phase = PlannerPhase()
-        self.assertIsInstance(phase, Phase)
-
-
-class TestExecutePhase(unittest.TestCase):
-    """Tests for ExecutePhase class."""
-
-    def test_name_property(self):
-        phase = ExecutePhase()
-        self.assertEqual(phase.name, "execute")
-
-    def test_execute_calls_execute_loop(self):
+    def test_execute_phase_calls_execute_loop(self):
+        """Test ExecutePhase calls execute_loop."""
         mock_executor = MagicMock()
         context = PhaseContext(task_executor=mock_executor)
         phase = ExecutePhase()
@@ -175,18 +193,6 @@ class TestExecutePhase(unittest.TestCase):
         phase.execute(context)
 
         mock_executor.execute_loop.assert_called_once()
-
-    def test_execute_raises_without_task_executor(self):
-        context = PhaseContext()
-        phase = ExecutePhase()
-
-        with self.assertRaises(RuntimeError) as cm:
-            phase.execute(context)
-        self.assertIn("task_executor", str(cm.exception))
-
-    def test_is_phase_subclass(self):
-        phase = ExecutePhase()
-        self.assertIsInstance(phase, Phase)
 
 
 class TestPhaseStrategyRunner(unittest.TestCase):
