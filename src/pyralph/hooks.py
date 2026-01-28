@@ -35,7 +35,6 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import importlib.util
 import json
 import subprocess
-import threading
 
 
 # ==============================================================================
@@ -844,6 +843,7 @@ class HookManager:
             except Exception as e:
                 result['error'] = e
 
+        import threading
         thread = threading.Thread(target=run_hook, daemon=True)
         thread.start()
         thread.join(timeout=hook.timeout)
