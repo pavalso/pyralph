@@ -195,7 +195,7 @@ class TestPhaseExecution:
         mock_executor.execute_loop.assert_called_once()
 
 
-class TestPhaseStrategyRunner(unittest.TestCase):
+class TestPhaseStrategyRunner:
     """Tests for PhaseStrategyRunner class."""
 
     def test_run_invokes_phase_execute(self):
@@ -207,69 +207,99 @@ class TestPhaseStrategyRunner(unittest.TestCase):
 
         mock_phase.execute.assert_called_once_with(context)
 
-    def test_run_with_architect_phase(self):
-        mock_runner = MagicMock()
-        context = PhaseContext(phase_runner=mock_runner, user_intent="Build CLI")
-        phase = ArchitectPhase()
+    @pytest.mark.parametrize(
+        "phase_cls,context_kwargs,expected_call",
+        [
+            (
+                ArchitectPhase,
+                {"phase_runner": MagicMock(), "user_intent": "Build CLI"},
+                ("run_architect", "Build CLI"),
+            ),
+            (
+                PlannerPhase,
+                {"phase_runner": MagicMock(), "user_intent": "Build API"},
+                ("run_planner", "Build API"),
+            ),
+            (
+                ExecutePhase,
+                {"task_executor": MagicMock()},
+                ("execute_loop", None),
+            ),
+        ],
+        ids=["ArchitectPhase", "PlannerPhase", "ExecutePhase"],
+    )
+    def test_run_with_phase(self, phase_cls, context_kwargs, expected_call):
+        """Test PhaseStrategyRunner.run with each phase type."""
+        context = PhaseContext(**context_kwargs)
+        phase = phase_cls()
         runner = PhaseStrategyRunner()
 
         runner.run(phase, context)
 
-        mock_runner.run_architect.assert_called_once_with("Build CLI")
+        method_name, expected_arg = expected_call
+        if "phase_runner" in context_kwargs:
+            mock_obj = context_kwargs["phase_runner"]
+        else:
+            mock_obj = context_kwargs["task_executor"]
 
-    def test_run_with_planner_phase(self):
-        mock_runner = MagicMock()
-        context = PhaseContext(phase_runner=mock_runner, user_intent="Build API")
-        phase = PlannerPhase()
+        method = getattr(mock_obj, method_name)
+        if expected_arg is not None:
+            method.assert_called_once_with(expected_arg)
+        else:
+            method.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "phase_cls,context_kwargs,missing_key",
+        [
+            (ArchitectPhase, {"user_intent": "Build CLI"}, "phase_runner"),
+            (PlannerPhase, {"user_intent": "Build API"}, "phase_runner"),
+            (ExecutePhase, {}, "task_executor"),
+        ],
+        ids=["ArchitectPhase_missing_runner", "PlannerPhase_missing_runner", "ExecutePhase_missing_executor"],
+    )
+    def test_run_with_phase_missing_context_kwargs(self, phase_cls, context_kwargs, missing_key):
+        """Test that missing required context_kwargs raises RuntimeError."""
+        context = PhaseContext(**context_kwargs)
+        phase = phase_cls()
         runner = PhaseStrategyRunner()
 
-        runner.run(phase, context)
-
-        mock_runner.run_planner.assert_called_once_with("Build API")
-
-    def test_run_with_execute_phase(self):
-        mock_executor = MagicMock()
-        context = PhaseContext(task_executor=mock_executor)
-        phase = ExecutePhase()
-        runner = PhaseStrategyRunner()
-
-        runner.run(phase, context)
-
-        mock_executor.execute_loop.assert_called_once()
+        with pytest.raises(RuntimeError) as exc_info:
+            runner.run(phase, context)
+        assert missing_key in str(exc_info.value)
 
     def test_run_raises_typeerror_for_non_phase(self):
         runner = PhaseStrategyRunner()
         context = PhaseContext()
 
-        with self.assertRaises(TypeError) as cm:
+        with pytest.raises(TypeError) as exc_info:
             runner.run("not a phase", context)
-        self.assertIn("Expected Phase instance", str(cm.exception))
-        self.assertIn("str", str(cm.exception))
+        assert "Expected Phase instance" in str(exc_info.value)
+        assert "str" in str(exc_info.value)
 
     def test_run_raises_typeerror_for_none(self):
         runner = PhaseStrategyRunner()
         context = PhaseContext()
 
-        with self.assertRaises(TypeError) as cm:
+        with pytest.raises(TypeError) as exc_info:
             runner.run(None, context)
-        self.assertIn("Expected Phase instance", str(cm.exception))
-        self.assertIn("NoneType", str(cm.exception))
+        assert "Expected Phase instance" in str(exc_info.value)
+        assert "NoneType" in str(exc_info.value)
 
     def test_run_raises_typeerror_for_dict(self):
         runner = PhaseStrategyRunner()
         context = PhaseContext()
 
-        with self.assertRaises(TypeError) as cm:
+        with pytest.raises(TypeError) as exc_info:
             runner.run({"name": "fake"}, context)
-        self.assertIn("Expected Phase instance", str(cm.exception))
+        assert "Expected Phase instance" in str(exc_info.value)
 
     def test_run_raises_typeerror_for_class_not_instance(self):
         runner = PhaseStrategyRunner()
         context = PhaseContext()
 
-        with self.assertRaises(TypeError) as cm:
+        with pytest.raises(TypeError) as exc_info:
             runner.run(ArchitectPhase, context)
-        self.assertIn("Expected Phase instance", str(cm.exception))
+        assert "Expected Phase instance" in str(exc_info.value)
 
 
 class TestExtensibility(unittest.TestCase):
