@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pyralph.config import CONF
+from pyralph.fetch_ready_issues import Issue
+from pyralph.hooks import HookManager
 from pyralph.logger import Logger
 from pyralph.orchestrator import RalphOrchestrator
 from tests.helpers import CaptureStdout
@@ -138,3 +140,113 @@ def logger_reset():
     finally:
         for attr, value in saved_state.items():
             setattr(Logger, attr, value)
+
+
+class IssueWatcherEnv:
+    """Environment for IssueWatcher tests with lazy directory creation.
+
+    Provides paths for store_dir, queue_dir, pid_file, log_file, and hooks_dir.
+    Directories are created lazily only when accessed via ensure_* methods.
+    """
+
+    def __init__(self, tmp_path: Path):
+        if tmp_path is None:
+            raise ValueError("tmp_path fixture is required for IssueWatcherEnv")
+        self._tmp_path = tmp_path
+
+    @property
+    def store_dir(self) -> str:
+        """Path to the issue store directory (not created until ensure_store_dir)."""
+        return str(self._tmp_path / "issues")
+
+    @property
+    def queue_dir(self) -> str:
+        """Path to the issue queue directory (not created until ensure_queue_dir)."""
+        return str(self._tmp_path / "queue")
+
+    @property
+    def pid_file(self) -> str:
+        """Path to the watcher PID file."""
+        return str(self._tmp_path / "watcher.pid")
+
+    @property
+    def log_file(self) -> str:
+        """Path to the watcher log file."""
+        return str(self._tmp_path / "watcher.log")
+
+    @property
+    def hooks_dir(self) -> str:
+        """Path to the hooks directory (not created until ensure_hooks_dir)."""
+        return str(self._tmp_path / "hooks")
+
+    def ensure_store_dir(self) -> Path:
+        """Create store directory if it doesn't exist and return its Path."""
+        path = Path(self.store_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def ensure_queue_dir(self) -> Path:
+        """Create queue directory if it doesn't exist and return its Path."""
+        path = Path(self.queue_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def ensure_hooks_dir(self) -> Path:
+        """Create hooks directory if it doesn't exist and return its Path."""
+        path = Path(self.hooks_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def create_sample_issue(self, number=1, title="Test Issue", body="Test body"):
+        """Create a sample Issue for testing."""
+        return Issue(
+            number=number,
+            title=title,
+            body=body,
+            url=f"https://github.com/test/repo/issues/{number}",
+            labels=["ready"]
+        )
+
+    def setup_hooks(self):
+        """Set up hooks directory and HookManager with event capture.
+
+        Returns a tuple of (hook_manager, emitted_events list).
+        """
+        hooks_path = self.ensure_hooks_dir()
+        emitted_events = []
+        hook_manager = HookManager(hooks_path)
+
+        def capture_event(event):
+            emitted_events.append(event)
+
+        watcher_events = [
+            "WATCHER_START", "WATCHER_STOP",
+            "ISSUE_DETECTED", "ISSUE_STORED", "ISSUE_QUEUED",
+            "ISSUE_PROCESSING_START", "ISSUE_PROCESSING_SUCCESS", "ISSUE_PROCESSING_FAILURE",
+            "POLL_START", "POLL_SUCCESS", "POLL_ERROR"
+        ]
+        hook_manager.register_hook("test_capture", capture_event, watcher_events)
+        return hook_manager, emitted_events
+
+
+@pytest.fixture
+def issue_watcher_env(tmp_path):
+    """Provide an IssueWatcher test environment with automatic cleanup.
+
+    Creates an IssueWatcherEnv instance that provides paths for:
+    - store_dir: directory for storing issues
+    - queue_dir: directory for queued issues
+    - pid_file: path for the watcher PID file
+    - log_file: path for the watcher log file
+    - hooks_dir: directory for hooks
+
+    Directories are created lazily via ensure_* methods to avoid creating
+    empty directories that aren't needed by the test.
+
+    Uses pytest's tmp_path fixture for automatic cleanup after each test.
+
+    Raises:
+        ValueError: If tmp_path fixture is missing (should not happen
+            when using pytest correctly).
+    """
+    return IssueWatcherEnv(tmp_path)

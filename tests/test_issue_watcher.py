@@ -1,52 +1,52 @@
 from io import StringIO
 from unittest.mock import patch
 
+import pytest
+
 from pyralph.fetch_ready_issues import IssueWatcher, WatcherConfig
 
-from .helpers import IssueWatcherTestCase
 
-
-class TestIssueWatcher(IssueWatcherTestCase):
+class TestIssueWatcher:
     def test_init_default_config(self):
         watcher = IssueWatcher()
         assert watcher.config is not None
         assert watcher.config.label == "ready"
 
-    def test_init_custom_config(self):
+    def test_init_custom_config(self, issue_watcher_env):
         config = WatcherConfig(
             label="bug",
             poll_interval=30.0,
-            store_dir=self.store_dir,
-            queue_dir=self.queue_dir,
-            pid_file=self.pid_file,
-            log_file=self.log_file
+            store_dir=issue_watcher_env.store_dir,
+            queue_dir=issue_watcher_env.queue_dir,
+            pid_file=issue_watcher_env.pid_file,
+            log_file=issue_watcher_env.log_file
         )
         watcher = IssueWatcher(config)
         assert watcher.config.label == "bug"
         assert watcher.config.poll_interval == 30.0
 
-    def test_get_status_not_running(self):
+    def test_get_status_not_running(self, issue_watcher_env):
         config = WatcherConfig(
-            store_dir=self.store_dir,
-            queue_dir=self.queue_dir,
-            pid_file=self.pid_file
+            store_dir=issue_watcher_env.store_dir,
+            queue_dir=issue_watcher_env.queue_dir,
+            pid_file=issue_watcher_env.pid_file
         )
         watcher = IssueWatcher(config)
         status = watcher.get_status()
         assert not status.running
         assert status.pid is None
 
-    def test_store_and_queue_access(self):
+    def test_store_and_queue_access(self, issue_watcher_env):
         config = WatcherConfig(
-            store_dir=self.store_dir,
-            queue_dir=self.queue_dir
+            store_dir=issue_watcher_env.store_dir,
+            queue_dir=issue_watcher_env.queue_dir
         )
         watcher = IssueWatcher(config)
         assert watcher.store is not None
         assert watcher.queue is not None
 
 
-class TestGitHubPoller(IssueWatcherTestCase):
+class TestGitHubPoller:
     def test_init_default_config(self):
         from pyralph.fetch_ready_issues import GitHubPoller
         poller = GitHubPoller()
@@ -95,7 +95,7 @@ class TestGitHubPoller(IssueWatcherTestCase):
         assert poller.seen_issues == set()
 
 
-class TestWatcherCLI(IssueWatcherTestCase):
+class TestWatcherCLI:
     def test_parser_creation(self):
         from pyralph.fetch_ready_issues import create_watcher_parser
         parser = create_watcher_parser()

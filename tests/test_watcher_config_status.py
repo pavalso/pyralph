@@ -1,9 +1,7 @@
 from pyralph.fetch_ready_issues import WatcherConfig, WatcherStatus
 
-from .helpers import IssueWatcherTestCase
 
-
-class TestWatcherConfig(IssueWatcherTestCase):
+class TestWatcherConfig:
     def test_defaults(self):
         config = WatcherConfig()
         assert config.label == "ready"
@@ -25,7 +23,7 @@ class TestWatcherConfig(IssueWatcherTestCase):
         assert not config.auto_process
 
 
-class TestWatcherStatus(IssueWatcherTestCase):
+class TestWatcherStatus:
     def test_to_dict(self):
         status = WatcherStatus(
             running=True,

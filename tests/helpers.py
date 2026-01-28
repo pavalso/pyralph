@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from pyralph.config import CONF
-from pyralph.fetch_ready_issues import Issue
 from pyralph.hooks import HookManager
 from pyralph.logger import Logger
 from pyralph.orchestrator import RalphOrchestrator
@@ -157,27 +156,3 @@ class LoggerTestCase(TempDirectoryMixin, unittest.TestCase):
             setattr(Logger, attr, value)
         CONF.LOG_FILE = self._original_log_file
         super().tearDown()
-
-
-class IssueWatcherTestCase(unittest.TestCase):
-    """Base test class for IssueWatcher tests with temp directories."""
-
-    def setUp(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.temp_path = Path(self.temp_dir)
-        self.store_dir = str(self.temp_path / "issues")
-        self.queue_dir = str(self.temp_path / "queue")
-        self.pid_file = str(self.temp_path / "watcher.pid")
-        self.log_file = str(self.temp_path / "watcher.log")
-
-    def tearDown(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-
-    def create_sample_issue(self, number=1, title="Test Issue", body="Test body"):
-        return Issue(
-            number=number,
-            title=title,
-            body=body,
-            url=f"https://github.com/test/repo/issues/{number}",
-            labels=["ready"]
-        )
