@@ -1,9 +1,6 @@
-from .helpers import TempConfigTestCase
-
-
-class TestFormatAcceptanceCriteria(TempConfigTestCase):
-    def test_format_acceptance_criteria_with_criteria(self):
-        orch = self.create_mock_orchestrator()
+class TestFormatAcceptanceCriteria:
+    def test_format_acceptance_criteria_with_criteria(self, temp_config):
+        orch = temp_config.create_mock_orchestrator()
         task = {
             'id': 'TASK-001',
             'description': 'Test task',
@@ -14,8 +11,8 @@ class TestFormatAcceptanceCriteria(TempConfigTestCase):
         assert "- Criterion 2" in result
         assert "- Criterion 3" in result
 
-    def test_format_acceptance_criteria_empty(self):
-        orch = self.create_mock_orchestrator()
+    def test_format_acceptance_criteria_empty(self, temp_config):
+        orch = temp_config.create_mock_orchestrator()
         task = {
             'id': 'TASK-001',
             'description': 'Test task',
@@ -24,8 +21,8 @@ class TestFormatAcceptanceCriteria(TempConfigTestCase):
         result = orch._format_acceptance_criteria(task)
         assert "No acceptance criteria specified" in result
 
-    def test_format_acceptance_criteria_missing(self):
-        orch = self.create_mock_orchestrator()
+    def test_format_acceptance_criteria_missing(self, temp_config):
+        orch = temp_config.create_mock_orchestrator()
         task = {
             'id': 'TASK-001',
             'description': 'Test task'

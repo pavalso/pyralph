@@ -1,15 +1,6 @@
-import shutil
 import sys
-import tempfile
 import threading
-import unittest
 from io import StringIO
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-from pyralph.config import CONF
-from pyralph.hooks import HookManager
-from pyralph.orchestrator import RalphOrchestrator
 
 
 # Thread-local storage to track active captures and detect nesting
@@ -58,67 +49,3 @@ class CaptureStdout:
     def output(self):
         """Alias for getvalue() for convenience."""
         return self.getvalue()
-
-
-class TempDirectoryMixin:
-    """Mixin providing temporary directory setup/teardown."""
-
-    def setUp(self):
-        super().setUp()
-        self.temp_dir = tempfile.mkdtemp()
-        self.temp_path = Path(self.temp_dir)
-
-    def tearDown(self):
-        temp_dir = getattr(self, "temp_dir", None)
-        if temp_dir:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        super().tearDown()
-
-
-class TempConfigTestCase(TempDirectoryMixin, unittest.TestCase):
-    """Base test class providing temporary directory and CONF management."""
-
-    config_attrs = ('BASE_DIR', 'ROOT_DIR', 'ARCHIVE_DIR', 'PRD_FILE')
-
-    def setUp(self):
-        super().setUp()
-        self._original_conf = {attr: getattr(CONF, attr) for attr in self.config_attrs if hasattr(CONF, attr)}
-        CONF.BASE_DIR = self.temp_path
-        CONF.ROOT_DIR = self.temp_path / ".ralph"
-        CONF.ARCHIVE_DIR = self.temp_path / ".ralph" / "archive"
-        CONF.PRD_FILE = self.temp_path / ".ralph" / "prd.json"
-
-    def tearDown(self):
-        for attr, value in self._original_conf.items():
-            setattr(CONF, attr, value)
-        super().tearDown()
-
-    def create_mock_agent(self, name="MockAgent", check_deps=True):
-        mock_agent = MagicMock()
-        mock_agent.check_dependencies.return_value = check_deps
-        mock_agent.get_name.return_value = name
-        return mock_agent
-
-    def create_mock_orchestrator(self, agent_name="mock", mock_agent=None, **kwargs):
-        if mock_agent is None:
-            mock_agent = self.create_mock_agent()
-        with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
-            return RalphOrchestrator(agent_name=agent_name, **kwargs)
-
-
-class TempHooksTestCase(TempDirectoryMixin, unittest.TestCase):
-    """Base test class for hook-related tests with temp directories."""
-
-    def setUp(self):
-        super().setUp()
-        self.hooks_dir = self.temp_path / "hooks"
-        self.hooks_dir.mkdir(parents=True)
-        self.manager = HookManager(self.hooks_dir)
-
-    def tearDown(self):
-        super().tearDown()
-
-    def create_hook_file(self, name, content):
-        hook_file = self.hooks_dir / name
-        hook_file.write_text(content, encoding='utf-8')
-        return hook_file

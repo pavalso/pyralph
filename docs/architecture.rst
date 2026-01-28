@@ -215,19 +215,21 @@ Naming
 
 Use ``test_<area>.py`` filenames, ``Test*`` classes, and ``test_*`` methods following pytest style. Prefer descriptive method names over comments.
 
-Shared Helpers
-^^^^^^^^^^^^^^
+Shared Fixtures
+^^^^^^^^^^^^^^^
 
-Reuse base classes and utilities in ``tests/helpers.py``:
+Reuse pytest fixtures in ``tests/conftest.py``:
 
-- ``TempConfigTestCase``
-- ``TempHooksTestCase``
-- ``LoggerTestCase``
-- ``IssueWatcherTestCase``
-- ``create_mock_orchestrator``
-- ``create_mock_agent``
+- ``temp_config`` - Temporary directory with CONF management
+- ``temp_hooks`` - Temporary directory with hooks setup
+- ``mock_orchestrator`` - Factory for mock orchestrators with CONF isolation
+- ``mock_agent`` - Mock agent with standard interface
+- ``logger_reset`` - Logger state management
+- ``issue_watcher_env`` - IssueWatcher test environment
 
-For multi-feature or cross-cutting tests, rely on these helpers and add new shared fixtures to ``tests/helpers.py`` rather than copying fixtures into multiple files.
+Utility classes like ``CaptureStdout`` are available in ``tests/helpers.py``.
+
+For multi-feature or cross-cutting tests, rely on these fixtures and add new shared fixtures to ``tests/conftest.py`` rather than copying fixtures into multiple files.
 
 Multi-Feature Tests
 ^^^^^^^^^^^^^^^^^^^

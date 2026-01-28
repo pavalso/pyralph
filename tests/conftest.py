@@ -29,6 +29,105 @@ def temp_dir(tmp_path):
 
 
 @pytest.fixture
+def temp_config(tmp_path):
+    """Provide temporary directory with CONF management for config-dependent tests.
+
+    Saves and restores CONF state after each test to prevent test pollution.
+    Sets up CONF to use temporary directories for isolation.
+
+    Yields a namespace object with:
+    - temp_path: Path to temporary directory
+    - temp_dir: String path to temporary directory (for backwards compatibility)
+    - create_mock_agent: Factory for creating mock agents
+    - create_mock_orchestrator: Factory for creating mock orchestrators
+
+    Raises:
+        ValueError: If tmp_path fixture is unavailable (should not happen
+            when using pytest correctly).
+    """
+    if tmp_path is None:
+        raise ValueError("tmp_path fixture is required for temp_config")
+
+    config_attrs = ('BASE_DIR', 'ROOT_DIR', 'ARCHIVE_DIR', 'PRD_FILE')
+    original_conf = {attr: getattr(CONF, attr) for attr in config_attrs if hasattr(CONF, attr)}
+
+    CONF.BASE_DIR = tmp_path
+    CONF.ROOT_DIR = tmp_path / ".ralph"
+    CONF.ARCHIVE_DIR = tmp_path / ".ralph" / "archive"
+    CONF.PRD_FILE = tmp_path / ".ralph" / "prd.json"
+
+    class TempConfigEnv:
+        """Environment for config-dependent tests."""
+
+        def __init__(self, path: Path):
+            self.temp_path = path
+            self.temp_dir = str(path)
+
+        def create_mock_agent(self, name="MockAgent", check_deps=True):
+            """Create a mock agent with standard interface methods."""
+            agent = MagicMock()
+            agent.check_dependencies.return_value = check_deps
+            agent.get_name.return_value = name
+            return agent
+
+        def create_mock_orchestrator(self, agent_name="mock", mock_agent=None, **kwargs):
+            """Create an orchestrator with a mock agent."""
+            if mock_agent is None:
+                mock_agent = self.create_mock_agent()
+            with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
+                return RalphOrchestrator(agent_name=agent_name, **kwargs)
+
+    try:
+        yield TempConfigEnv(tmp_path)
+    finally:
+        for attr, value in original_conf.items():
+            setattr(CONF, attr, value)
+
+
+class TempHooksEnv:
+    """Environment for hook-related tests with temp directories.
+
+    Provides paths and utilities for testing HookManager functionality.
+    """
+
+    def __init__(self, tmp_path: Path):
+        if tmp_path is None:
+            raise ValueError("tmp_path fixture is required for TempHooksEnv")
+        self.temp_path = tmp_path
+        self.temp_dir = str(tmp_path)
+        self.hooks_dir = tmp_path / "hooks"
+        self.hooks_dir.mkdir(parents=True)
+        self.manager = HookManager(self.hooks_dir)
+
+    def create_hook_file(self, name: str, content: str) -> Path:
+        """Create a hook file with the given name and content."""
+        hook_file = self.hooks_dir / name
+        hook_file.write_text(content, encoding='utf-8')
+        return hook_file
+
+
+@pytest.fixture
+def temp_hooks(tmp_path):
+    """Provide temporary directory with hooks setup for hook-related tests.
+
+    Creates a hooks directory and initializes a HookManager. The directory
+    is automatically cleaned up by pytest after the test.
+
+    Yields a TempHooksEnv object with:
+    - temp_path: Path to temporary directory
+    - temp_dir: String path to temporary directory
+    - hooks_dir: Path to hooks directory
+    - manager: HookManager instance for the hooks directory
+    - create_hook_file: Method to create hook files
+
+    Raises:
+        ValueError: If tmp_path fixture is unavailable (should not happen
+            when using pytest correctly).
+    """
+    return TempHooksEnv(tmp_path)
+
+
+@pytest.fixture
 def mock_agent():
     """Create a mock agent with standard interface methods.
 

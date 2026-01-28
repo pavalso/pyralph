@@ -1,14 +1,16 @@
 import json
 
+import pytest
+
 from pyralph.config import CONF
 from pyralph.prd import PRDManager
 
-from .helpers import TempConfigTestCase
 
-
-class TestPRDManager(TempConfigTestCase):
-    def setUp(self):
-        super().setUp()
+class TestPRDManager:
+    @pytest.fixture(autouse=True)
+    def setup(self, temp_config):
+        """Set up test environment with temp_config fixture."""
+        self.temp_config = temp_config
         CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         self.prd_path = CONF.PRD_FILE
         self.manager = PRDManager(self.prd_path)
@@ -107,12 +109,10 @@ class TestPRDManager(TempConfigTestCase):
         self.manager.delete()
 
     def test_load_raises_on_missing_file(self):
-        import pytest
         with pytest.raises(FileNotFoundError):
             self.manager.load()
 
     def test_load_raises_on_invalid_json(self):
-        import pytest
         self.prd_path.write_text('not valid json', encoding='utf-8')
         with pytest.raises(json.JSONDecodeError):
             self.manager.load()

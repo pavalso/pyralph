@@ -7,12 +7,16 @@ from pyralph.agents import get_agent
 from pyralph.config import CONF
 from pyralph.logger import Logger
 
-from .helpers import TempConfigTestCase
 
+class TestRalphOrchestrator:
+    @pytest.fixture(autouse=True)
+    def setup(self, temp_config):
+        """Set up test environment with temp_config fixture."""
+        self.temp_config = temp_config
+        self.temp_path = temp_config.temp_path
 
-class TestRalphOrchestrator(TempConfigTestCase):
     def test_init(self):
-        mock_agent = self.create_mock_agent()
+        mock_agent = self.temp_config.create_mock_agent()
         with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
             orch = RalphOrchestrator(agent_name="mock")
             assert orch.agent is not None
@@ -21,7 +25,7 @@ class TestRalphOrchestrator(TempConfigTestCase):
             mock_agent.set_config.assert_called_once_with(CONF)
 
     def test_init_deps_fail_exits(self):
-        mock_agent = self.create_mock_agent(check_deps=False)
+        mock_agent = self.temp_config.create_mock_agent(check_deps=False)
         with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
             with patch('pyralph.orchestrator.sys.exit') as mock_exit:
                 RalphOrchestrator(agent_name="mock")
@@ -29,7 +33,7 @@ class TestRalphOrchestrator(TempConfigTestCase):
 
     def test_init_ensures_directories(self):
         assert not CONF.ROOT_DIR.exists()
-        with patch('pyralph.orchestrator.get_agent', return_value=self.create_mock_agent()):
+        with patch('pyralph.orchestrator.get_agent', return_value=self.temp_config.create_mock_agent()):
             RalphOrchestrator(agent_name="mock")
             for p in [CONF.ROOT_DIR, CONF.ARCHIVE_DIR]:
                 assert p.exists()
@@ -39,7 +43,7 @@ class TestRalphOrchestrator(TempConfigTestCase):
             get_agent("nonexistent_agent")
 
     def test_archive_prd(self):
-        orch = self.create_mock_orchestrator()
+        orch = self.temp_config.create_mock_orchestrator()
         prd_content = '{"id": "PRD-001"}'
         CONF.PRD_FILE.write_text(prd_content, encoding='utf-8')
         orch._archive_prd()
@@ -49,9 +53,9 @@ class TestRalphOrchestrator(TempConfigTestCase):
         assert archived[0].read_text(encoding='utf-8') == prd_content
 
     def test_architect_requires_arch_md(self):
-        mock_agent = self.create_mock_agent()
+        mock_agent = self.temp_config.create_mock_agent()
         mock_agent.run.return_value = (True, "STATUS: CREATED ARCHITECTURE.md", None)
-        orch = self.create_mock_orchestrator(mock_agent=mock_agent)
+        orch = self.temp_config.create_mock_orchestrator(mock_agent=mock_agent)
         (CONF.BASE_DIR / "ARCH.md").unlink(missing_ok=True)
         with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.info'):
             orch.run_architect("test")
@@ -60,6 +64,7 @@ class TestRalphOrchestrator(TempConfigTestCase):
         with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.info'):
             orch.run_architect("test")
             mock_exit.assert_not_called()
+
 
 FLAG_CASES = [
     ('tree_depth', '_tree_depth', 5, 2),
@@ -137,19 +142,25 @@ class TestOrchestratorFlags:
             getattr(orch, '_nonexistent_flag')
 
 
-class TestOrchestratorIntentHandling(TempConfigTestCase):
+class TestOrchestratorIntentHandling:
+    @pytest.fixture(autouse=True)
+    def setup(self, temp_config):
+        """Set up test environment with temp_config fixture."""
+        self.temp_config = temp_config
+        self.temp_path = temp_config.temp_path
+
     def test_get_intent_inline(self):
-        orch = self.create_mock_orchestrator(intent="Build CLI")
+        orch = self.temp_config.create_mock_orchestrator(intent="Build CLI")
         assert orch._get_intent() == "Build CLI"
 
     def test_get_intent_from_file(self):
         intent_file = self.temp_path / "intent.txt"
         intent_file.write_text("Build webapp", encoding='utf-8')
-        orch = self.create_mock_orchestrator(intent_file=str(intent_file))
+        orch = self.temp_config.create_mock_orchestrator(intent_file=str(intent_file))
         assert orch._get_intent() == "Build webapp"
 
     def test_get_intent_file_not_found_exits(self):
-        orch = self.create_mock_orchestrator(intent_file="/nonexistent")
+        orch = self.temp_config.create_mock_orchestrator(intent_file="/nonexistent")
         with patch('pyralph.orchestrator.sys.exit', side_effect=SystemExit(1)), patch('pyralph.logger.Logger.error'):
             with pytest.raises(SystemExit):
                 orch._get_intent()
@@ -157,7 +168,7 @@ class TestOrchestratorIntentHandling(TempConfigTestCase):
     def test_get_intent_empty_file_exits(self):
         intent_file = self.temp_path / "empty.txt"
         intent_file.write_text("", encoding='utf-8')
-        orch = self.create_mock_orchestrator(intent_file=str(intent_file))
+        orch = self.temp_config.create_mock_orchestrator(intent_file=str(intent_file))
         with patch('pyralph.orchestrator.sys.exit', side_effect=SystemExit(1)), patch('pyralph.logger.Logger.error'):
             with pytest.raises(SystemExit):
                 orch._get_intent()

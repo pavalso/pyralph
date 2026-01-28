@@ -5,94 +5,94 @@ from pyralph.hooks import (
     Event, EventType, HookManager, PythonHook, ExecutableHook, FunctionHook
 )
 
-from .helpers import TempHooksTestCase
 
+class TestHookManager:
+    def test_enable_disable(self, temp_hooks):
+        assert temp_hooks.manager.is_enabled
+        temp_hooks.manager.disable()
+        assert not temp_hooks.manager.is_enabled
+        temp_hooks.manager.enable()
+        assert temp_hooks.manager.is_enabled
 
-class TestHookManager(TempHooksTestCase):
-    def test_enable_disable(self):
-        assert self.manager.is_enabled
-        self.manager.disable()
-        assert not self.manager.is_enabled
-        self.manager.enable()
-        assert self.manager.is_enabled
+    def test_discover(self, temp_hooks):
+        assert temp_hooks.manager.discover() == 0
+        temp_hooks.create_hook_file("_private.py", 'EVENTS = ["TASK_START"]\ndef on_event(e): pass')
+        assert temp_hooks.manager.discover() == 0
+        temp_hooks.create_hook_file("valid.py", 'EVENTS = ["TASK_START"]\ndef on_event(e): pass')
+        assert HookManager(temp_hooks.hooks_dir).discover() == 1
 
-    def test_discover(self):
-        assert self.manager.discover() == 0
-        self.create_hook_file("_private.py", 'EVENTS = ["TASK_START"]\ndef on_event(e): pass')
-        assert self.manager.discover() == 0
-        self.create_hook_file("valid.py", 'EVENTS = ["TASK_START"]\ndef on_event(e): pass')
-        assert HookManager(self.hooks_dir).discover() == 1
-
-    def test_discover_rejects_invalid(self):
+    def test_discover_rejects_invalid(self, tmp_path):
         for name, content in [("no_ev.py", 'def on_event(e): pass'), ("no_h.py", 'EVENTS = ["TASK_START"]')]:
-            self.tearDown()
-            self.setUp()
-            self.create_hook_file(name, content)
-            assert HookManager(self.hooks_dir, MagicMock()).discover() == 0
+            hooks_dir = tmp_path / f"hooks_{name}"
+            hooks_dir.mkdir(parents=True)
+            hook_file = hooks_dir / name
+            hook_file.write_text(content, encoding='utf-8')
+            manager = HookManager(hooks_dir, MagicMock())
+            assert manager.discover() == 0
 
-    def test_emit_priority_order(self):
+    def test_emit_priority_order(self, temp_hooks):
         import tests.test_hooks as test_module
         test_module.execution_order = []
-        self.create_hook_file("high.py", '''
+        temp_hooks.create_hook_file("high.py", '''
 EVENTS = ["TASK_START"]
 PRIORITY = 200
 def on_event(e):
     import tests.test_hooks as mod
     mod.execution_order.append("high")
 ''')
-        self.create_hook_file("low.py", '''
+        temp_hooks.create_hook_file("low.py", '''
 EVENTS = ["TASK_START"]
 PRIORITY = 10
 def on_event(e):
     import tests.test_hooks as mod
     mod.execution_order.append("low")
 ''')
-        self.manager.discover()
-        self.manager.emit(Event(EventType.TASK_START))
+        temp_hooks.manager.discover()
+        temp_hooks.manager.emit(Event(EventType.TASK_START))
         assert test_module.execution_order == ["low", "high"]
 
-    def test_set_enabled_hooks(self):
-        self.manager.set_enabled_hooks(None)
-        assert self.manager.is_hook_enabled("any")
-        self.manager.set_enabled_hooks([])
-        assert not self.manager.is_hook_enabled("any")
-        self.manager.set_enabled_hooks(["a"])
-        assert self.manager.is_hook_enabled("a")
-        assert not self.manager.is_hook_enabled("b")
+    def test_set_enabled_hooks(self, temp_hooks):
+        temp_hooks.manager.set_enabled_hooks(None)
+        assert temp_hooks.manager.is_hook_enabled("any")
+        temp_hooks.manager.set_enabled_hooks([])
+        assert not temp_hooks.manager.is_hook_enabled("any")
+        temp_hooks.manager.set_enabled_hooks(["a"])
+        assert temp_hooks.manager.is_hook_enabled("a")
+        assert not temp_hooks.manager.is_hook_enabled("b")
 
 
-class TestHookModification(TempHooksTestCase):
-    def test_modifying_hook(self):
-        self.create_hook_file("mod.py", '''
+class TestHookModification:
+    def test_modifying_hook(self, temp_hooks):
+        temp_hooks.create_hook_file("mod.py", '''
 from pyralph.hooks import Event
 EVENTS = ["TASK_START"]
 MODIFIES_DATA = True
 def on_event(e):
     return Event(event_type=e.event_type, task_id="MOD-" + (e.task_id or ""))
 ''')
-        self.manager.discover()
-        result = self.manager.emit(Event(EventType.TASK_START, task_id="T-001"))
+        temp_hooks.manager.discover()
+        result = temp_hooks.manager.emit(Event(EventType.TASK_START, task_id="T-001"))
         assert result.task_id == "MOD-T-001"
 
-    def test_non_modifying_ignored(self):
-        self.create_hook_file("obs.py", '''
+    def test_non_modifying_ignored(self, temp_hooks):
+        temp_hooks.create_hook_file("obs.py", '''
 from pyralph.hooks import Event
 EVENTS = ["TASK_START"]
 def on_event(e):
     return Event(event_type=e.event_type, task_id="IGNORED")
 ''')
-        self.manager.discover()
-        result = self.manager.emit(Event(EventType.TASK_START, task_id="ORIG"))
+        temp_hooks.manager.discover()
+        result = temp_hooks.manager.emit(Event(EventType.TASK_START, task_id="ORIG"))
         assert result.task_id == "ORIG"
 
 
-class TestHookTypes(TempHooksTestCase):
+class TestHookTypes:
     def test_python_hook_parse_events(self):
         assert PythonHook._parse_events(["TASK_START", "task_success"]) == {EventType.TASK_START, EventType.TASK_SUCCESS}
         assert PythonHook._parse_events(["INVALID"]) == set()
 
-    def test_executable_hook(self):
-        hook = ExecutableHook(self.temp_path/"t.sh", {EventType.TASK_START}, priority=50, timeout=10.0, modifies_data=True)
+    def test_executable_hook(self, tmp_path):
+        hook = ExecutableHook(tmp_path / "t.sh", {EventType.TASK_START}, priority=50, timeout=10.0, modifies_data=True)
         assert hook.name == "t.sh"
         assert hook.priority == 50
         assert hook.modifies_data
@@ -116,19 +116,19 @@ class TestHookTypes(TempHooksTestCase):
         assert result.task_id == "MOD"
 
 
-class TestHookBehavior(TempHooksTestCase):
-    def test_exception_isolation(self):
+class TestHookBehavior:
+    def test_exception_isolation(self, temp_hooks):
         log = []
-        self.manager.register_hook("fail", lambda e: (_ for _ in ()).throw(RuntimeError()), ["TASK_START"], priority=10)
-        self.manager.register_hook("ok", lambda e: log.append("ok"), ["TASK_START"], priority=20)
-        self.manager.emit(Event(EventType.TASK_START))
+        temp_hooks.manager.register_hook("fail", lambda e: (_ for _ in ()).throw(RuntimeError()), ["TASK_START"], priority=10)
+        temp_hooks.manager.register_hook("ok", lambda e: log.append("ok"), ["TASK_START"], priority=20)
+        temp_hooks.manager.emit(Event(EventType.TASK_START))
         assert "ok" in log
 
-    def test_concurrent_emit(self):
+    def test_concurrent_emit(self, temp_hooks):
         results = []
         lock = threading.Lock()
-        self.manager.register_hook("h", lambda e: (lock.acquire(), results.append(e.task_id), lock.release()), ["TASK_START"])
-        threads = [threading.Thread(target=lambda i=i: self.manager.emit(Event(EventType.TASK_START, task_id=f"T-{i}")))
+        temp_hooks.manager.register_hook("h", lambda e: (lock.acquire(), results.append(e.task_id), lock.release()), ["TASK_START"])
+        threads = [threading.Thread(target=lambda i=i: temp_hooks.manager.emit(Event(EventType.TASK_START, task_id=f"T-{i}")))
                   for i in range(10)]
         for t in threads:
             t.start()
