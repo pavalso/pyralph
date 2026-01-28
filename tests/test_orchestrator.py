@@ -4,6 +4,7 @@ import pytest
 
 from pyralph import RalphOrchestrator
 from pyralph.agents import get_agent
+from pyralph.config import CONF
 from pyralph.logger import Logger
 
 from .helpers import TempConfigTestCase
@@ -17,7 +18,7 @@ class TestRalphOrchestrator(TempConfigTestCase):
             assert orch.agent is not None
             mock_agent.check_dependencies.assert_called_once()
             mock_agent.set_logger.assert_called_once_with(Logger)
-            mock_agent.set_config.assert_called_once_with(__import__("pyralph.config", fromlist=["CONF"]).CONF)
+            mock_agent.set_config.assert_called_once_with(CONF)
 
     def test_init_deps_fail_exits(self):
         mock_agent = self.create_mock_agent(check_deps=False)
@@ -27,7 +28,6 @@ class TestRalphOrchestrator(TempConfigTestCase):
                 mock_exit.assert_called_once_with(1)
 
     def test_init_ensures_directories(self):
-        CONF = __import__("pyralph.config", fromlist=["CONF"]).CONF
         assert not CONF.ROOT_DIR.exists()
         with patch('pyralph.orchestrator.get_agent', return_value=self.create_mock_agent()):
             RalphOrchestrator(agent_name="mock")
@@ -40,7 +40,6 @@ class TestRalphOrchestrator(TempConfigTestCase):
 
     def test_archive_prd(self):
         orch = self.create_mock_orchestrator()
-        CONF = __import__("pyralph.config", fromlist=["CONF"]).CONF
         prd_content = '{"id": "PRD-001"}'
         CONF.PRD_FILE.write_text(prd_content, encoding='utf-8')
         orch._archive_prd()
@@ -53,7 +52,6 @@ class TestRalphOrchestrator(TempConfigTestCase):
         mock_agent = self.create_mock_agent()
         mock_agent.run.return_value = (True, "STATUS: CREATED ARCHITECTURE.md", None)
         orch = self.create_mock_orchestrator(mock_agent=mock_agent)
-        CONF = __import__("pyralph.config", fromlist=["CONF"]).CONF
         (CONF.BASE_DIR / "ARCH.md").unlink(missing_ok=True)
         with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.info'):
             orch.run_architect("test")

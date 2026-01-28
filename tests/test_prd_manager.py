@@ -1,5 +1,6 @@
 import json
 
+from pyralph.config import CONF
 from pyralph.prd import PRDManager
 
 from .helpers import TempConfigTestCase
@@ -8,7 +9,6 @@ from .helpers import TempConfigTestCase
 class TestPRDManager(TempConfigTestCase):
     def setUp(self):
         super().setUp()
-        CONF = __import__("pyralph.config", fromlist=["CONF"]).CONF
         CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         self.prd_path = CONF.PRD_FILE
         self.manager = PRDManager(self.prd_path)
