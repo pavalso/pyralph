@@ -13,6 +13,7 @@ import pytest
 from pyralph.config import CONF
 from pyralph.logger import Logger
 from pyralph.orchestrator import RalphOrchestrator
+from tests.helpers import CaptureStdout
 
 
 @pytest.fixture
@@ -88,16 +89,22 @@ def mock_orchestrator(tmp_path, mock_agent):
 def capture_stdout():
     """Capture stdout during test execution.
 
-    Yields a StringIO object that captures all stdout output.
+    Yields a CaptureStdout context manager that captures all stdout output.
     Restores original stdout after the test completes, even on exception.
+
+    Usage:
+        def test_example(capture_stdout):
+            with capture_stdout as captured:
+                print("hello")
+                assert captured.getvalue() == "hello\\n"
+
+    Edge cases:
+        - Empty stdout capture returns empty string without error
+        - Nested capture_stdout calls raise RuntimeError with clear message
     """
-    captured = StringIO()
-    original_stdout = sys.stdout
-    sys.stdout = captured
-    try:
-        yield captured
-    finally:
-        sys.stdout = original_stdout
+    capture = CaptureStdout()
+    with capture:
+        yield capture
 
 
 @pytest.fixture

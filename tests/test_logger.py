@@ -1,10 +1,12 @@
 import json
+import unittest
 import warnings
-from io import StringIO
+
+import pytest
 
 from pyralph.logger import Logger
 
-from .helpers import LoggerTestCase
+from .helpers import CaptureStdout, LoggerTestCase
 
 
 class TestLogger(LoggerTestCase):
@@ -41,21 +43,15 @@ class TestLogger(LoggerTestCase):
             (True, True, 'debug', "Debug", None, ["[DEBUG] Debug"], ["\033["]),
         ]
         for verbose, no_color, method, msg, color, exp_in, exp_not in cases:
-            self.held_output = StringIO()
-            self.original_stdout = self.held_output
-            self.held_output = StringIO()
-            import sys
-            sys.stdout = self.held_output
-            # Use set_verbosity (non-deprecated) instead of set_verbose
-            Logger.set_verbosity(1 if verbose else 0)
-            Logger.set_no_color(no_color)
-            getattr(Logger, method)(msg, color) if color else getattr(Logger, method)(msg)
-            output = self.held_output.getvalue()
+            with CaptureStdout() as captured:
+                Logger.set_verbosity(1 if verbose else 0)
+                Logger.set_no_color(no_color)
+                getattr(Logger, method)(msg, color) if color else getattr(Logger, method)(msg)
+                output = captured.getvalue()
             for e in exp_in:
                 assert e in output
             for e in exp_not:
                 assert e not in output
-            sys.stdout = self.original_stdout
 
     def test_file_log(self):
         cases = [("PROMPT", "TAG", "➡️"), ("RESPONSE", "TAG", "⬅️"), ("ERROR", "TAG", "❌"), ("INFO", None, "ℹ️")]
@@ -69,15 +65,12 @@ class TestLogger(LoggerTestCase):
         cases = [(0, 'debug', False), (1, 'debug', True), (0, 'trace', False), (2, 'trace', True),
                  (0, 'ultra', False), (3, 'ultra', True)]
         for verbosity, method, should_output in cases:
-            self.held_output = StringIO()
-            import sys
-            sys.stdout = self.held_output
-            Logger.set_verbosity(verbosity)
-            Logger.set_no_color(True)
-            getattr(Logger, method)("test")
-            output = self.held_output.getvalue()
+            with CaptureStdout() as captured:
+                Logger.set_verbosity(verbosity)
+                Logger.set_no_color(True)
+                getattr(Logger, method)("test")
+                output = captured.getvalue()
             assert ("test" in output) == should_output
-            sys.stdout = self.original_stdout
 
     def test_verbosity_sync_and_clamp(self):
         Logger.set_verbosity(0)
@@ -129,23 +122,21 @@ class TestLogger(LoggerTestCase):
     def test_quiet_mode(self):
         Logger.set_no_color(True)
         Logger.set_quiet(True)
-        import sys
-        sys.stdout = self.held_output
-        Logger.info("suppressed")
-        assert self.held_output.getvalue() == ""
-        Logger.warning("warning")
-        Logger.error("error")
-        output = self.held_output.getvalue()
+        with CaptureStdout() as captured:
+            Logger.info("suppressed")
+            assert captured.getvalue() == ""
+            Logger.warning("warning")
+            Logger.error("error")
+            output = captured.getvalue()
         assert "warning" in output
         assert "error" in output
 
     def test_no_emoji(self):
         Logger.set_no_color(True)
         Logger.set_no_emoji(True)
-        import sys
-        sys.stdout = self.held_output
-        Logger.info("🤖 Robot ✅")
-        output = self.held_output.getvalue()
+        with CaptureStdout() as captured:
+            Logger.info("🤖 Robot ✅")
+            output = captured.getvalue()
         assert "[BOT]" in output
         assert "🤖" not in output
 
@@ -207,21 +198,19 @@ class TestLoggerRedaction(LoggerTestCase):
 class TestLoggerJsonOutput(LoggerTestCase):
     def test_json_output_mode(self):
         Logger.json_output = True
-        import sys
-        sys.stdout = self.held_output
-        Logger.info("test message")
-        output = self.held_output.getvalue().strip()
+        with CaptureStdout() as captured:
+            Logger.info("test message")
+            output = captured.getvalue().strip()
         parsed = json.loads(output)
         assert parsed["message"] == "test message"
         assert parsed["level"] == "info"
 
     def test_ndjson_output_mode(self):
         Logger.ndjson_output = True
-        import sys
-        sys.stdout = self.held_output
-        Logger.info("msg1")
-        Logger.info("msg2")
-        lines = [l for l in self.held_output.getvalue().strip().split('\n') if l]
+        with CaptureStdout() as captured:
+            Logger.info("msg1")
+            Logger.info("msg2")
+            lines = [line for line in captured.getvalue().strip().split('\n') if line]
         assert len(lines) == 2
         for line in lines:
             json.loads(line)
@@ -232,9 +221,46 @@ class TestLoggerJsonOutput(LoggerTestCase):
             Logger.log_level = level
             Logger.set_no_color(True)
             Logger.set_verbosity(0)
-            self.held_output = StringIO()
-            import sys
-            sys.stdout = self.held_output
-            getattr(Logger, method)("test")
-            assert ("test" in self.held_output.getvalue()) == should_output
-            sys.stdout = self.original_stdout
+            with CaptureStdout() as captured:
+                getattr(Logger, method)("test")
+                output = captured.getvalue()
+            assert ("test" in output) == should_output
+
+
+class TestCaptureStdoutEdgeCases(unittest.TestCase):
+    """Test edge cases for CaptureStdout context manager."""
+
+    def test_empty_capture_returns_empty_string(self):
+        """Empty stdout capture returns empty string without error."""
+        with CaptureStdout() as captured:
+            pass  # No output
+        assert captured.getvalue() == ""
+        assert captured.output == ""
+
+    def test_nested_capture_raises_error(self):
+        """Nested capture_stdout calls raise clear RuntimeError."""
+        with CaptureStdout():
+            with pytest.raises(RuntimeError) as exc_info:
+                with CaptureStdout():
+                    pass
+            assert "Nested stdout capture is not supported" in str(exc_info.value)
+
+    def test_stdout_restored_on_exception(self):
+        """Stdout is properly restored even when assertions fail."""
+        import sys
+        original = sys.stdout
+
+        try:
+            with CaptureStdout():
+                raise ValueError("test exception")
+        except ValueError:
+            pass
+
+        assert sys.stdout is original
+
+    def test_output_property_alias(self):
+        """The output property is an alias for getvalue()."""
+        with CaptureStdout() as captured:
+            print("test", end="")
+        assert captured.output == "test"
+        assert captured.output == captured.getvalue()
