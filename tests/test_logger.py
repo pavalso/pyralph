@@ -192,7 +192,7 @@ class TestLoggerJsonOutput(LoggerTestCase):
         sys.stdout = self.held_output
         Logger.info("msg1")
         Logger.info("msg2")
-        lines = [l for l in self.held_output.getvalue().strip().split('\\n') if l]
+        lines = [l for l in self.held_output.getvalue().strip().split('\n') if l]
         assert len(lines) == 2
         for line in lines:
             json.loads(line)

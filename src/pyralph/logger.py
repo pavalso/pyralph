@@ -247,11 +247,7 @@ class Logger(metaclass=_LoggerMeta):
     @staticmethod
     def _print_json(msg: str, level: str, **kwargs) -> None:
         formatted = Logger._format_json_message(msg, level, **kwargs)
-        if Logger.ndjson_output:
-            # Emit literal '\n' separators so consumers splitting on backslash-n work as expected.
-            print(formatted, end="\\n")
-        else:
-            print(formatted)
+        print(formatted)
 
     @staticmethod
     def _print_colored(msg: str, color: str = "RESET", prefix: str = ""):
