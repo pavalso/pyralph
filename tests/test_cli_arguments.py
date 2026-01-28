@@ -88,6 +88,82 @@ class TestMainIntentValidation:
                 mock_exit.assert_called_with(1)
 
 
+class TestFlagConflictValidation:
+    """Tests for CLI flag conflict detection and warnings."""
+
+    def test_only_and_resume_raises_error(self):
+        """Given --only and --resume are both specified, a ValueError is raised."""
+        with patch('sys.argv', ['ralph', '--only', 'T-1', '--resume', 'T-2']):
+            with patch('pyralph.cli.sys.exit') as mock_exit:
+                with patch('pyralph.logger.Logger.error') as mock_error:
+                    with patch('pyralph.RalphOrchestrator'):
+                        main()
+                        mock_error.assert_called()
+                        assert '--only' in str(mock_error.call_args) and '--resume' in str(mock_error.call_args)
+                        mock_exit.assert_called_with(1)
+
+    def test_skip_verify_with_retries_warns(self):
+        """Given --skip-verify and --retries are both specified, a warning is logged."""
+        with patch('sys.argv', ['ralph', '--skip-verify', '--retries', '3']):
+            with patch('pyralph.logger.Logger.warning') as mock_warning:
+                with patch('pyralph.RalphOrchestrator') as mock_orch:
+                    mock_orch.return_value = MagicMock()
+                    main()
+                    mock_warning.assert_called()
+                    assert '--retries' in str(mock_warning.call_args)
+
+    def test_ci_and_non_interactive_info(self):
+        """Given --ci and --non-interactive are both specified, an info message is logged."""
+        with patch('sys.argv', ['ralph', '--ci', '--non-interactive']):
+            with patch('pyralph.logger.Logger.info') as mock_info:
+                with patch('pyralph.RalphOrchestrator') as mock_orch:
+                    mock_orch.return_value = MagicMock()
+                    main()
+                    # Check that the redundancy message was logged
+                    info_calls = [str(call) for call in mock_info.call_args_list]
+                    assert any('redundant' in call for call in info_calls)
+
+    def test_no_warnings_without_conflicts(self):
+        """Given no conflicting flags, no warnings are emitted."""
+        with patch('sys.argv', ['ralph', '--retries', '3']):
+            with patch('pyralph.logger.Logger.warning') as mock_warning:
+                with patch('pyralph.RalphOrchestrator') as mock_orch:
+                    mock_orch.return_value = MagicMock()
+                    main()
+                    # No warnings should be called about flag conflicts
+                    for call in mock_warning.call_args_list:
+                        assert '--retries has no effect' not in str(call)
+
+    def test_negative_retries_raises_error(self):
+        """Given --retries with negative value, a validation error occurs."""
+        with patch('sys.argv', ['ralph', '--retries', '-1']):
+            with patch('pyralph.cli.sys.exit') as mock_exit:
+                with patch('pyralph.logger.Logger.error') as mock_error:
+                    with patch('pyralph.RalphOrchestrator'):
+                        main()
+                        mock_error.assert_called()
+                        assert 'non-negative' in str(mock_error.call_args)
+                        mock_exit.assert_called_with(1)
+
+    def test_only_without_resume_no_error(self):
+        """Given --only alone, no error is raised."""
+        with patch('sys.argv', ['ralph', '--only', 'T-1', 'T-2']):
+            with patch('pyralph.RalphOrchestrator') as mock_orch:
+                mock_orch.return_value = MagicMock()
+                main()
+                # Should not raise, orchestrator should be called
+                mock_orch.assert_called()
+
+    def test_resume_without_only_no_error(self):
+        """Given --resume alone, no error is raised."""
+        with patch('sys.argv', ['ralph', '--resume', 'T-3']):
+            with patch('pyralph.RalphOrchestrator') as mock_orch:
+                mock_orch.return_value = MagicMock()
+                main()
+                # Should not raise, orchestrator should be called
+                mock_orch.assert_called()
+
+
 class TestMainCLIPassthrough:
     FLAG_TESTS = [
         (['--intent', 'test'], {'intent': 'test'}),

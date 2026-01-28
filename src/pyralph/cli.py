@@ -25,6 +25,39 @@ def get_version() -> str:
     return "unknown"
 
 
+def _validate_flag_conflicts(args: "argparse.Namespace", ci_mode: bool) -> None:
+    """Validate CLI flag combinations and emit warnings or errors for conflicts.
+
+    Args:
+        args: Parsed command-line arguments
+        ci_mode: Whether CI mode is enabled
+
+    Raises:
+        ValueError: When mutually exclusive flags are used together
+    """
+    # Check for mutually exclusive task control flags
+    if args.only and args.resume:
+        raise ValueError(
+            "Cannot use --only and --resume together. "
+            "--only executes specific tasks while --resume continues from a task."
+        )
+
+    # Validate numeric parameters
+    if args.retries is not None and args.retries < 0:
+        raise ValueError(f"--retries must be non-negative, got {args.retries}")
+
+    # Warn about ineffective flag combinations
+    if args.skip_verify and args.retries is not None:
+        Logger.warning(
+            "--retries has no effect when --skip-verify is enabled "
+            "(verification is skipped, so retries never trigger)"
+        )
+
+    # Info about redundant flags
+    if args.ci and args.non_interactive:
+        Logger.info("--non-interactive is redundant when --ci is specified (--ci implies --non-interactive)")
+
+
 def main() -> None:
     """Entry point for the ralph CLI."""
     agent = list_agents()[0]
@@ -144,6 +177,13 @@ def main() -> None:
     # Validate mutually exclusive intent options
     if args.intent and args.intent_file:
         Logger.error("Cannot use both --intent and --intent-file together.")
+        sys.exit(1)
+
+    # Validate flag conflicts
+    try:
+        _validate_flag_conflicts(args, ci_mode)
+    except ValueError as e:
+        Logger.error(str(e))
         sys.exit(1)
 
     # Handle --enhance-all flag: apply enhancement defaults with explicit overrides
