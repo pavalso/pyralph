@@ -1,4 +1,5 @@
 import json
+import warnings
 from io import StringIO
 
 from pyralph.logger import Logger
@@ -8,11 +9,26 @@ from .helpers import LoggerTestCase
 
 class TestLogger(LoggerTestCase):
     def test_toggles(self):
-        for setter, attr in [(Logger.set_no_color, 'no_color'), (Logger.set_verbose, 'verbose')]:
-            setter(True)
-            assert getattr(Logger, attr)
-            setter(False)
-            assert not getattr(Logger, attr)
+        # Test non-deprecated setter
+        Logger.set_no_color(True)
+        assert Logger.no_color
+        Logger.set_no_color(False)
+        assert not Logger.no_color
+
+        # Test deprecated set_verbose (still works but warns)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            Logger.set_verbose(True)
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+        assert Logger.verbose
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            Logger.set_verbose(False)
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+        assert not Logger.verbose
 
     def test_colors_keys(self):
         assert set(Logger.COLORS.keys()) == {"RESET", "GREEN", "RED", "CYAN", "YELLOW", "MAGENTA"}
@@ -30,7 +46,8 @@ class TestLogger(LoggerTestCase):
             self.held_output = StringIO()
             import sys
             sys.stdout = self.held_output
-            Logger.set_verbose(verbose)
+            # Use set_verbosity (non-deprecated) instead of set_verbose
+            Logger.set_verbosity(1 if verbose else 0)
             Logger.set_no_color(no_color)
             getattr(Logger, method)(msg, color) if color else getattr(Logger, method)(msg)
             output = self.held_output.getvalue()
@@ -73,6 +90,8 @@ class TestLogger(LoggerTestCase):
         assert Logger.verbosity == 3
 
     def test_verbosity_property_sync_direct_assignment(self):
+        import warnings
+
         Logger.verbosity = 0
         assert not Logger.verbose
         assert Logger.verbosity == 0
@@ -81,11 +100,21 @@ class TestLogger(LoggerTestCase):
         assert Logger.verbose
         assert Logger.verbosity == 2
 
-        Logger.verbose = False
+        # Setting verbose directly is deprecated but still works
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            Logger.verbose = False
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "deprecated" in str(w[0].message).lower()
         assert not Logger.verbose
         assert Logger.verbosity == 0
 
-        Logger.verbose = True
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            Logger.verbose = True
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
         assert Logger.verbose
         assert Logger.verbosity == 1
 

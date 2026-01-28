@@ -7,6 +7,7 @@ centralized logging infrastructure for the Ralph CLI tool.
 import datetime
 import json
 import re
+import warnings
 from pathlib import Path
 from typing import List, Optional
 
@@ -14,10 +15,10 @@ from .config import CONF
 
 
 class _LoggerMeta(type):
-    """Metaclass for Logger to provide property-based synchronization of verbose/verbosity.
+    """Metaclass for Logger to provide property-based access to verbosity.
 
-    This metaclass enables class-level properties that keep Logger.verbose and
-    Logger.verbosity synchronized automatically, even with direct assignment.
+    This metaclass enables class-level properties for verbosity control.
+    The verbose property is derived from verbosity (verbose = verbosity > 0).
     """
 
     @property
@@ -27,23 +28,26 @@ class _LoggerMeta(type):
 
     @verbosity.setter
     def verbosity(cls, value: int) -> None:
-        """Set verbosity level, clamping to [0, 3] and syncing verbose."""
+        """Set verbosity level, clamping to [0, 3] range."""
         clamped = max(0, min(3, value))
         cls._verbosity_value = clamped
-        cls._verbose_value = clamped >= 1
         # Auto-set log_level to debug when verbosity is enabled
         if clamped >= 1:
             cls.log_level = cls.LOG_LEVELS["debug"]
 
     @property
     def verbose(cls) -> bool:
-        """Get verbose mode (True if verbosity >= 1)."""
-        return cls._verbose_value
+        """Get verbose mode (derived from verbosity > 0)."""
+        return cls._verbosity_value > 0
 
     @verbose.setter
     def verbose(cls, value: bool) -> None:
-        """Set verbose mode, syncing verbosity to 1 or 0."""
-        cls._verbose_value = bool(value)
+        """Set verbose mode (deprecated, use verbosity instead)."""
+        warnings.warn(
+            "Setting Logger.verbose directly is deprecated. Use Logger.verbosity instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         cls._verbosity_value = 1 if value else 0
         # Auto-set log_level to debug when verbose is enabled
         if value:
@@ -54,9 +58,8 @@ class Logger(metaclass=_LoggerMeta):
     COLORS = {"RESET": "\033[0m", "GREEN": "\033[92m", "RED": "\033[91m",
               "CYAN": "\033[96m", "YELLOW": "\033[93m", "MAGENTA": "\033[95m"}
     # Verbosity levels: 0=normal, 1=verbose (-v), 2=very verbose (-vv), 3=debug (-vvv)
-    # These are synchronized via metaclass properties - setting one updates the other
+    # verbose is derived from verbosity (verbose = verbosity > 0)
     _verbosity_value = 0
-    _verbose_value = False
     no_color = False
     quiet = False
     no_emoji = False
@@ -82,12 +85,17 @@ class Logger(metaclass=_LoggerMeta):
 
     @staticmethod
     def set_verbose(enabled: bool) -> None:
-        """Set verbose mode (backwards compatible, sets verbosity to 1 or 0).
+        """Set verbose mode (deprecated, use set_verbosity instead).
 
-        This method is provided for backwards compatibility. The verbose and
-        verbosity attributes are automatically synchronized via descriptors.
+        This method is deprecated. Use set_verbosity() instead.
+        Setting enabled=True sets verbosity to 1, enabled=False sets verbosity to 0.
         """
-        Logger.verbose = enabled
+        warnings.warn(
+            "Logger.set_verbose() is deprecated. Use Logger.set_verbosity() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        Logger.verbosity = 1 if enabled else 0
 
     @staticmethod
     def set_verbosity(level: int) -> None:

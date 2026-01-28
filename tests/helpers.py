@@ -84,7 +84,6 @@ class LoggerTestCase(TempDirectoryMixin, unittest.TestCase):
         super().setUp()
         self._logger_state = {
             'no_color': Logger.no_color,
-            '_verbose_value': Logger._verbose_value,
             '_verbosity_value': Logger._verbosity_value,
             'quiet': Logger.quiet, 'no_emoji': Logger.no_emoji, 'log_level': Logger.log_level,
             'json_output': Logger.json_output, 'ndjson_output': Logger.ndjson_output,
