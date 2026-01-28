@@ -186,17 +186,6 @@ class TestLoggerJsonOutput(LoggerTestCase):
         for line in lines:
             json.loads(line)
 
-    def test_log_level_filtering(self):
-        cases = [(20, 'info', True), (30, 'info', False), (30, 'warning', True), (40, 'warning', False)]
-        for level, method, should_output in cases:
-            Logger.log_level = level
-            Logger.set_no_color(True)
-            Logger.set_verbosity(0)
-            with CaptureStdout() as captured:
-                getattr(Logger, method)("test")
-                output = captured.getvalue()
-            assert ("test" in output) == should_output
-
 
 class TestCaptureStdoutEdgeCases(unittest.TestCase):
     """Test edge cases for CaptureStdout context manager."""
@@ -345,4 +334,59 @@ def test_verbosity_invalid_levels(logger_reset, invalid_level, expected_level):
     assert Logger.verbosity == expected_level, (
         f"Expected verbosity {expected_level} after setting {invalid_level}, "
         f"got {Logger.verbosity}"
+    )
+
+
+# Parametrized test for log level filtering behavior
+# Log levels: debug=10, info=20, warn=30, error=40
+# Format: (log_level, method, should_output)
+LOG_LEVEL_FILTERING_CASES = [
+    # Original test cases: basic filtering behavior
+    pytest.param(20, 'info', True, id="info_level_shows_info"),
+    pytest.param(30, 'info', False, id="warn_level_filters_info"),
+    pytest.param(30, 'warning', True, id="warn_level_shows_warning"),
+    pytest.param(40, 'warning', False, id="error_level_filters_warning"),
+    # Edge case: DEBUG level (10) shows all messages
+    pytest.param(10, 'info', True, id="debug_level_shows_info"),
+    pytest.param(10, 'warning', True, id="debug_level_shows_warning"),
+    pytest.param(10, 'error', True, id="debug_level_shows_error"),
+    # Edge case: ERROR level (40) filters all lower-priority messages
+    pytest.param(40, 'info', False, id="error_level_filters_info"),
+    pytest.param(40, 'error', True, id="error_level_shows_error"),
+]
+
+
+@pytest.mark.parametrize("log_level,method,should_output", LOG_LEVEL_FILTERING_CASES)
+def test_log_level_filtering(logger_reset, log_level, method, should_output):
+    """Test that log level filtering correctly shows/hides messages.
+
+    Log levels control which messages are output:
+    - debug (10): All messages shown
+    - info (20): info, warning, error shown
+    - warn (30): warning, error shown
+    - error (40): Only error shown
+
+    Edge cases:
+    - DEBUG level (10) shows all messages (info, warning, error)
+    - ERROR level (40) filters all lower-priority messages
+
+    Note: Invalid log level values are not validated by Logger.log_level.
+    Setting Logger.log_level to an arbitrary integer is allowed; values
+    below 10 show all messages, values above 40 hide all messages.
+    Use Logger.set_log_level() with valid string keys for safe level setting.
+    """
+    Logger.json_output = False
+    Logger.ndjson_output = False
+    Logger.quiet = False
+    Logger.log_level = log_level
+    Logger.set_no_color(True)
+    Logger.set_verbosity(0)
+
+    with CaptureStdout() as captured:
+        getattr(Logger, method)("test")
+        output = captured.getvalue()
+
+    assert ("test" in output) == should_output, (
+        f"log_level={log_level}, method={method}: "
+        f"expected {'output' if should_output else 'no output'}, got {output!r}"
     )
