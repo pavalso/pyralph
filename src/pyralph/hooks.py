@@ -285,7 +285,7 @@ class ExecutableHook(Hook):
             pass  # Timeout is handled by caller
         except (OSError, json.JSONDecodeError) as e:
             # Log hook execution errors for debugging, caller handles the None return
-            from logger import Logger
+            from .logger import Logger
             Logger.debug(f"Hook execution failed for {self._path}: {type(e).__name__}: {e}")
         return None
 
