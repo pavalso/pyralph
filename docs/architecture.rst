@@ -71,7 +71,7 @@ Key Components
    * - ``src/pyralph/prd.py``
      - PRDManager for PRD file operations with caching
    * - ``src/pyralph/templates.py``
-     - PromptFormatter and TemplateManager for prompt generation
+     - TemplateManager for prompt generation
 
 For detailed API documentation, see :doc:`api`.
 

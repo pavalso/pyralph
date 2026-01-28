@@ -1,48 +1,10 @@
 #!/usr/bin/env python3
 """Templates module for Ralph.
 
-This module contains the PromptFormatter and TemplateManager classes that provide
-prompt generation and template loading functionality.
+This module contains the TemplateManager class that provides
+template loading functionality.
 """
-from typing import Dict, Tuple
-
 from .config import CONF
-
-
-class PromptFormatter:
-    """Utility class for consistent prompt formatting with delimiters."""
-
-    # Standard delimiters for variable content
-    DELIMITERS: Dict[str, Tuple[str, str]] = {
-        'user_intent': ('USER_INTENT', 'User-provided intent/goal'),
-        'file_tree': ('FILE_TREE', 'Project directory structure'),
-        'task_id': ('TASK_ID', 'Task identifier'),
-        'task_description': ('TASK_DESC', 'Task description'),
-        'acceptance_criteria': ('ACCEPTANCE_CRITERIA', 'Task acceptance criteria'),
-        'user_context': ('USER_CONTEXT', 'User preferences and instructions'),
-        'prev_errors': ('PREV_ERRORS', 'Previous error messages'),
-        'test_cmd': ('TEST_CMD', 'Verification command'),
-    }
-
-    @staticmethod
-    def wrap(content: str, delimiter_key: str) -> str:
-        """Wrap content in XML-style delimiters for clear boundaries."""
-        if delimiter_key not in PromptFormatter.DELIMITERS:
-            return content
-        tag, _ = PromptFormatter.DELIMITERS[delimiter_key]
-        return f"<{tag}>\n{content}\n</{tag}>"
-
-    @staticmethod
-    def format_list(items: list, prefix: str = "- ") -> str:
-        """Format a list with consistent prefix."""
-        if not items:
-            return "(none)"
-        return "\n".join(f"{prefix}{item}" for item in items)
-
-    @staticmethod
-    def format_code_block(content: str, language: str = "") -> str:
-        """Format content as a fenced code block."""
-        return f"```{language}\n{content}\n```"
 
 
 class TemplateManager:

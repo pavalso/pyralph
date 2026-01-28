@@ -33,7 +33,7 @@ Ralph is an autonomous software development agent that iteratively builds projec
 | `src/pyralph/logger.py` | Centralized Logger class with metaclass-based properties |
 | `src/pyralph/shell.py` | Shell class for safe subprocess execution |
 | `src/pyralph/prd.py` | PRDManager for PRD file operations with caching |
-| `src/pyralph/templates.py` | PromptFormatter and TemplateManager for prompt generation |
+| `src/pyralph/templates.py` | TemplateManager for prompt generation |
 
 ## SOLID Principles Assessment
 | Principle | Status | Notes |

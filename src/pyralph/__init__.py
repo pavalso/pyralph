@@ -21,7 +21,6 @@ Public API:
         Shell - Safe wrapper for subprocess calls
         PRDManager - PRD file operations with caching
         JsonUtils - Robust JSON parsing of LLM outputs
-        PromptFormatter - Utility for consistent prompt formatting
         TemplateManager - Template loading and management
 
     Hooks:
