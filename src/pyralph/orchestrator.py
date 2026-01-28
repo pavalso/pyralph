@@ -858,8 +858,7 @@ class RalphOrchestrator:
             success, output, agent_error = self.agent.run(prompt, f"WORKER-{task['id']}")
 
             if not success:
-                self._record_failure(retry, "CLI Crash", output, agent_error=agent_error, task_id=task['id'])
-                self._emit_retry_event(task, retry)
+                self._handle_task_failure(task, retry, max_retries, "CLI Crash", output, agent_error=agent_error)
                 continue
 
             if "STATUS: SUCCESS" in output:
@@ -885,7 +884,7 @@ class RalphOrchestrator:
                         task_id=task['id'], task_description=task['description']
                     ))
                     return True
-                self._record_failure(retry, "Verification Failed", output[-1000:], agent_error=verify_error, task_id=task['id'])
+                self._handle_task_failure(task, retry, max_retries, "Verification Failed", output[-1000:], agent_error=verify_error)
             else:
                 error = AgentError(
                     exception_type="AgentReportedFailure",
@@ -895,9 +894,7 @@ class RalphOrchestrator:
                     agent_name=self.agent.get_name(),
                     task_id=task['id'],
                 )
-                self._record_failure(retry, "Agent Reported Failure", output[-1000:], agent_error=error, task_id=task['id'])
-
-            self._emit_retry_event(task, retry, max_retries)
+                self._handle_task_failure(task, retry, max_retries, "Agent Reported Failure", output[-1000:], agent_error=error)
 
         Logger.info(f"🛑 Max retries for {task['id']}. Marking as failed and continuing.", "RED")
         task['status'] = 'failed'
@@ -908,37 +905,54 @@ class RalphOrchestrator:
         ))
         return False
 
-    def _emit_retry_event(self, task: Dict[str, Any], retry: int, max_retries: Optional[int] = None) -> None:
-        """Emit a task retry event."""
-        if max_retries is None:
-            max_retries = self._retries_override if self._retries_override is not None else CONF.MAX_RETRIES
-        self.hooks.emit(Event(
-            EventType.TASK_RETRY, phase="execute",
-            task_id=task['id'], task_description=task['description'],
-            retry_count=retry + 1, max_retries=max_retries
-        ))
+    def _handle_task_failure(
+        self,
+        task: Dict[str, Any],
+        retry: int,
+        max_retries: int,
+        reason: str,
+        detail: str,
+        agent_error: Optional[AgentError] = None
+    ) -> None:
+        """Handle task failure by recording details and emitting a single consolidated event.
 
-    def _record_failure(self, retry: int, reason: str, detail: str, agent_error: Optional[AgentError] = None, task_id: Optional[str] = None) -> None:
-        if agent_error:
-            msg = (
-                f"Attempt {retry+1} Failed: {reason}\n"
-                f"--- Structured Error Context ---\n"
-                f"{agent_error.format_log_entry()}\n"
-                f"--- Agent Output (last 1000 chars) ---\n"
-                f"{detail}"
-            )
-        else:
-            msg = f"Attempt {retry+1} Failed: {reason}\n{detail}"
-        CONF.PROGRESS_FILE.write_text(msg, encoding='utf-8')
-        Logger.file_log(msg, "FAILURE_RECORD", f"RETRY-{retry+1}")
-        Logger.info(f"   ⚠️ Retry {retry+1}/{CONF.MAX_RETRIES}: {reason}", "RED")
-        self.hooks.emit(Event(
-            EventType.ERROR,
-            phase="execute",
-            task_id=task_id or (agent_error.task_id if agent_error else None),
-            error=agent_error,
-            metadata={"reason": reason, "retry": retry + 1}
-        ))
+        Args:
+            task: The task that failed
+            retry: Current retry attempt (0-indexed)
+            max_retries: Maximum number of retries allowed
+            reason: Brief description of failure reason
+            detail: Detailed output/error information
+            agent_error: Optional structured error from the agent
+        """
+        try:
+            # Build failure message
+            if agent_error:
+                msg = (
+                    f"Attempt {retry+1} Failed: {reason}\n"
+                    f"--- Structured Error Context ---\n"
+                    f"{agent_error.format_log_entry()}\n"
+                    f"--- Agent Output (last 1000 chars) ---\n"
+                    f"{detail}"
+                )
+            else:
+                msg = f"Attempt {retry+1} Failed: {reason}\n{detail}"
+
+            # Record failure to progress file
+            CONF.PROGRESS_FILE.write_text(msg, encoding='utf-8')
+            Logger.file_log(msg, "FAILURE_RECORD", f"RETRY-{retry+1}")
+            Logger.info(f"   ⚠️ Retry {retry+1}/{max_retries}: {reason}", "RED")
+
+            # Emit single consolidated TASK_RETRY event with error context
+            self.hooks.emit(Event(
+                EventType.TASK_RETRY, phase="execute",
+                task_id=task['id'], task_description=task['description'],
+                retry_count=retry + 1, max_retries=max_retries,
+                error=agent_error,
+                metadata={"reason": reason}
+            ))
+        except Exception as e:
+            # Fallback logging if failure handling itself throws
+            Logger.error(f"Error in failure handling for task {task.get('id', 'unknown')}: {type(e).__name__}: {e}")
 
     def _get_code_changes(self) -> str:
         """Get recent code changes using git diff.
