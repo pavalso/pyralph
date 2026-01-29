@@ -225,6 +225,64 @@ class TestGeneratePrdMarkdown:
         assert len(failure_events) == 1
 
 
+VALID_PRD_MARKDOWN = """# PRD: Test Feature
+
+## Metadata
+- **PRD ID**: PRD-001
+- **Created**: 2024-01-15T10:00:00
+- **Short Description**: test-feature
+
+## Executive Summary
+Test feature for authentication.
+
+## Problem Statement
+Users need authentication.
+
+## Proposed Solution
+Implement JWT auth.
+
+## Functional Requirements
+| ID | Requirement | Priority | Traces To |
+|----|-------------|----------|-----------|
+| FR-001 | Login | Must Have | Intent |
+
+## Non-Functional Requirements
+### Security
+- Use bcrypt
+
+## User Stories
+
+### TASK-001: User Login
+**Priority**: Must Have
+**Description**: As a user, I want to login.
+**Rationale**: Security requirement.
+**Acceptance Criteria**:
+- GIVEN valid credentials WHEN submitted THEN login succeeds
+**Definition of Done**:
+- [ ] Tests pass
+**Dependencies**: None
+
+## Technical Constraints
+- Python 3.10+
+
+## Assumptions
+| ID | Assumption | Impact if False |
+|----|------------|-----------------|
+| A-001 | Has email | Need alternate |
+
+## Risks
+| ID | Risk | Likelihood | Impact | Mitigation |
+|----|------|------------|--------|------------|
+| R-001 | Token leak | Low | High | Short expiry |
+
+## Out of Scope
+- Social login
+
+## Open Questions
+No open questions at this time.
+"""
+
+
 class TestGeneratePrdJsonFromMarkdown:
     """Tests for _generate_prd_json_from_markdown method."""
 
@@ -280,33 +338,21 @@ class TestGeneratePrdJsonFromMarkdown:
         """GIVEN markdown exists WHEN generating json THEN derives from markdown content."""
         runner, mock_agent, tmp_path = phase_runner
         md_path = CONF.ROOT_DIR / "prd-test.md"
-        md_path.write_text("# PRD: Test Feature\n\n## User Stories\n...", encoding='utf-8')
-
-        json_response = json.dumps({
-            "id": "PRD-001",
-            "description": "Test Feature",
-            "userStories": [{"id": "TASK-001", "description": "Story"}]
-        })
-        mock_agent.run.return_value = (True, json_response, None)
+        md_path.write_text(VALID_PRD_MARKDOWN, encoding='utf-8')
 
         result = runner._generate_prd_json_from_markdown(md_path)
 
         assert result is not None
         assert "sourceDocument" in result
         assert result["sourceDocument"]["path"] == str(md_path)
+        # Parser-based: no agent calls needed
+        mock_agent.run.assert_not_called()
 
     def test_includes_source_document_timestamp(self, phase_runner):
         """GIVEN json generated WHEN complete THEN includes sourceDocument timestamp."""
         runner, mock_agent, tmp_path = phase_runner
         md_path = CONF.ROOT_DIR / "prd-test.md"
-        md_path.write_text("# PRD Content", encoding='utf-8')
-
-        json_response = json.dumps({
-            "id": "PRD-001",
-            "description": "Test",
-            "userStories": [{"id": "TASK-001", "description": "Story"}]
-        })
-        mock_agent.run.return_value = (True, json_response, None)
+        md_path.write_text(VALID_PRD_MARKDOWN, encoding='utf-8')
 
         result = runner._generate_prd_json_from_markdown(md_path)
 
@@ -315,23 +361,41 @@ class TestGeneratePrdJsonFromMarkdown:
         # Verify it's a valid ISO timestamp
         datetime.fromisoformat(result["sourceDocument"]["timestamp"])
 
-    def test_retries_on_json_parse_error(self, phase_runner):
-        """GIVEN agent returns invalid json WHEN generating THEN retries."""
+    def test_includes_content_hash_for_drift_detection(self, phase_runner):
+        """GIVEN json generated WHEN complete THEN includes contentHash for drift detection."""
         runner, mock_agent, tmp_path = phase_runner
         md_path = CONF.ROOT_DIR / "prd-test.md"
-        md_path.write_text("# PRD Content", encoding='utf-8')
-
-        # Return invalid JSON then valid JSON
-        mock_agent.run.side_effect = [
-            (True, "not valid json", None),
-            (True, "still not valid", None),
-            (True, json.dumps({"id": "PRD-001", "userStories": [{"id": "T-001"}]}), None),
-        ]
+        md_path.write_text(VALID_PRD_MARKDOWN, encoding='utf-8')
 
         result = runner._generate_prd_json_from_markdown(md_path)
 
         assert result is not None
-        assert mock_agent.run.call_count == 3
+        assert "contentHash" in result["sourceDocument"]
+        assert len(result["sourceDocument"]["contentHash"]) == 64  # SHA-256 hex
+
+    def test_deterministic_generation(self, phase_runner):
+        """GIVEN same markdown WHEN parsed twice THEN produces identical output."""
+        runner, mock_agent, tmp_path = phase_runner
+        md_path = CONF.ROOT_DIR / "prd-test.md"
+        md_path.write_text(VALID_PRD_MARKDOWN, encoding='utf-8')
+
+        result1 = runner._generate_prd_json_from_markdown(md_path)
+        result2 = runner._generate_prd_json_from_markdown(md_path)
+
+        # Hash should be identical
+        assert result1["sourceDocument"]["contentHash"] == result2["sourceDocument"]["contentHash"]
+        # User stories should match
+        assert result1["userStories"] == result2["userStories"]
+
+    def test_returns_none_for_empty_stories(self, phase_runner):
+        """GIVEN markdown without user stories WHEN parsing THEN returns None."""
+        runner, mock_agent, tmp_path = phase_runner
+        md_path = CONF.ROOT_DIR / "prd-test.md"
+        md_path.write_text("# PRD: Empty\n\n## Executive Summary\nNo stories.", encoding='utf-8')
+
+        result = runner._generate_prd_json_from_markdown(md_path)
+
+        assert result is None
 
 
 class TestRunPlannerMarkdownFirst:
@@ -391,32 +455,27 @@ class TestRunPlannerMarkdownFirst:
                 setattr(CONF, attr, value)
 
     def test_generates_markdown_before_json(self, phase_runner_setup):
-        """GIVEN planner phase WHEN run THEN generates markdown before json."""
+        """GIVEN planner phase WHEN run THEN generates markdown first, then parses for json."""
         setup = phase_runner_setup
         call_order = []
 
         def track_md_call(*args, **kwargs):
             if "prd_markdown.txt" in str(args):
                 call_order.append("markdown")
-            elif "prd_from_markdown.txt" in str(args):
-                call_order.append("json")
             return "rendered template"
 
         setup['runner']._template_manager.render.side_effect = track_md_call
 
-        # First call for markdown, second for JSON
-        setup['agent'].run.side_effect = [
-            (True, "# PRD: Test\n\n## Content", None),
-            (True, json.dumps({"id": "PRD-001", "userStories": [{"id": "T-001"}]}), None),
-        ]
-        setup['prd_processor'].label_tasks.return_value = {
-            "id": "PRD-001",
-            "userStories": [{"id": "T-001"}]
-        }
+        # Agent returns valid markdown that parser can handle
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+        setup['prd_processor'].label_tasks.side_effect = lambda d: d
 
         setup['runner'].run_planner("test user intent")
 
-        assert call_order == ["markdown", "json"]
+        # Only markdown template is rendered (json is now parsed, not agent-generated)
+        assert call_order == ["markdown"]
+        # Agent only called once for markdown generation
+        assert setup['agent'].run.call_count == 1
 
     def test_blocks_json_if_markdown_fails(self, phase_runner_setup):
         """GIVEN markdown generation fails WHEN run_planner THEN exits without json generation."""
@@ -440,18 +499,8 @@ class TestRunPlannerMarkdownFirst:
             saved_data = data
 
         setup['prd_manager'].save.side_effect = capture_save
-
-        setup['agent'].run.side_effect = [
-            (True, "# PRD: Test", None),
-            (True, json.dumps({
-                "id": "PRD-001",
-                "userStories": [{"id": "T-001"}],
-            }), None),
-        ]
-        # label_tasks should preserve sourceDocument by returning input with labels added
-        def mock_label_tasks(data):
-            return data
-        setup['prd_processor'].label_tasks.side_effect = mock_label_tasks
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+        setup['prd_processor'].label_tasks.side_effect = lambda d: d
 
         setup['runner'].run_planner("test intent")
 
@@ -461,17 +510,30 @@ class TestRunPlannerMarkdownFirst:
         assert "prd-" in saved_data["sourceDocument"]["path"]
         assert ".md" in saved_data["sourceDocument"]["path"]
 
+    def test_prd_json_includes_content_hash(self, phase_runner_setup):
+        """GIVEN successful generation WHEN json saved THEN includes contentHash."""
+        setup = phase_runner_setup
+        saved_data = None
+
+        def capture_save(data):
+            nonlocal saved_data
+            saved_data = data
+
+        setup['prd_manager'].save.side_effect = capture_save
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+        setup['prd_processor'].label_tasks.side_effect = lambda d: d
+
+        setup['runner'].run_planner("test intent")
+
+        assert saved_data is not None
+        assert "contentHash" in saved_data["sourceDocument"]
+        assert len(saved_data["sourceDocument"]["contentHash"]) == 64
+
     def test_emits_prd_created_with_md_path(self, phase_runner_setup):
         """GIVEN successful generation WHEN complete THEN PRD_CREATED includes md_path."""
         setup = phase_runner_setup
-        setup['agent'].run.side_effect = [
-            (True, "# PRD: Test", None),
-            (True, json.dumps({"id": "PRD-001", "userStories": [{"id": "T-001"}]}), None),
-        ]
-        setup['prd_processor'].label_tasks.return_value = {
-            "id": "PRD-001",
-            "userStories": [{"id": "T-001"}]
-        }
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+        setup['prd_processor'].label_tasks.side_effect = lambda d: d
 
         setup['runner'].run_planner("test intent")
 
@@ -481,6 +543,45 @@ class TestRunPlannerMarkdownFirst:
         event = prd_created_events[0][0][0]
         assert event.prd_md_path is not None
         assert "prd-" in event.prd_md_path
+
+    def test_task_ids_match_markdown_source(self, phase_runner_setup):
+        """GIVEN markdown with TASK-001 WHEN parsed THEN prd.json has matching TASK-001."""
+        setup = phase_runner_setup
+        saved_data = None
+
+        def capture_save(data):
+            nonlocal saved_data
+            saved_data = data
+
+        setup['prd_manager'].save.side_effect = capture_save
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+        setup['prd_processor'].label_tasks.side_effect = lambda d: d
+
+        setup['runner'].run_planner("test intent")
+
+        assert saved_data is not None
+        task_ids = [s["id"] for s in saved_data["userStories"]]
+        assert "TASK-001" in task_ids
+
+    def test_acceptance_criteria_preserved(self, phase_runner_setup):
+        """GIVEN markdown with Given-When-Then criteria WHEN parsed THEN preserved exactly."""
+        setup = phase_runner_setup
+        saved_data = None
+
+        def capture_save(data):
+            nonlocal saved_data
+            saved_data = data
+
+        setup['prd_manager'].save.side_effect = capture_save
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+        setup['prd_processor'].label_tasks.side_effect = lambda d: d
+
+        setup['runner'].run_planner("test intent")
+
+        assert saved_data is not None
+        story = saved_data["userStories"][0]
+        ac = story["acceptanceCriteria"]
+        assert any("GIVEN valid credentials" in c for c in ac)
 
 
 class TestNewTemplatesExist:

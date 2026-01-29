@@ -222,6 +222,10 @@ class PhaseRunner:
     ) -> Optional[Dict[str, Any]]:
         """Generate PRD JSON by parsing the markdown file.
 
+        This method deterministically parses the markdown file to extract
+        structured data. The same markdown content always produces the same
+        JSON output, ensuring faithful representation of the source document.
+
         Args:
             prd_md_path: Path to the PRD markdown file
 
@@ -235,40 +239,34 @@ class PhaseRunner:
             self._logger.info(f"❌ {error_msg}", "RED")
             return None
 
-        md_content = prd_md_path.read_text(encoding='utf-8')
-        timestamp = datetime.fromtimestamp(
-            prd_md_path.stat().st_mtime
-        ).isoformat()
+        try:
+            from .prd_markdown_parser import parse_prd_markdown
 
-        prompt = self._template_manager.render(
-            "prd_from_markdown.txt",
-            prd_markdown_content=md_content,
-            source_document_path=str(prd_md_path)
-        )
+            md_content = prd_md_path.read_text(encoding='utf-8')
+            timestamp = datetime.fromtimestamp(
+                prd_md_path.stat().st_mtime
+            ).isoformat()
 
-        for attempt in range(3):
-            success, raw, _ = self._agent.run(prompt, "PLANNER")
-            if not success:
-                continue
+            data = parse_prd_markdown(
+                content=md_content,
+                source_path=prd_md_path,
+                timestamp=timestamp
+            )
 
-            try:
-                data = self._json_utils.parse(raw)
-                if "userStories" not in data:
-                    raise ValueError("Missing userStories")
-
-                # Ensure sourceDocument metadata is present
-                if "sourceDocument" not in data:
-                    data["sourceDocument"] = {}
-                data["sourceDocument"]["path"] = str(prd_md_path)
-                data["sourceDocument"]["timestamp"] = timestamp
-
-                return data
-            except Exception as e:
+            if "userStories" not in data or not data["userStories"]:
                 self._logger.info(
-                    f"⚠️ JSON parsing error (Attempt {attempt+1}): {e}", "YELLOW"
+                    "⚠️ No user stories found in markdown. Check markdown format.",
+                    "YELLOW"
                 )
+                return None
 
-        return None
+            return data
+
+        except Exception as e:
+            self._logger.info(
+                f"⚠️ Failed to parse markdown: {e}", "YELLOW"
+            )
+            return None
 
     def run_architect(self, user_intent: str) -> None:
         """Run the architect phase to generate architecture documentation.
