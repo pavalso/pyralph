@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pyralph import main, get_version, list_agents
+from tests.conftest import PatchPaths
 
 
 class TestCliArguments:
@@ -83,7 +84,7 @@ class TestCliArguments:
 class TestMainIntentValidation:
     def test_rejects_both_intent_flags(self):
         with patch('sys.argv', ['ralph', '--intent', 'Test', '--intent-file', 'f.txt']):
-            with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.error'), patch('pyralph.RalphOrchestrator'):
+            with patch(PatchPaths.ORCHESTRATOR_SYS_EXIT) as mock_exit, patch(PatchPaths.LOGGER_ERROR), patch('pyralph.RalphOrchestrator'):
                 main()
                 mock_exit.assert_called_with(1)
 
@@ -94,8 +95,8 @@ class TestFlagConflictValidation:
     def test_only_and_resume_raises_error(self):
         """Given --only and --resume are both specified, a ValueError is raised."""
         with patch('sys.argv', ['ralph', '--only', 'T-1', '--resume', 'T-2']):
-            with patch('pyralph.cli.sys.exit') as mock_exit:
-                with patch('pyralph.logger.Logger.error') as mock_error:
+            with patch(PatchPaths.CLI_SYS_EXIT) as mock_exit:
+                with patch(PatchPaths.LOGGER_ERROR) as mock_error:
                     with patch('pyralph.RalphOrchestrator'):
                         main()
                         mock_error.assert_called()
@@ -105,7 +106,7 @@ class TestFlagConflictValidation:
     def test_skip_verify_with_retries_warns(self):
         """Given --skip-verify and --retries are both specified, a warning is logged."""
         with patch('sys.argv', ['ralph', '--skip-verify', '--retries', '3']):
-            with patch('pyralph.logger.Logger.warning') as mock_warning:
+            with patch(PatchPaths.LOGGER_WARNING) as mock_warning:
                 with patch('pyralph.RalphOrchestrator') as mock_orch:
                     mock_orch.return_value = MagicMock()
                     main()
@@ -115,7 +116,7 @@ class TestFlagConflictValidation:
     def test_ci_and_non_interactive_info(self):
         """Given --ci and --non-interactive are both specified, an info message is logged."""
         with patch('sys.argv', ['ralph', '--ci', '--non-interactive']):
-            with patch('pyralph.logger.Logger.info') as mock_info:
+            with patch(PatchPaths.LOGGER_INFO) as mock_info:
                 with patch('pyralph.RalphOrchestrator') as mock_orch:
                     mock_orch.return_value = MagicMock()
                     main()
@@ -126,7 +127,7 @@ class TestFlagConflictValidation:
     def test_no_warnings_without_conflicts(self):
         """Given no conflicting flags, no warnings are emitted."""
         with patch('sys.argv', ['ralph', '--retries', '3']):
-            with patch('pyralph.logger.Logger.warning') as mock_warning:
+            with patch(PatchPaths.LOGGER_WARNING) as mock_warning:
                 with patch('pyralph.RalphOrchestrator') as mock_orch:
                     mock_orch.return_value = MagicMock()
                     main()
@@ -137,8 +138,8 @@ class TestFlagConflictValidation:
     def test_negative_retries_raises_error(self):
         """Given --retries with negative value, a validation error occurs."""
         with patch('sys.argv', ['ralph', '--retries', '-1']):
-            with patch('pyralph.cli.sys.exit') as mock_exit:
-                with patch('pyralph.logger.Logger.error') as mock_error:
+            with patch(PatchPaths.CLI_SYS_EXIT) as mock_exit:
+                with patch(PatchPaths.LOGGER_ERROR) as mock_error:
                     with patch('pyralph.RalphOrchestrator'):
                         main()
                         mock_error.assert_called()

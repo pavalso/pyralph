@@ -6,6 +6,7 @@ from pyralph import RalphOrchestrator
 from pyralph.agents import get_agent
 from pyralph.config import CONF
 from pyralph.logger import Logger
+from tests.conftest import PatchPaths
 
 
 class TestRalphOrchestrator:
@@ -17,7 +18,7 @@ class TestRalphOrchestrator:
 
     def test_init(self):
         mock_agent = self.temp_config.create_mock_agent()
-        with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
+        with patch(PatchPaths.ORCHESTRATOR_GET_AGENT, return_value=mock_agent):
             orch = RalphOrchestrator(agent_name="mock")
             assert orch.agent is not None
             mock_agent.check_dependencies.assert_called_once()
@@ -26,14 +27,14 @@ class TestRalphOrchestrator:
 
     def test_init_deps_fail_exits(self):
         mock_agent = self.temp_config.create_mock_agent(check_deps=False)
-        with patch('pyralph.orchestrator.get_agent', return_value=mock_agent):
-            with patch('pyralph.orchestrator.sys.exit') as mock_exit:
+        with patch(PatchPaths.ORCHESTRATOR_GET_AGENT, return_value=mock_agent):
+            with patch(PatchPaths.ORCHESTRATOR_SYS_EXIT) as mock_exit:
                 RalphOrchestrator(agent_name="mock")
                 mock_exit.assert_called_once_with(1)
 
     def test_init_ensures_directories(self):
         assert not CONF.ROOT_DIR.exists()
-        with patch('pyralph.orchestrator.get_agent', return_value=self.temp_config.create_mock_agent()):
+        with patch(PatchPaths.ORCHESTRATOR_GET_AGENT, return_value=self.temp_config.create_mock_agent()):
             RalphOrchestrator(agent_name="mock")
             for p in [CONF.ROOT_DIR, CONF.ARCHIVE_DIR]:
                 assert p.exists()
@@ -57,11 +58,11 @@ class TestRalphOrchestrator:
         mock_agent.run.return_value = (True, "STATUS: CREATED ARCHITECTURE.md", None)
         orch = self.temp_config.create_mock_orchestrator(mock_agent=mock_agent)
         (CONF.BASE_DIR / "ARCH.md").unlink(missing_ok=True)
-        with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.info'):
+        with patch(PatchPaths.ORCHESTRATOR_SYS_EXIT) as mock_exit, patch(PatchPaths.LOGGER_INFO):
             orch.run_architect("test")
             mock_exit.assert_called_once_with(1)
         (CONF.BASE_DIR / "ARCH.md").write_text("# Arch", encoding="utf-8")
-        with patch('pyralph.orchestrator.sys.exit') as mock_exit, patch('pyralph.logger.Logger.info'):
+        with patch(PatchPaths.ORCHESTRATOR_SYS_EXIT) as mock_exit, patch(PatchPaths.LOGGER_INFO):
             orch.run_architect("test")
             mock_exit.assert_not_called()
 
@@ -161,7 +162,7 @@ class TestOrchestratorIntentHandling:
 
     def test_get_intent_file_not_found_exits(self):
         orch = self.temp_config.create_mock_orchestrator(intent_file="/nonexistent")
-        with patch('pyralph.orchestrator.sys.exit', side_effect=SystemExit(1)), patch('pyralph.logger.Logger.error'):
+        with patch(PatchPaths.ORCHESTRATOR_SYS_EXIT, side_effect=SystemExit(1)), patch(PatchPaths.LOGGER_ERROR):
             with pytest.raises(SystemExit):
                 orch._get_intent()
 
@@ -169,6 +170,6 @@ class TestOrchestratorIntentHandling:
         intent_file = self.temp_path / "empty.txt"
         intent_file.write_text("", encoding='utf-8')
         orch = self.temp_config.create_mock_orchestrator(intent_file=str(intent_file))
-        with patch('pyralph.orchestrator.sys.exit', side_effect=SystemExit(1)), patch('pyralph.logger.Logger.error'):
+        with patch(PatchPaths.ORCHESTRATOR_SYS_EXIT, side_effect=SystemExit(1)), patch(PatchPaths.LOGGER_ERROR):
             with pytest.raises(SystemExit):
                 orch._get_intent()

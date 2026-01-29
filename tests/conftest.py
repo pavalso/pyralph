@@ -10,6 +10,30 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+
+class PatchPaths:
+    """Centralized constants for mock patch paths.
+
+    Provides type-safe, importable constants for unittest.mock.patch() targets.
+    Using these constants ensures patch path typos are caught at import time
+    rather than test runtime.
+
+    Usage:
+        from tests.conftest import PatchPaths
+        with patch(PatchPaths.ORCHESTRATOR_GET_AGENT, return_value=mock):
+            ...
+
+    Edge case: New patch paths should be added here to maintain centralization.
+    Error scenario: Accessing an undefined constant raises AttributeError early.
+    """
+
+    ORCHESTRATOR_GET_AGENT = 'pyralph.orchestrator.get_agent'
+    ORCHESTRATOR_SYS_EXIT = 'pyralph.orchestrator.sys.exit'
+    CLI_SYS_EXIT = 'pyralph.cli.sys.exit'
+    LOGGER_ERROR = 'pyralph.logger.Logger.error'
+    LOGGER_WARNING = 'pyralph.logger.Logger.warning'
+    LOGGER_INFO = 'pyralph.logger.Logger.info'
+
 from pyralph.config import CONF
 from pyralph.fetch_ready_issues import Issue
 from pyralph.hooks import HookManager
