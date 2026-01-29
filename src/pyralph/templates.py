@@ -419,6 +419,8 @@ The file MUST follow this exact structure with ALL sections included:
 - [Metadata](#metadata)
 - [Executive Summary](#executive-summary)
 - [Project Context](#project-context)
+- [Technical Context](#technical-context)
+- [Testing Strategy](#testing-strategy)
 - [Problem Statement](#problem-statement)
 - [Proposed Solution](#proposed-solution)
 - [Functional Requirements](#functional-requirements)
@@ -461,6 +463,43 @@ This section summarizes key findings from codebase exploration.
 
 ### Conventions
 [Naming, style, and organizational conventions to follow]
+
+---
+
+## Technical Context
+This section documents architectural decisions and technical guidance discovered during codebase exploration.
+
+### Identified Patterns
+[Document architectural patterns found in the codebase. If no clear patterns exist, state "No established patterns found" and recommend patterns to adopt. If conflicting patterns exist, document each pattern, where it's used, and recommend a resolution approach.]
+
+### Existing Abstractions
+[List key abstractions, base classes, interfaces, or utilities that new code should leverage. Include module paths where these abstractions are defined.]
+
+### Integration Points
+[Identify existing APIs, services, event systems, or module boundaries that new code must integrate with. Document expected interfaces and data contracts.]
+
+### Technology Stack
+[List frameworks, libraries, and tools used in the codebase that are relevant to this PRD. New code should use these consistently.]
+
+### Recommended Approaches
+[Based on exploration findings, recommend specific implementation approaches that align with existing architecture. Include rationale for recommendations.]
+
+---
+
+## Testing Strategy
+This section describes testing requirements and conventions discovered during exploration.
+
+### Test Coverage Requirements
+[Specify expected test coverage: unit tests, integration tests, end-to-end tests. Reference any coverage thresholds or requirements.]
+
+### Test File Locations
+[Document where test files should be placed based on existing conventions. Include naming patterns (e.g., test_*.py, *.test.js).]
+
+### Testing Conventions
+[Describe testing patterns observed: assertion styles, fixture usage, mocking approaches, test organization. New tests should follow these conventions.]
+
+### Test Data and Fixtures
+[Document any shared test fixtures, factories, or test data patterns to reuse.]
 
 ---
 

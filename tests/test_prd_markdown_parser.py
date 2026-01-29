@@ -61,6 +61,59 @@ snake_case naming
 
 ---
 
+## Technical Context
+This section documents architectural decisions and technical guidance discovered during codebase exploration.
+
+### Identified Patterns
+- Repository pattern for data access layer
+- Factory pattern for object creation
+- Dependency injection via constructor
+
+### Existing Abstractions
+- BaseRepository class in src/repositories/base.py
+- ServiceBase interface in src/services/base.py
+
+### Integration Points
+- REST API endpoints in src/api/routes.py
+- Database connection pool in src/db/connection.py
+
+### Technology Stack
+- Python 3.10+
+- FastAPI for REST API
+- SQLAlchemy for ORM
+- pytest for testing
+
+### Recommended Approaches
+- Use existing BaseRepository for new data access
+- Follow dependency injection pattern for services
+- Implement new endpoints in existing router structure
+
+---
+
+## Testing Strategy
+This section describes testing requirements and conventions discovered during exploration.
+
+### Test Coverage Requirements
+- Minimum 80% code coverage
+- All public methods must have unit tests
+- Integration tests for API endpoints
+
+### Test File Locations
+- Unit tests in tests/unit/
+- Integration tests in tests/integration/
+- Test files named test_*.py
+
+### Testing Conventions
+- Use pytest fixtures for setup
+- Mock external dependencies
+- GIVEN/WHEN/THEN style for test names
+
+### Test Data and Fixtures
+- Shared fixtures in tests/conftest.py
+- Factory functions in tests/factories.py
+
+---
+
 ## Problem Statement
 Users cannot authenticate securely. This affects all users trying to access protected resources. Without solving this, the application remains insecure.
 
@@ -530,3 +583,201 @@ Test with special chars: <script>, "quotes", 'apostrophes', & ampersand.
         deps = result["userStories"][0]["dependencies"]
         assert "TASK-001" in deps
         assert "TASK-002" in deps
+
+
+class TestTechnicalContext:
+    """Tests for Technical Context section parsing."""
+
+    def test_parses_identified_patterns(self):
+        """GIVEN markdown with patterns WHEN parsing THEN extracts patterns list."""
+        parser = PRDMarkdownParser(SAMPLE_PRD_MARKDOWN)
+        result = parser.parse()
+        tc = result["technicalContext"]
+
+        assert "identifiedPatterns" in tc
+        assert len(tc["identifiedPatterns"]) == 3
+        assert any("Repository pattern" in p for p in tc["identifiedPatterns"])
+
+    def test_parses_existing_abstractions(self):
+        """GIVEN markdown with abstractions WHEN parsing THEN extracts abstractions."""
+        parser = PRDMarkdownParser(SAMPLE_PRD_MARKDOWN)
+        result = parser.parse()
+        tc = result["technicalContext"]
+
+        assert "existingAbstractions" in tc
+        assert len(tc["existingAbstractions"]) == 2
+        assert any("BaseRepository" in a for a in tc["existingAbstractions"])
+
+    def test_parses_integration_points(self):
+        """GIVEN markdown with integration points WHEN parsing THEN extracts them."""
+        parser = PRDMarkdownParser(SAMPLE_PRD_MARKDOWN)
+        result = parser.parse()
+        tc = result["technicalContext"]
+
+        assert "integrationPoints" in tc
+        assert len(tc["integrationPoints"]) == 2
+        assert any("REST API" in i for i in tc["integrationPoints"])
+
+    def test_parses_technology_stack(self):
+        """GIVEN markdown with tech stack WHEN parsing THEN extracts technologies."""
+        parser = PRDMarkdownParser(SAMPLE_PRD_MARKDOWN)
+        result = parser.parse()
+        tc = result["technicalContext"]
+
+        assert "technologyStack" in tc
+        assert len(tc["technologyStack"]) == 4
+        assert any("FastAPI" in t for t in tc["technologyStack"])
+
+    def test_parses_recommended_approaches(self):
+        """GIVEN markdown with recommendations WHEN parsing THEN extracts them."""
+        parser = PRDMarkdownParser(SAMPLE_PRD_MARKDOWN)
+        result = parser.parse()
+        tc = result["technicalContext"]
+
+        assert "recommendedApproaches" in tc
+        assert len(tc["recommendedApproaches"]) == 3
+        assert any("BaseRepository" in r for r in tc["recommendedApproaches"])
+
+    def test_empty_technical_context_returns_empty_dict(self):
+        """GIVEN markdown without technical context WHEN parsing THEN returns {}."""
+        md = """## Executive Summary
+Just a summary.
+"""
+        parser = PRDMarkdownParser(md)
+        result = parser.parse()
+        assert result["technicalContext"] == {}
+
+    def test_handles_no_patterns_found(self):
+        """GIVEN technical context stating no patterns WHEN parsing THEN extracts message."""
+        md = """## Technical Context
+
+### Identified Patterns
+- No established patterns found - recommend adopting repository pattern
+
+### Existing Abstractions
+- None identified
+
+### Integration Points
+- No integration points discovered
+
+### Technology Stack
+- Python 3.10
+
+### Recommended Approaches
+- Establish repository pattern for data access
+"""
+        parser = PRDMarkdownParser(md)
+        result = parser.parse()
+        tc = result["technicalContext"]
+
+        assert "No established patterns found" in tc["identifiedPatterns"][0]
+        assert "repository pattern" in tc["recommendedApproaches"][0].lower()
+
+    def test_handles_conflicting_patterns(self):
+        """GIVEN technical context with pattern conflicts WHEN parsing THEN documents conflict."""
+        md = """## Technical Context
+
+### Identified Patterns
+- Repository pattern used in src/data/ for database access
+- Active Record pattern used in src/models/ for user entities
+- CONFLICT: Mixed data access patterns. Recommend standardizing on Repository pattern.
+
+### Existing Abstractions
+- None
+
+### Integration Points
+- None
+
+### Technology Stack
+- Python
+
+### Recommended Approaches
+- Migrate Active Record usage to Repository pattern for consistency
+"""
+        parser = PRDMarkdownParser(md)
+        result = parser.parse()
+        tc = result["technicalContext"]
+
+        assert len(tc["identifiedPatterns"]) == 3
+        assert any("CONFLICT" in p for p in tc["identifiedPatterns"])
+        assert any("Migrate" in r for r in tc["recommendedApproaches"])
+
+
+class TestTestingStrategy:
+    """Tests for Testing Strategy section parsing."""
+
+    def test_parses_coverage_requirements(self):
+        """GIVEN markdown with coverage requirements WHEN parsing THEN extracts them."""
+        parser = PRDMarkdownParser(SAMPLE_PRD_MARKDOWN)
+        result = parser.parse()
+        ts = result["testingStrategy"]
+
+        assert "coverageRequirements" in ts
+        assert len(ts["coverageRequirements"]) == 3
+        assert any("80%" in c for c in ts["coverageRequirements"])
+
+    def test_parses_test_file_locations(self):
+        """GIVEN markdown with test locations WHEN parsing THEN extracts them."""
+        parser = PRDMarkdownParser(SAMPLE_PRD_MARKDOWN)
+        result = parser.parse()
+        ts = result["testingStrategy"]
+
+        assert "testFileLocations" in ts
+        assert len(ts["testFileLocations"]) == 3
+        assert any("tests/unit/" in l for l in ts["testFileLocations"])
+
+    def test_parses_testing_conventions(self):
+        """GIVEN markdown with test conventions WHEN parsing THEN extracts them."""
+        parser = PRDMarkdownParser(SAMPLE_PRD_MARKDOWN)
+        result = parser.parse()
+        ts = result["testingStrategy"]
+
+        assert "testingConventions" in ts
+        assert len(ts["testingConventions"]) == 3
+        assert any("pytest fixtures" in c for c in ts["testingConventions"])
+
+    def test_parses_test_data_fixtures(self):
+        """GIVEN markdown with test data WHEN parsing THEN extracts them."""
+        parser = PRDMarkdownParser(SAMPLE_PRD_MARKDOWN)
+        result = parser.parse()
+        ts = result["testingStrategy"]
+
+        assert "testDataAndFixtures" in ts
+        assert len(ts["testDataAndFixtures"]) == 2
+        assert any("conftest.py" in f for f in ts["testDataAndFixtures"])
+
+    def test_empty_testing_strategy_returns_empty_dict(self):
+        """GIVEN markdown without testing strategy WHEN parsing THEN returns {}."""
+        md = """## Executive Summary
+Just a summary.
+"""
+        parser = PRDMarkdownParser(md)
+        result = parser.parse()
+        assert result["testingStrategy"] == {}
+
+    def test_handles_no_existing_tests(self):
+        """GIVEN testing strategy for new project WHEN parsing THEN captures recommendations."""
+        md = """## Testing Strategy
+
+### Test Coverage Requirements
+- Establish minimum 80% coverage for new code
+- All new features require unit tests
+
+### Test File Locations
+- Create tests/ directory at project root
+- Use test_*.py naming convention
+
+### Testing Conventions
+- Recommend pytest as test framework
+- Use GIVEN/WHEN/THEN style assertions
+
+### Test Data and Fixtures
+- Create conftest.py for shared fixtures
+"""
+        parser = PRDMarkdownParser(md)
+        result = parser.parse()
+        ts = result["testingStrategy"]
+
+        assert "Establish" in ts["coverageRequirements"][0]
+        assert "Create tests/" in ts["testFileLocations"][0]
+        assert "Recommend pytest" in ts["testingConventions"][0]

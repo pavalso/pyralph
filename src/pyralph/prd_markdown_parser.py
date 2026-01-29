@@ -53,6 +53,8 @@ class PRDMarkdownParser:
             "problemStatement": self._extract_section_content("Problem Statement"),
             "proposedSolution": self._extract_section_content("Proposed Solution"),
             "sourceDocument": self._build_source_document(),
+            "technicalContext": self._extract_technical_context(),
+            "testingStrategy": self._extract_testing_strategy(),
             "functionalRequirements": self._extract_functional_requirements(),
             "nonFunctionalRequirements": self._extract_non_functional_requirements(),
             "userStories": self._extract_user_stories(),
@@ -265,6 +267,168 @@ class PRDMarkdownParser:
             nfr[current_category] = current_items
 
         return nfr
+
+    def _extract_technical_context(self) -> Dict[str, Any]:
+        """Extract Technical Context section with subsections.
+
+        Returns:
+            Dictionary containing technical context information
+        """
+        start, end = self._find_section_range("Technical Context")
+        if start == -1:
+            return {}
+
+        context = {
+            "identifiedPatterns": [],
+            "existingAbstractions": [],
+            "integrationPoints": [],
+            "technologyStack": [],
+            "recommendedApproaches": [],
+        }
+
+        current_subsection = None
+        current_content = []
+
+        for i in range(start + 1, end):
+            line = self._lines[i].strip()
+
+            if line.startswith('### '):
+                if current_subsection and current_content:
+                    self._store_technical_context(
+                        context, current_subsection, current_content
+                    )
+                subsection_name = line[4:].strip().lower()
+                current_subsection = self._map_subsection_name(subsection_name)
+                current_content = []
+            elif current_subsection:
+                if line == '---':
+                    # Skip separator lines
+                    continue
+                if line.startswith('- '):
+                    current_content.append(line[2:].strip())
+                elif line.startswith('* '):
+                    current_content.append(line[2:].strip())
+                elif line and not line.startswith('#'):
+                    # Handle prose content
+                    current_content.append(line)
+
+        if current_subsection and current_content:
+            self._store_technical_context(
+                context, current_subsection, current_content
+            )
+
+        return context
+
+    def _map_subsection_name(self, name: str) -> Optional[str]:
+        """Map subsection header to context key.
+
+        Args:
+            name: Subsection name from header (lowercase)
+
+        Returns:
+            Key for context dictionary or None
+        """
+        mapping = {
+            "identified patterns": "identifiedPatterns",
+            "existing abstractions": "existingAbstractions",
+            "integration points": "integrationPoints",
+            "technology stack": "technologyStack",
+            "recommended approaches": "recommendedApproaches",
+        }
+        return mapping.get(name)
+
+    def _store_technical_context(
+        self, context: Dict[str, Any], subsection: str, content: List[str]
+    ) -> None:
+        """Store parsed technical context content.
+
+        Args:
+            context: Context dictionary to update
+            subsection: Subsection key
+            content: List of content lines
+        """
+        if subsection and subsection in context:
+            context[subsection] = content
+
+    def _extract_testing_strategy(self) -> Dict[str, Any]:
+        """Extract Testing Strategy section with subsections.
+
+        Returns:
+            Dictionary containing testing strategy information
+        """
+        start, end = self._find_section_range("Testing Strategy")
+        if start == -1:
+            return {}
+
+        strategy = {
+            "coverageRequirements": [],
+            "testFileLocations": [],
+            "testingConventions": [],
+            "testDataAndFixtures": [],
+        }
+
+        current_subsection = None
+        current_content = []
+
+        for i in range(start + 1, end):
+            line = self._lines[i].strip()
+
+            if line.startswith('### '):
+                if current_subsection and current_content:
+                    self._store_testing_strategy(
+                        strategy, current_subsection, current_content
+                    )
+                subsection_name = line[4:].strip().lower()
+                current_subsection = self._map_testing_subsection(subsection_name)
+                current_content = []
+            elif current_subsection:
+                if line == '---':
+                    # Skip separator lines
+                    continue
+                if line.startswith('- '):
+                    current_content.append(line[2:].strip())
+                elif line.startswith('* '):
+                    current_content.append(line[2:].strip())
+                elif line and not line.startswith('#'):
+                    # Handle prose content
+                    current_content.append(line)
+
+        if current_subsection and current_content:
+            self._store_testing_strategy(
+                strategy, current_subsection, current_content
+            )
+
+        return strategy
+
+    def _map_testing_subsection(self, name: str) -> Optional[str]:
+        """Map testing subsection header to strategy key.
+
+        Args:
+            name: Subsection name from header (lowercase)
+
+        Returns:
+            Key for strategy dictionary or None
+        """
+        mapping = {
+            "test coverage requirements": "coverageRequirements",
+            "test file locations": "testFileLocations",
+            "testing conventions": "testingConventions",
+            "test data and fixtures": "testDataAndFixtures",
+        }
+        return mapping.get(name)
+
+    def _store_testing_strategy(
+        self, strategy: Dict[str, Any], subsection: str, content: List[str]
+    ) -> None:
+        """Store parsed testing strategy content.
+
+        Args:
+            strategy: Strategy dictionary to update
+            subsection: Subsection key
+            content: List of content lines
+        """
+        if subsection and subsection in strategy:
+            strategy[subsection] = content
 
     def _extract_user_stories(self) -> List[Dict[str, Any]]:
         """Extract user stories from User Stories section.
