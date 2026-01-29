@@ -13,6 +13,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from .exploration_context import ExplorationContextManager, create_exploration_context
+from .prd_errors import (
+    create_empty_exploration_error,
+    create_incomplete_exploration_warning,
+    create_markdown_generation_error,
+    create_markdown_parse_error,
+    create_no_user_stories_error,
+    create_timeout_error,
+    create_validation_error,
+)
 
 if TYPE_CHECKING:
     from .hooks import HookManager
@@ -156,6 +165,17 @@ class PhaseRunner:
                 self._event_type.EXPLORATION_FAILURE,
                 phase="planner",
                 error=str(e)
+            ))
+
+        # Check for empty exploration results
+        if not file_tree or not file_tree.strip():
+            error = create_empty_exploration_error()
+            self._logger.info(f"❌ {error.format_message()}", "RED")
+            self._hooks.emit(self._event(
+                self._event_type.EXPLORATION_FAILURE,
+                phase="planner",
+                error=error.description,
+                metadata={'error_code': error.code.value}
             ))
 
         return file_tree, incomplete_paths
@@ -357,12 +377,21 @@ class PhaseRunner:
         # Load or create exploration context
         file_tree, incomplete_paths = self._load_or_create_exploration_context(user_intent)
 
-        # Log if there were incomplete paths
+        # Check for empty exploration results - this is a critical error
+        if not file_tree or not file_tree.strip():
+            error = create_empty_exploration_error()
+            self._logger.info(f"❌ {error.format_message()}", "RED")
+            self._hooks.emit(self._event(
+                self._event_type.PRD_MD_FAILURE,
+                phase="planner",
+                metadata={'error_code': error.code.value}
+            ))
+            return None
+
+        # Log warning if there were incomplete paths (but allow generation to continue)
         if incomplete_paths:
-            self._logger.info(
-                f"⚠️ Exploration incomplete: {len(incomplete_paths)} path(s) inaccessible",
-                "YELLOW"
-            )
+            warning = create_incomplete_exploration_warning(incomplete_paths)
+            self._logger.info(f"⚠️ {warning.format_message()}", "YELLOW")
 
         timestamp = datetime.now().isoformat()
 
@@ -389,12 +418,21 @@ class PhaseRunner:
             exploration_metadata=exploration_metadata
         )
 
-        for attempt in range(3):
-            success, raw, _ = self._agent.run(prompt, "PLANNER")
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            success, raw, agent_error = self._agent.run(prompt, "PLANNER")
             if not success:
-                self._logger.info(
-                    f"⚠️ PRD markdown generation attempt {attempt+1} failed", "YELLOW"
-                )
+                # Check if this was a timeout error
+                if agent_error and agent_error.exception_type == "TimeoutError":
+                    timeout_err = create_timeout_error(
+                        current_stage="PRD markdown generation",
+                        elapsed_seconds=self._agent.timeout_seconds,
+                        timeout_seconds=self._agent.timeout_seconds
+                    )
+                    self._logger.info(f"⚠️ {timeout_err.format_message()}", "YELLOW")
+                else:
+                    error = create_markdown_generation_error(attempt + 1, max_attempts)
+                    self._logger.info(f"⚠️ {error.description}", "YELLOW")
                 continue
 
             # Write the markdown file
@@ -416,9 +454,12 @@ class PhaseRunner:
                     "YELLOW"
                 )
 
-        self._logger.info("❌ PRD markdown generation failed.", "RED")
+        error = create_markdown_generation_error(max_attempts, max_attempts)
+        self._logger.info(f"❌ {error.format_message()}", "RED")
         self._hooks.emit(self._event(
-            self._event_type.PRD_MD_FAILURE, phase="planner"
+            self._event_type.PRD_MD_FAILURE,
+            phase="planner",
+            metadata={'error_code': error.code.value}
         ))
         return None
 
@@ -459,18 +500,15 @@ class PhaseRunner:
             )
 
             if "userStories" not in data or not data["userStories"]:
-                self._logger.info(
-                    "⚠️ No user stories found in markdown. Check markdown format.",
-                    "YELLOW"
-                )
+                error = create_no_user_stories_error()
+                self._logger.info(f"⚠️ {error.format_message()}", "YELLOW")
                 return None
 
             return data
 
         except Exception as e:
-            self._logger.info(
-                f"⚠️ Failed to parse markdown: {e}", "YELLOW"
-            )
+            error = create_markdown_parse_error(str(e))
+            self._logger.info(f"⚠️ {error.format_message()}", "YELLOW")
             return None
 
     def run_architect(self, user_intent: str) -> None:
@@ -576,11 +614,15 @@ class PhaseRunner:
             sys.exit(1)
 
         # Step 4: Validate and process the PRD
-        is_valid, error = self._prd_processor.validate_prd(data)
+        is_valid, validation_error = self._prd_processor.validate_prd(data)
         if not is_valid:
-            self._logger.info(f"⚠️ Validation failed: {error}", "YELLOW")
-            self._logger.info("❌ Planning Failed.", "RED")
-            self._hooks.emit(self._event(self._event_type.PLANNER_FAILURE, phase="planner"))
+            prd_error = create_validation_error(validation_error or "Unknown validation error")
+            self._logger.info(f"❌ {prd_error.format_message()}", "RED")
+            self._hooks.emit(self._event(
+                self._event_type.PLANNER_FAILURE,
+                phase="planner",
+                metadata={'error_code': prd_error.code.value}
+            ))
             self._hooks.emit(self._event(self._event_type.PHASE_END, phase="planner"))
             self._command_runner.run_post_commands("planner", success=False)
             sys.exit(1)
@@ -589,11 +631,17 @@ class PhaseRunner:
 
         if self._revise_prd:
             data = self._prd_processor.revise_prd(data)
-            is_valid, error = self._prd_processor.validate_prd(data)
+            is_valid, validation_error = self._prd_processor.validate_prd(data)
             if not is_valid:
-                self._logger.warning(f"Revised PRD failed validation: {error}")
-                self._logger.info("❌ Planning Failed.", "RED")
-                self._hooks.emit(self._event(self._event_type.PLANNER_FAILURE, phase="planner"))
+                prd_error = create_validation_error(
+                    f"Revised PRD failed: {validation_error or 'Unknown error'}"
+                )
+                self._logger.info(f"❌ {prd_error.format_message()}", "RED")
+                self._hooks.emit(self._event(
+                    self._event_type.PLANNER_FAILURE,
+                    phase="planner",
+                    metadata={'error_code': prd_error.code.value}
+                ))
                 self._hooks.emit(self._event(self._event_type.PHASE_END, phase="planner"))
                 self._command_runner.run_post_commands("planner", success=False)
                 sys.exit(1)

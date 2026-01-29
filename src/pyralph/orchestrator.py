@@ -25,6 +25,7 @@ from .templates import TemplateManager
 from .agents import get_agent
 from .agents.base import AgentError
 from .hooks import HookManager, Event, EventType
+from .prd_errors import create_missing_intent_error, create_empty_intent_error
 
 # Import specialized modules with clear error messages for missing dependencies
 try:
@@ -352,11 +353,13 @@ class RalphOrchestrator:
                 sys.exit(1)
             content = intent_path.read_text(encoding='utf-8').strip()
             if not content:
-                Logger.error(f"Intent file is empty: {self._intent_file}")
+                error = create_empty_intent_error()
+                Logger.error(error.format_message())
                 sys.exit(1)
             return content
         if self._non_interactive:
-            Logger.error("Intent required in non-interactive mode. Use --intent or --intent-file.")
+            error = create_missing_intent_error()
+            Logger.error(error.format_message())
             sys.exit(1)
         intent = input(f"{Logger.COLORS['YELLOW']}>> What are we building? {Logger.COLORS['RESET']}").strip()
         if not intent:

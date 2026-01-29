@@ -158,6 +158,23 @@ class BaseAgent(ABC):
                 return False, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}", error
             self._log(log_content, "RESPONSE", tag, "GREEN")
             return True, result.stdout, None
+        except subprocess.TimeoutExpired as e:
+            error = AgentError(
+                "TimeoutError",
+                (
+                    f"Agent operation timed out after {self.timeout_seconds}s.\n"
+                    f"Stage: {tag}\n"
+                    f"Resolution: Increase timeout with --timeout flag. "
+                    f"Consider reducing --tree-depth for faster exploration.\n"
+                    f"Relevant CLI flags: --timeout, --tree-depth"
+                ),
+                f"Timeout after {self.timeout_seconds} seconds during {tag}",
+                datetime.now().isoformat(),
+                self.get_name(),
+                tag
+            )
+            self._log(error.format_log_entry(), "TIMEOUT", tag, "RED")
+            return False, error.format_log_entry(), error
         except Exception as e:
             error = AgentError.from_exception(e, self.get_name(), tag)
             self._log(error.format_log_entry(), "SYSTEM_EXCEPTION", tag, "RED")
