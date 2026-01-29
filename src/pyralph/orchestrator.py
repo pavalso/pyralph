@@ -100,7 +100,10 @@ class RalphOrchestrator:
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
                  label: Optional[List[str]] = None, revise_prd: bool = False,
                  reuse_context: bool = False,
-                 check_drift: bool = False, strict: bool = False) -> None:
+                 check_drift: bool = False, strict: bool = False,
+                 explore_depth: Optional[int] = None,
+                 explore_files_limit: Optional[int] = None,
+                 explore_thorough: bool = False) -> None:
         """Initialize the orchestrator with all configuration options."""
         # Initialize agent
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
@@ -162,6 +165,9 @@ class RalphOrchestrator:
         self._reuse_context = reuse_context
         self._check_drift = check_drift
         self._strict = strict
+        self._explore_depth = explore_depth
+        self._explore_files_limit = explore_files_limit
+        self._explore_thorough = explore_thorough
 
         # Initialize PRD manager
         self._prd = PRDManager(CONF.PRD_FILE)
@@ -220,6 +226,9 @@ class RalphOrchestrator:
             tree_ignore=self._tree_ignore,
             revise_prd=self._revise_prd,
             reuse_context=self._reuse_context,
+            explore_depth=self._explore_depth,
+            explore_files_limit=self._explore_files_limit,
+            explore_thorough=self._explore_thorough,
         )
 
         self._task_executor = TaskExecutor(

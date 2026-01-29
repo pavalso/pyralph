@@ -57,6 +57,9 @@ class PhaseRunner:
         tree_ignore=None,
         revise_prd: bool = False,
         reuse_context: bool = False,
+        explore_depth: Optional[int] = None,
+        explore_files_limit: Optional[int] = None,
+        explore_thorough: bool = False,
     ):
         """Initialize the phase runner.
 
@@ -77,6 +80,9 @@ class PhaseRunner:
             tree_ignore: Patterns to ignore in file tree
             revise_prd: Whether to revise PRD after generation
             reuse_context: Whether to reuse existing exploration context
+            explore_depth: Maximum directory traversal depth for exploration
+            explore_files_limit: Maximum number of files to examine
+            explore_thorough: Whether to disable exploration limits
         """
         self._agent = agent
         self._hooks = hooks
@@ -94,6 +100,9 @@ class PhaseRunner:
         self._tree_ignore = tree_ignore
         self._revise_prd = revise_prd
         self._reuse_context = reuse_context
+        self._explore_depth = explore_depth
+        self._explore_files_limit = explore_files_limit
+        self._explore_thorough = explore_thorough
         self._exploration_context = ExplorationContextManager(
             config.EXPLORATION_CONTEXT_FILE
         )
@@ -106,14 +115,16 @@ class PhaseRunner:
         """
         return self._shell.get_file_tree(depth=self._tree_depth, ignore=self._tree_ignore)
 
-    def _explore_codebase(self) -> Tuple[str, List[str]]:
-        """Explore the codebase and return file tree with any incomplete paths.
+    def _explore_codebase(self) -> Tuple[str, List[str], bool, Optional[int]]:
+        """Explore the codebase and return file tree with metadata.
 
         Returns:
-            Tuple of (file_tree_string, incomplete_paths_list)
+            Tuple of (file_tree_string, incomplete_paths_list, truncated, files_examined)
         """
         incomplete_paths: List[str] = []
         file_tree = ""
+        truncated = False
+        files_examined: Optional[int] = None
 
         self._hooks.emit(self._event(
             self._event_type.EXPLORATION_START,
@@ -121,10 +132,23 @@ class PhaseRunner:
         ))
 
         try:
-            file_tree = self._shell.get_file_tree(
-                depth=self._tree_depth,
-                ignore=self._tree_ignore
+            # Use new exploration method with depth and file limits
+            exploration_result = self._shell.explore_codebase(
+                depth=self._explore_depth,
+                files_limit=self._explore_files_limit,
+                ignore=self._tree_ignore,
+                thorough=self._explore_thorough
             )
+            file_tree = exploration_result.file_tree
+            truncated = exploration_result.truncated
+            files_examined = exploration_result.files_examined
+
+            # Log truncation warning if applicable
+            if truncated:
+                self._logger.info(
+                    f"⚠️ Exploration truncated: {files_examined} files examined "
+                    f"(limit reached)", "YELLOW"
+                )
 
             # Check for any inaccessible directories in BASE_DIR
             tree_ignore = self._tree_ignore
@@ -155,7 +179,11 @@ class PhaseRunner:
                 self._event_type.EXPLORATION_SUCCESS,
                 phase="planner",
                 exploration_context_path=str(self._config.EXPLORATION_CONTEXT_FILE),
-                metadata={'incomplete_paths_count': len(incomplete_paths)}
+                metadata={
+                    'incomplete_paths_count': len(incomplete_paths),
+                    'truncated': truncated,
+                    'files_examined': files_examined
+                }
             ))
 
         except Exception as e:
@@ -178,13 +206,15 @@ class PhaseRunner:
                 metadata={'error_code': error.code.value}
             ))
 
-        return file_tree, incomplete_paths
+        return file_tree, incomplete_paths, truncated, files_examined
 
     def _save_exploration_context(
         self,
         file_tree: str,
         incomplete_paths: List[str],
-        user_intent: str
+        user_intent: str,
+        truncated: bool = False,
+        files_examined: Optional[int] = None
     ) -> None:
         """Save exploration results to exploration_context.json.
 
@@ -192,6 +222,8 @@ class PhaseRunner:
             file_tree: The generated file tree string
             incomplete_paths: List of paths that could not be explored
             user_intent: The user's intent for context
+            truncated: Whether exploration was truncated due to limits
+            files_examined: Number of files examined during exploration
         """
         # Get tree_ignore from instance or shell module defaults
         tree_ignore = self._tree_ignore
@@ -208,6 +240,9 @@ class PhaseRunner:
             'user_intent': user_intent,
             'tree_depth': self._tree_depth,
             'tree_ignore': tree_ignore,
+            'explore_depth': self._explore_depth,
+            'explore_files_limit': self._explore_files_limit,
+            'explore_thorough': self._explore_thorough,
         }
 
         context_data = create_exploration_context(
@@ -216,7 +251,9 @@ class PhaseRunner:
             incomplete_paths=incomplete_paths,
             metadata={
                 'base_dir': str(self._config.BASE_DIR),
-            }
+            },
+            truncated=truncated,
+            files_examined=files_examined
         )
 
         self._exploration_context.save(context_data)
@@ -227,7 +264,7 @@ class PhaseRunner:
 
     def _load_or_create_exploration_context(
         self, user_intent: str
-    ) -> Tuple[str, List[str]]:
+    ) -> Tuple[str, List[str], bool, Optional[int]]:
         """Load existing exploration context or create new one.
 
         Handles the --reuse-context flag and corruption detection.
@@ -236,7 +273,7 @@ class PhaseRunner:
             user_intent: The user's intent for context
 
         Returns:
-            Tuple of (file_tree_string, incomplete_paths_list)
+            Tuple of (file_tree_string, incomplete_paths_list, truncated, files_examined)
         """
         # Check if we should reuse existing context
         if self._reuse_context and self._exploration_context.exists():
@@ -250,7 +287,12 @@ class PhaseRunner:
                     phase="planner",
                     exploration_context_path=str(self._config.EXPLORATION_CONTEXT_FILE)
                 ))
-                return context.get('file_tree', ''), context.get('incomplete_paths', [])
+                return (
+                    context.get('file_tree', ''),
+                    context.get('incomplete_paths', []),
+                    context.get('truncated', False),
+                    context.get('files_examined')
+                )
             except (json.JSONDecodeError, ValueError) as e:
                 self._logger.info(
                     f"⚠️ Exploration context corrupted: {e}", "YELLOW"
@@ -267,12 +309,15 @@ class PhaseRunner:
 
         # Perform fresh exploration
         self._logger.info("🔍 Exploring codebase...", "CYAN")
-        file_tree, incomplete_paths = self._explore_codebase()
+        file_tree, incomplete_paths, truncated, files_examined = self._explore_codebase()
 
         # Save exploration context
-        self._save_exploration_context(file_tree, incomplete_paths, user_intent)
+        self._save_exploration_context(
+            file_tree, incomplete_paths, user_intent,
+            truncated=truncated, files_examined=files_examined
+        )
 
-        return file_tree, incomplete_paths
+        return file_tree, incomplete_paths, truncated, files_examined
 
     def get_exploration_context(self) -> Optional[Dict[str, Any]]:
         """Get the current exploration context if it exists and is valid.
@@ -375,7 +420,7 @@ class PhaseRunner:
         self._hooks.emit(self._event(self._event_type.PRD_MD_START, phase="planner"))
 
         # Load or create exploration context
-        file_tree, incomplete_paths = self._load_or_create_exploration_context(user_intent)
+        file_tree, incomplete_paths, truncated, files_examined = self._load_or_create_exploration_context(user_intent)
 
         # Check for empty exploration results - this is a critical error
         if not file_tree or not file_tree.strip():
@@ -406,6 +451,11 @@ class PhaseRunner:
             if incomplete_paths:
                 exploration_metadata += (
                     f"<!-- Incomplete Paths: {len(incomplete_paths)} -->\n"
+                )
+            if truncated:
+                exploration_metadata += (
+                    f"<!-- Truncated: true -->\n"
+                    f"<!-- Files Examined: {files_examined} -->\n"
                 )
 
         prompt = self._template_manager.render(

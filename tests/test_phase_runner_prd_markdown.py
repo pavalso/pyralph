@@ -15,6 +15,7 @@ from pyralph.config import CONF
 from pyralph.events import Event, EventType
 from pyralph.phase_runner import PhaseRunner
 from pyralph.prd import JsonUtils
+from pyralph.shell import ExplorationResult
 
 
 class TestGenerateShortDescription:
@@ -158,6 +159,12 @@ class TestGeneratePrdMarkdown:
         mock_template_manager = MagicMock()
         mock_shell = MagicMock()
         mock_shell.get_file_tree.return_value = "├── src/\n├── tests/"
+        mock_shell.explore_codebase.return_value = ExplorationResult(
+            file_tree="├── src/\n├── tests/",
+            files_examined=10,
+            truncated=False,
+            max_depth_reached=2
+        )
         mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
 
         runner = PhaseRunner(
@@ -439,6 +446,12 @@ class TestRunPlannerMarkdownFirst:
         mock_template_manager = MagicMock()
         mock_shell = MagicMock()
         mock_shell.get_file_tree.return_value = "├── src/"
+        mock_shell.explore_codebase.return_value = ExplorationResult(
+            file_tree="├── src/",
+            files_examined=5,
+            truncated=False,
+            max_depth_reached=2
+        )
         mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
         mock_prd_manager = MagicMock()
         mock_command_runner = MagicMock()
@@ -671,6 +684,12 @@ class TestExplorationContextIntegration:
         mock_template_manager = MagicMock()
         mock_shell = MagicMock()
         mock_shell.get_file_tree.return_value = "├── src/\n├── tests/"
+        mock_shell.explore_codebase.return_value = ExplorationResult(
+            file_tree="├── src/\n├── tests/",
+            files_examined=10,
+            truncated=False,
+            max_depth_reached=2
+        )
         mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
         mock_prd_manager = MagicMock()
         mock_command_runner = MagicMock()

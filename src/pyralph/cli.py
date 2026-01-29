@@ -137,6 +137,10 @@ def main() -> None:
     parser.add_argument("--strict", action="store_true", help="With --check-drift: exit with code 1 on drift instead of just warning")
     # Exploration context control
     parser.add_argument("--reuse-context", action="store_true", help="Reuse existing exploration_context.json instead of running fresh exploration")
+    # Exploration depth and limit flags
+    parser.add_argument("--explore-depth", type=int, metavar="N", help="Maximum directory traversal depth from project root (default: 10)")
+    parser.add_argument("--explore-files-limit", type=int, metavar="M", help="Maximum number of files to examine during exploration (default: 1000)")
+    parser.add_argument("--explore-thorough", action="store_true", help="Disable exploration limits for full codebase analysis")
     # Enhancement combination flag
     parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd). Individual --no-* flags can override specific features.")
     args = parser.parse_args()
@@ -268,5 +272,8 @@ def main() -> None:
         revise_prd=revise_prd,
         reuse_context=args.reuse_context,
         check_drift=args.check_drift,
-        strict=args.strict
+        strict=args.strict,
+        explore_depth=args.explore_depth,
+        explore_files_limit=args.explore_files_limit,
+        explore_thorough=args.explore_thorough
     ).start(phase=args.phase, accept_all=args.accept_all)

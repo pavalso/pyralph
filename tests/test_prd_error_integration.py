@@ -19,6 +19,7 @@ from pyralph.config import CONF
 from pyralph.events import Event, EventType
 from pyralph.phase_runner import PhaseRunner
 from pyralph.prd import JsonUtils
+from pyralph.shell import ExplorationResult
 
 
 VALID_PRD_MARKDOWN = """# PRD: Test Feature
@@ -104,6 +105,12 @@ class TestEmptyExplorationError:
         mock_shell = MagicMock()
         # Return empty file tree to trigger empty exploration error
         mock_shell.get_file_tree.return_value = ""
+        mock_shell.explore_codebase.return_value = ExplorationResult(
+            file_tree="",
+            files_examined=0,
+            truncated=False,
+            max_depth_reached=0
+        )
         mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
 
         runner = PhaseRunner(
@@ -263,6 +270,12 @@ class TestIncompleteExplorationWarning:
         mock_template_manager = MagicMock()
         mock_shell = MagicMock()
         mock_shell.get_file_tree.return_value = "├── src/\n├── tests/"
+        mock_shell.explore_codebase.return_value = ExplorationResult(
+            file_tree="├── src/\n├── tests/",
+            files_examined=10,
+            truncated=False,
+            max_depth_reached=2
+        )
         mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
         mock_command_runner = MagicMock()
         mock_command_runner.run_pre_commands.return_value = True

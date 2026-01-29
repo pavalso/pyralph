@@ -24,6 +24,10 @@ class Config:
     MAX_RETRIES: int = 3
     TIMEOUT_SECONDS: int = 600
 
+    # Exploration limits
+    DEFAULT_EXPLORE_DEPTH: int = 10
+    DEFAULT_EXPLORE_FILES_LIMIT: int = 1000
+
     def ensure_directories(self) -> None:
         for path in [self.ROOT_DIR, self.ARCHIVE_DIR, self.TEMPLATES_DIR, self.HOOKS_DIR]:
             path.mkdir(exist_ok=True, parents=True)

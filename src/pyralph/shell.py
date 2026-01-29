@@ -4,10 +4,21 @@
 This module contains the Shell class that provides subprocess execution
 functionality for the Ralph CLI tool.
 """
+import os
 import subprocess
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from .config import CONF
+
+
+@dataclass
+class ExplorationResult:
+    """Result from codebase exploration with metadata."""
+    file_tree: str
+    files_examined: int
+    truncated: bool
+    max_depth_reached: int
 
 
 class Shell:
@@ -91,3 +102,90 @@ class Shell:
             if path.name not in ignore_set:
                 lines.append(f"├── {path.name}")
         return "\n".join(lines)
+
+    @staticmethod
+    def explore_codebase(
+        depth: Optional[int] = None,
+        files_limit: Optional[int] = None,
+        ignore: Optional[List[str]] = None,
+        thorough: bool = False
+    ) -> ExplorationResult:
+        """
+        Explore the codebase with configurable depth and file limits.
+
+        Args:
+            depth: Maximum directory traversal depth from project root.
+                   None uses CONF.DEFAULT_EXPLORE_DEPTH.
+            files_limit: Maximum number of files to examine.
+                         None uses CONF.DEFAULT_EXPLORE_FILES_LIMIT.
+            ignore: List of directory/file patterns to exclude.
+            thorough: If True, disables all limits for full analysis.
+
+        Returns:
+            ExplorationResult containing file tree and metadata.
+        """
+        if ignore is None:
+            ignore = Shell.DEFAULT_TREE_IGNORE
+
+        # Apply defaults unless thorough mode
+        if thorough:
+            effective_depth = None
+            effective_limit = None
+        else:
+            effective_depth = depth if depth is not None else CONF.DEFAULT_EXPLORE_DEPTH
+            effective_limit = files_limit if files_limit is not None else CONF.DEFAULT_EXPLORE_FILES_LIMIT
+
+        ignore_set = set(ignore)
+        lines = []
+        files_examined = 0
+        max_depth_reached = 0
+        truncated = False
+
+        def _walk_directory(directory, current_depth: int, prefix: str = "") -> bool:
+            """Walk directory tree, returning False if limit hit."""
+            nonlocal files_examined, max_depth_reached, truncated
+
+            if effective_depth is not None and current_depth > effective_depth:
+                return True
+
+            max_depth_reached = max(max_depth_reached, current_depth)
+
+            try:
+                entries = sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            except PermissionError:
+                return True
+            except OSError:
+                return True
+
+            for i, entry in enumerate(entries):
+                if entry.name in ignore_set:
+                    continue
+
+                if effective_limit is not None and files_examined >= effective_limit:
+                    truncated = True
+                    return False
+
+                is_last = i == len(entries) - 1
+                connector = "└── " if is_last else "├── "
+                lines.append(f"{prefix}{connector}{entry.name}")
+                files_examined += 1
+
+                if entry.is_dir():
+                    extension = "    " if is_last else "│   "
+                    if not _walk_directory(entry, current_depth + 1, prefix + extension):
+                        return False
+
+            return True
+
+        # Start walking from BASE_DIR
+        lines.append(".")
+        _walk_directory(CONF.BASE_DIR, 1)
+
+        file_tree = "\n".join(lines)
+
+        return ExplorationResult(
+            file_tree=file_tree,
+            files_examined=files_examined,
+            truncated=truncated,
+            max_depth_reached=max_depth_reached
+        )

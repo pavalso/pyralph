@@ -141,7 +141,9 @@ def create_exploration_context(
     file_tree: str,
     exploration_summary: Dict[str, Any],
     incomplete_paths: Optional[List[str]] = None,
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    truncated: bool = False,
+    files_examined: Optional[int] = None
 ) -> Dict[str, Any]:
     """Create a structured exploration context dictionary.
 
@@ -150,6 +152,8 @@ def create_exploration_context(
         exploration_summary: Dictionary containing exploration findings
         incomplete_paths: Optional list of paths that could not be explored
         metadata: Optional additional metadata
+        truncated: Whether exploration was truncated due to limits
+        files_examined: Number of files examined during exploration
 
     Returns:
         Structured exploration context dictionary
@@ -160,6 +164,8 @@ def create_exploration_context(
         'file_tree': file_tree,
         'exploration_summary': exploration_summary,
         'incomplete_paths': incomplete_paths or [],
-        'metadata': metadata or {}
+        'metadata': metadata or {},
+        'truncated': truncated,
+        'files_examined': files_examined
     }
     return context
