@@ -98,7 +98,8 @@ class RalphOrchestrator:
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
                  label: Optional[List[str]] = None, revise_prd: bool = False,
-                 reuse_context: bool = False) -> None:
+                 reuse_context: bool = False,
+                 check_drift: bool = False, strict: bool = False) -> None:
         """Initialize the orchestrator with all configuration options."""
         # Initialize agent
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
@@ -158,6 +159,8 @@ class RalphOrchestrator:
         self._labels = label or []
         self._revise_prd = revise_prd
         self._reuse_context = reuse_context
+        self._check_drift = check_drift
+        self._strict = strict
 
         # Initialize PRD manager
         self._prd = PRDManager(CONF.PRD_FILE)
@@ -393,6 +396,50 @@ class RalphOrchestrator:
         out_path.write_text(self._prd.read_raw(), encoding='utf-8')
         Logger.info(f"📋 PRD exported to {out_path}", "MAGENTA")
 
+    def _check_prd_drift(self) -> int:
+        """Check for drift between prd-*.md and prd.json.
+
+        Returns:
+            Exit code: 0 if no drift (or drift with warnings only),
+            1 if drift detected and --strict flag is set
+        """
+        if not self._prd.exists():
+            if Logger.json_output or Logger.ndjson_output:
+                print(Logger._format_json_message("No PRD file found", "error", status="no_prd", exit_code=2))
+            else:
+                Logger.error("No PRD file found. Run planner first.")
+            return 2
+
+        prd_data = self._prd.load()
+        source_doc = prd_data.get("sourceDocument", {})
+        stored_path = source_doc.get("path", "")
+
+        if not stored_path:
+            Logger.error("PRD has no sourceDocument.path - cannot check drift.")
+            return 2
+
+        prd_md_path = Path(stored_path)
+
+        is_ok, messages = self._prd_processor.run_drift_check(
+            prd_data=prd_data,
+            prd_md_path=prd_md_path,
+            strict=self._strict
+        )
+
+        if Logger.json_output or Logger.ndjson_output:
+            status = "ok" if is_ok else "drift_detected"
+            exit_code = 0 if is_ok else 1
+            print(Logger._format_json_message(
+                "Drift check complete",
+                "info" if is_ok else "warn",
+                status=status,
+                exit_code=exit_code,
+                messages=messages,
+                strict=self._strict
+            ))
+
+        return 0 if is_ok else 1
+
     def _check_prd_status(self) -> int:
         """Check PRD status and return appropriate exit code."""
         if not self._prd.exists():
@@ -491,6 +538,10 @@ class RalphOrchestrator:
 
     def start(self, phase: str = "all", accept_all: bool = False) -> None:
         """Start the Ralph orchestrator."""
+        if self._check_drift:
+            exit_code = self._check_prd_drift()
+            sys.exit(exit_code)
+
         if self._status_check:
             exit_code = self._check_prd_status()
             sys.exit(exit_code)

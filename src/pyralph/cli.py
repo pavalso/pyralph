@@ -132,6 +132,9 @@ def main() -> None:
     parser.add_argument("--label", nargs="+", metavar="KEY=VAL", help="Add custom labels to PRD (format: key=value or just key)")
     parser.add_argument("--revise-prd", action="store_true", help="Pass PRD through revision agent for quality improvements before planner phase")
     parser.add_argument("--no-revise-prd", action="store_true", help="Disable PRD revision (overrides --enhance-all)")
+    # Drift detection flags
+    parser.add_argument("--check-drift", action="store_true", help="Check for drift between prd-*.md and prd.json, then exit")
+    parser.add_argument("--strict", action="store_true", help="With --check-drift: exit with code 1 on drift instead of just warning")
     # Exploration context control
     parser.add_argument("--reuse-context", action="store_true", help="Reuse existing exploration_context.json instead of running fresh exploration")
     # Enhancement combination flag
@@ -263,5 +266,7 @@ def main() -> None:
         min_criteria=args.min_criteria,
         label=args.label,
         revise_prd=revise_prd,
-        reuse_context=args.reuse_context
+        reuse_context=args.reuse_context,
+        check_drift=args.check_drift,
+        strict=args.strict
     ).start(phase=args.phase, accept_all=args.accept_all)
