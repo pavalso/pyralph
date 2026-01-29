@@ -60,8 +60,9 @@ class EventType(Enum):
 
     # PRD Markdown events
     PRD_MD_START = auto()
-    PRD_MD_SUCCESS = auto()
-    PRD_MD_FAILURE = auto()
+    PRD_MD_CONTEXT_READY = auto()
+    PRD_MD_COMPLETE = auto()
+    PRD_MD_FAILED = auto()
 
     # Exploration context events
     EXPLORATION_START = auto()

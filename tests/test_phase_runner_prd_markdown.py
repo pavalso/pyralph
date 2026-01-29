@@ -211,17 +211,42 @@ class TestGeneratePrdMarkdown:
         start_events = [c for c in emit_calls if c[0][0].event_type == EventType.PRD_MD_START]
         assert len(start_events) == 1
 
-    def test_emits_prd_md_success_event_on_success(self, phase_runner):
-        """GIVEN markdown created WHEN generation completes THEN emits PRD_MD_SUCCESS event."""
+    def test_prd_md_start_includes_intent_summary(self, phase_runner):
+        """GIVEN planner phase WHEN PRD_MD_START emitted THEN includes intent summary."""
         runner, mock_agent, mock_hooks = phase_runner
         mock_agent.run.return_value = (True, "# PRD Content", None)
+
+        runner._generate_prd_markdown("Build a user authentication system", "test-feature")
+
+        emit_calls = mock_hooks.emit.call_args_list
+        start_events = [c for c in emit_calls if c[0][0].event_type == EventType.PRD_MD_START]
+        assert len(start_events) == 1
+        assert start_events[0][0][0].metadata.get('intent_summary') == "Build a user authentication system"
+
+    def test_emits_prd_md_context_ready_event(self, phase_runner):
+        """GIVEN exploration completes WHEN context ready THEN emits PRD_MD_CONTEXT_READY event."""
+        runner, mock_agent, mock_hooks = phase_runner
+        mock_agent.run.return_value = (True, "# PRD Content", None)
+
+        runner._generate_prd_markdown("test intent", "test-feature")
+
+        emit_calls = mock_hooks.emit.call_args_list
+        context_ready_events = [c for c in emit_calls if c[0][0].event_type == EventType.PRD_MD_CONTEXT_READY]
+        assert len(context_ready_events) == 1
+        assert context_ready_events[0][0][0].exploration_context_path is not None
+
+    def test_emits_prd_md_complete_event_on_success(self, phase_runner):
+        """GIVEN markdown created WHEN generation completes THEN emits PRD_MD_COMPLETE event."""
+        runner, mock_agent, mock_hooks = phase_runner
+        mock_agent.run.return_value = (True, "# PRD Content\n## Section 1\n## Section 2", None)
 
         result = runner._generate_prd_markdown("test intent", "test-feature")
 
         emit_calls = mock_hooks.emit.call_args_list
-        success_events = [c for c in emit_calls if c[0][0].event_type == EventType.PRD_MD_SUCCESS]
-        assert len(success_events) == 1
-        assert success_events[0][0][0].prd_md_path == str(result)
+        complete_events = [c for c in emit_calls if c[0][0].event_type == EventType.PRD_MD_COMPLETE]
+        assert len(complete_events) == 1
+        assert complete_events[0][0][0].prd_md_path == str(result)
+        assert complete_events[0][0][0].metadata.get('section_count') == 2
 
     def test_retries_on_agent_failure(self, phase_runner):
         """GIVEN agent fails WHEN generating markdown THEN retries up to 3 times."""
@@ -233,16 +258,18 @@ class TestGeneratePrdMarkdown:
         assert result is None
         assert mock_agent.run.call_count == 3
 
-    def test_emits_prd_md_failure_on_failure(self, phase_runner):
-        """GIVEN all attempts fail WHEN generation completes THEN emits PRD_MD_FAILURE event."""
+    def test_emits_prd_md_failed_on_failure(self, phase_runner):
+        """GIVEN all attempts fail WHEN generation completes THEN emits PRD_MD_FAILED event."""
         runner, mock_agent, mock_hooks = phase_runner
         mock_agent.run.return_value = (False, "", None)
 
         runner._generate_prd_markdown("test intent", "test-feature")
 
         emit_calls = mock_hooks.emit.call_args_list
-        failure_events = [c for c in emit_calls if c[0][0].event_type == EventType.PRD_MD_FAILURE]
-        assert len(failure_events) == 1
+        failed_events = [c for c in emit_calls if c[0][0].event_type == EventType.PRD_MD_FAILED]
+        assert len(failed_events) == 1
+        assert 'error_code' in failed_events[0][0][0].metadata
+        assert 'error_message' in failed_events[0][0][0].metadata
 
 
 VALID_PRD_MARKDOWN = """# PRD: Test Feature
@@ -641,7 +668,7 @@ class TestNewTemplatesExist:
 class TestNewEventTypesExist:
     """Tests that new event types are available."""
 
-    NEW_EVENTS = ["PRD_MD_START", "PRD_MD_SUCCESS", "PRD_MD_FAILURE"]
+    NEW_EVENTS = ["PRD_MD_START", "PRD_MD_CONTEXT_READY", "PRD_MD_COMPLETE", "PRD_MD_FAILED"]
 
     def test_event_types_exist(self):
         """GIVEN EventType enum WHEN checking new events THEN all exist."""
@@ -650,14 +677,22 @@ class TestNewEventTypesExist:
 
     def test_event_has_prd_md_path_field(self):
         """GIVEN Event class WHEN creating event THEN prd_md_path field available."""
-        event = Event(EventType.PRD_MD_SUCCESS, prd_md_path="/path/to/prd-test.md")
+        event = Event(EventType.PRD_MD_COMPLETE, prd_md_path="/path/to/prd-test.md")
         assert event.prd_md_path == "/path/to/prd-test.md"
 
     def test_event_serializes_prd_md_path(self):
         """GIVEN Event with prd_md_path WHEN serializing THEN includes prd_md_path."""
-        event = Event(EventType.PRD_MD_SUCCESS, prd_md_path="/path/to/prd.md")
+        event = Event(EventType.PRD_MD_COMPLETE, prd_md_path="/path/to/prd.md")
         result = event.to_dict()
         assert result["prd_md_path"] == "/path/to/prd.md"
+
+    def test_prd_md_context_ready_has_exploration_context_path(self):
+        """GIVEN PRD_MD_CONTEXT_READY event WHEN created THEN exploration_context_path available."""
+        event = Event(
+            EventType.PRD_MD_CONTEXT_READY,
+            exploration_context_path="/path/to/exploration_context.json"
+        )
+        assert event.exploration_context_path == "/path/to/exploration_context.json"
 
 
 class TestExplorationContextIntegration:

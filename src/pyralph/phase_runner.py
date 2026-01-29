@@ -417,19 +417,61 @@ class PhaseRunner:
             Path to the created markdown file, or None if generation failed
         """
         self._logger.info("\n📝 Planner: Generating PRD markdown...", "CYAN")
-        self._hooks.emit(self._event(self._event_type.PRD_MD_START, phase="planner"))
+        self._hooks.emit(self._event(
+            self._event_type.PRD_MD_START,
+            phase="planner",
+            metadata={'intent_summary': user_intent[:200]}
+        ))
 
         # Load or create exploration context
         file_tree, incomplete_paths, truncated, files_examined = self._load_or_create_exploration_context(user_intent)
+
+        # Emit PRD_MD_CONTEXT_READY event and allow hooks to modify context
+        context_ready_event = self._hooks.emit(self._event(
+            self._event_type.PRD_MD_CONTEXT_READY,
+            phase="planner",
+            exploration_context_path=str(self._config.EXPLORATION_CONTEXT_FILE)
+        ))
+
+        # If a hook modified the event, reload the exploration context
+        if context_ready_event.exploration_context_path != str(self._config.EXPLORATION_CONTEXT_FILE):
+            # Hook provided an alternative context path
+            try:
+                alt_context_path = Path(context_ready_event.exploration_context_path)
+                if alt_context_path.exists():
+                    import json as json_module
+                    alt_context = json_module.loads(alt_context_path.read_text(encoding='utf-8'))
+                    file_tree = alt_context.get('file_tree', file_tree)
+                    incomplete_paths = alt_context.get('incomplete_paths', incomplete_paths)
+                    truncated = alt_context.get('truncated', truncated)
+                    files_examined = alt_context.get('files_examined', files_examined)
+            except Exception as e:
+                self._logger.info(
+                    f"⚠️ Could not load modified context: {e}", "YELLOW"
+                )
+        elif context_ready_event.metadata and context_ready_event.metadata != {}:
+            # Hook may have modified the context file in place, reload it
+            try:
+                reloaded_context = self._exploration_context.load()
+                file_tree = reloaded_context.get('file_tree', file_tree)
+                incomplete_paths = reloaded_context.get('incomplete_paths', incomplete_paths)
+                truncated = reloaded_context.get('truncated', truncated)
+                files_examined = reloaded_context.get('files_examined', files_examined)
+            except Exception:
+                pass  # Keep original context if reload fails
 
         # Check for empty exploration results - this is a critical error
         if not file_tree or not file_tree.strip():
             error = create_empty_exploration_error()
             self._logger.info(f"❌ {error.format_message()}", "RED")
             self._hooks.emit(self._event(
-                self._event_type.PRD_MD_FAILURE,
+                self._event_type.PRD_MD_FAILED,
                 phase="planner",
-                metadata={'error_code': error.code.value}
+                error=error,
+                metadata={
+                    'error_code': error.code.value,
+                    'error_message': error.format_message()
+                }
             ))
             return None
 
@@ -492,10 +534,13 @@ class PhaseRunner:
                 self._logger.info(
                     f"✅ PRD markdown created: {prd_md_path.name}", "GREEN"
                 )
+                # Count sections (level 2 headers) in the markdown
+                section_count = len(re.findall(r'^## ', raw, re.MULTILINE))
                 self._hooks.emit(self._event(
-                    self._event_type.PRD_MD_SUCCESS,
+                    self._event_type.PRD_MD_COMPLETE,
                     phase="planner",
-                    prd_md_path=str(prd_md_path)
+                    prd_md_path=str(prd_md_path),
+                    metadata={'section_count': section_count}
                 ))
                 return prd_md_path
             except IOError as e:
@@ -507,9 +552,13 @@ class PhaseRunner:
         error = create_markdown_generation_error(max_attempts, max_attempts)
         self._logger.info(f"❌ {error.format_message()}", "RED")
         self._hooks.emit(self._event(
-            self._event_type.PRD_MD_FAILURE,
+            self._event_type.PRD_MD_FAILED,
             phase="planner",
-            metadata={'error_code': error.code.value}
+            error=error,
+            metadata={
+                'error_code': error.code.value,
+                'error_message': error.format_message()
+            }
         ))
         return None
 

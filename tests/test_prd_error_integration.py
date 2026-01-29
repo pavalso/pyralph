@@ -153,13 +153,13 @@ class TestEmptyExplorationError:
         assert any("exploration found no analyzable content" in call for call in log_calls)
 
     def test_empty_exploration_emits_failure_event(self, phase_runner):
-        """GIVEN exploration returns empty WHEN generation attempted THEN emits PRD_MD_FAILURE."""
+        """GIVEN exploration returns empty WHEN generation attempted THEN emits PRD_MD_FAILED."""
         runner, mock_agent, mock_hooks, mock_logger = phase_runner
 
         runner._generate_prd_markdown("test intent", "test-feature")
 
         emit_calls = mock_hooks.emit.call_args_list
-        failure_events = [c for c in emit_calls if c[0][0].event_type == EventType.PRD_MD_FAILURE]
+        failure_events = [c for c in emit_calls if c[0][0].event_type == EventType.PRD_MD_FAILED]
         assert len(failure_events) >= 1
 
 
