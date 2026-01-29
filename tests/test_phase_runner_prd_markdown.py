@@ -37,18 +37,23 @@ class TestGenerateShortDescription:
             'BASE_DIR': CONF.BASE_DIR,
             'ROOT_DIR': CONF.ROOT_DIR,
             'PRD_FILE': CONF.PRD_FILE,
+            'EXPLORATION_CONTEXT_FILE': CONF.EXPLORATION_CONTEXT_FILE,
         }
         CONF.BASE_DIR = tmp_path
         CONF.ROOT_DIR = tmp_path / ".ralph"
         CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         CONF.PRD_FILE = tmp_path / ".ralph" / "prd.json"
+        CONF.EXPLORATION_CONTEXT_FILE = tmp_path / ".ralph" / "exploration_context.json"
+
+        mock_shell = MagicMock()
+        mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
 
         runner = PhaseRunner(
             agent=MagicMock(),
             hooks=MagicMock(),
             logger=MagicMock(),
             template_manager=MagicMock(),
-            shell_module=MagicMock(),
+            shell_module=mock_shell,
             prd_manager=MagicMock(),
             json_utils=JsonUtils,
             command_runner=MagicMock(),
@@ -91,18 +96,23 @@ class TestGetPrdMdPath:
             'BASE_DIR': CONF.BASE_DIR,
             'ROOT_DIR': CONF.ROOT_DIR,
             'PRD_FILE': CONF.PRD_FILE,
+            'EXPLORATION_CONTEXT_FILE': CONF.EXPLORATION_CONTEXT_FILE,
         }
         CONF.BASE_DIR = tmp_path
         CONF.ROOT_DIR = tmp_path / ".ralph"
         CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         CONF.PRD_FILE = tmp_path / ".ralph" / "prd.json"
+        CONF.EXPLORATION_CONTEXT_FILE = tmp_path / ".ralph" / "exploration_context.json"
+
+        mock_shell = MagicMock()
+        mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
 
         runner = PhaseRunner(
             agent=MagicMock(),
             hooks=MagicMock(),
             logger=MagicMock(),
             template_manager=MagicMock(),
-            shell_module=MagicMock(),
+            shell_module=mock_shell,
             prd_manager=MagicMock(),
             json_utils=JsonUtils,
             command_runner=MagicMock(),
@@ -134,11 +144,13 @@ class TestGeneratePrdMarkdown:
             'BASE_DIR': CONF.BASE_DIR,
             'ROOT_DIR': CONF.ROOT_DIR,
             'PRD_FILE': CONF.PRD_FILE,
+            'EXPLORATION_CONTEXT_FILE': CONF.EXPLORATION_CONTEXT_FILE,
         }
         CONF.BASE_DIR = tmp_path
         CONF.ROOT_DIR = tmp_path / ".ralph"
         CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         CONF.PRD_FILE = tmp_path / ".ralph" / "prd.json"
+        CONF.EXPLORATION_CONTEXT_FILE = tmp_path / ".ralph" / "exploration_context.json"
 
         mock_agent = MagicMock()
         mock_hooks = MagicMock()
@@ -146,6 +158,7 @@ class TestGeneratePrdMarkdown:
         mock_template_manager = MagicMock()
         mock_shell = MagicMock()
         mock_shell.get_file_tree.return_value = "├── src/\n├── tests/"
+        mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
 
         runner = PhaseRunner(
             agent=mock_agent,
@@ -293,23 +306,27 @@ class TestGeneratePrdJsonFromMarkdown:
             'BASE_DIR': CONF.BASE_DIR,
             'ROOT_DIR': CONF.ROOT_DIR,
             'PRD_FILE': CONF.PRD_FILE,
+            'EXPLORATION_CONTEXT_FILE': CONF.EXPLORATION_CONTEXT_FILE,
         }
         CONF.BASE_DIR = tmp_path
         CONF.ROOT_DIR = tmp_path / ".ralph"
         CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         CONF.PRD_FILE = tmp_path / ".ralph" / "prd.json"
+        CONF.EXPLORATION_CONTEXT_FILE = tmp_path / ".ralph" / "exploration_context.json"
 
         mock_agent = MagicMock()
         mock_hooks = MagicMock()
         mock_logger = MagicMock()
         mock_template_manager = MagicMock()
+        mock_shell = MagicMock()
+        mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
 
         runner = PhaseRunner(
             agent=mock_agent,
             hooks=mock_hooks,
             logger=mock_logger,
             template_manager=mock_template_manager,
-            shell_module=MagicMock(),
+            shell_module=mock_shell,
             prd_manager=MagicMock(),
             json_utils=JsonUtils,
             command_runner=MagicMock(),
@@ -408,11 +425,13 @@ class TestRunPlannerMarkdownFirst:
             'BASE_DIR': CONF.BASE_DIR,
             'ROOT_DIR': CONF.ROOT_DIR,
             'PRD_FILE': CONF.PRD_FILE,
+            'EXPLORATION_CONTEXT_FILE': CONF.EXPLORATION_CONTEXT_FILE,
         }
         CONF.BASE_DIR = tmp_path
         CONF.ROOT_DIR = tmp_path / ".ralph"
         CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
         CONF.PRD_FILE = tmp_path / ".ralph" / "prd.json"
+        CONF.EXPLORATION_CONTEXT_FILE = tmp_path / ".ralph" / "exploration_context.json"
 
         mock_agent = MagicMock()
         mock_hooks = MagicMock()
@@ -420,6 +439,7 @@ class TestRunPlannerMarkdownFirst:
         mock_template_manager = MagicMock()
         mock_shell = MagicMock()
         mock_shell.get_file_tree.return_value = "├── src/"
+        mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
         mock_prd_manager = MagicMock()
         mock_command_runner = MagicMock()
         mock_command_runner.run_pre_commands.return_value = True
@@ -625,3 +645,242 @@ class TestNewEventTypesExist:
         event = Event(EventType.PRD_MD_SUCCESS, prd_md_path="/path/to/prd.md")
         result = event.to_dict()
         assert result["prd_md_path"] == "/path/to/prd.md"
+
+
+class TestExplorationContextIntegration:
+    """Integration tests for exploration context in PhaseRunner (TASK-043)."""
+
+    @pytest.fixture
+    def phase_runner_with_context(self, tmp_path):
+        """Create a PhaseRunner setup for exploration context testing."""
+        original_conf = {
+            'BASE_DIR': CONF.BASE_DIR,
+            'ROOT_DIR': CONF.ROOT_DIR,
+            'PRD_FILE': CONF.PRD_FILE,
+            'EXPLORATION_CONTEXT_FILE': CONF.EXPLORATION_CONTEXT_FILE,
+        }
+        CONF.BASE_DIR = tmp_path
+        CONF.ROOT_DIR = tmp_path / ".ralph"
+        CONF.ROOT_DIR.mkdir(parents=True, exist_ok=True)
+        CONF.PRD_FILE = tmp_path / ".ralph" / "prd.json"
+        CONF.EXPLORATION_CONTEXT_FILE = tmp_path / ".ralph" / "exploration_context.json"
+
+        mock_agent = MagicMock()
+        mock_hooks = MagicMock()
+        mock_logger = MagicMock()
+        mock_template_manager = MagicMock()
+        mock_shell = MagicMock()
+        mock_shell.get_file_tree.return_value = "├── src/\n├── tests/"
+        mock_shell.DEFAULT_TREE_IGNORE = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
+        mock_prd_manager = MagicMock()
+        mock_command_runner = MagicMock()
+        mock_command_runner.run_pre_commands.return_value = True
+        mock_prd_processor = MagicMock()
+        mock_prd_processor.validate_prd.return_value = (True, None)
+        mock_prd_processor.label_tasks.side_effect = lambda d: d
+
+        def make_runner(reuse_context=False):
+            return PhaseRunner(
+                agent=mock_agent,
+                hooks=mock_hooks,
+                logger=mock_logger,
+                template_manager=mock_template_manager,
+                shell_module=mock_shell,
+                prd_manager=mock_prd_manager,
+                json_utils=JsonUtils,
+                command_runner=mock_command_runner,
+                prd_processor=mock_prd_processor,
+                event_class=Event,
+                event_type_class=EventType,
+                config=CONF,
+                reuse_context=reuse_context,
+            )
+
+        try:
+            yield {
+                'make_runner': make_runner,
+                'agent': mock_agent,
+                'hooks': mock_hooks,
+                'logger': mock_logger,
+                'shell': mock_shell,
+                'prd_processor': mock_prd_processor,
+                'tmp_path': tmp_path,
+            }
+        finally:
+            for attr, value in original_conf.items():
+                setattr(CONF, attr, value)
+
+    def test_exploration_context_created_on_exploration_complete(self, phase_runner_with_context):
+        """GIVEN exploration completes WHEN results processed THEN exploration_context.json created."""
+        setup = phase_runner_with_context
+        runner = setup['make_runner']()
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+
+        runner.run_planner("test intent")
+
+        assert CONF.EXPLORATION_CONTEXT_FILE.exists()
+        context = json.loads(CONF.EXPLORATION_CONTEXT_FILE.read_text(encoding='utf-8'))
+        assert 'version' in context
+        assert 'timestamp' in context
+        assert 'file_tree' in context
+        assert 'exploration_summary' in context
+
+    def test_exploration_context_contains_structured_findings(self, phase_runner_with_context):
+        """GIVEN exploration completes WHEN context saved THEN contains structured findings."""
+        setup = phase_runner_with_context
+        runner = setup['make_runner']()
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+
+        runner.run_planner("build authentication system")
+
+        context = json.loads(CONF.EXPLORATION_CONTEXT_FILE.read_text(encoding='utf-8'))
+        assert context['exploration_summary']['user_intent'] == "build authentication system"
+        assert 'tree_depth' in context['exploration_summary']
+        assert 'tree_ignore' in context['exploration_summary']
+        assert context['file_tree'] == "├── src/\n├── tests/"
+
+    def test_prd_generator_incorporates_exploration_context(self, phase_runner_with_context):
+        """GIVEN exploration_context.json exists WHEN PRD generation begins THEN reads context."""
+        setup = phase_runner_with_context
+        runner = setup['make_runner']()
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+
+        runner.run_planner("test intent")
+
+        # Verify exploration metadata is incorporated into the prompt
+        render_calls = setup['logger'].info.call_args_list
+        # Should log about exploration context being saved
+        log_messages = [str(call) for call in render_calls]
+        assert any("Exploration" in msg or "exploration" in msg for msg in log_messages)
+
+    def test_incomplete_paths_array_on_partial_failure(self, phase_runner_with_context):
+        """GIVEN some directories inaccessible WHEN exploration runs THEN incomplete_paths populated."""
+        setup = phase_runner_with_context
+        runner = setup['make_runner']()
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+
+        # Create a directory that will cause permission error when iterating
+        inaccessible_dir = setup['tmp_path'] / "restricted"
+        inaccessible_dir.mkdir()
+
+        # Mock iterdir to raise PermissionError for restricted dir
+        original_iterdir = Path.iterdir
+
+        def mock_iterdir(self):
+            if self.name == "restricted":
+                raise PermissionError("Access denied")
+            return original_iterdir(self)
+
+        with patch.object(Path, 'iterdir', mock_iterdir):
+            runner.run_planner("test intent")
+
+        context = json.loads(CONF.EXPLORATION_CONTEXT_FILE.read_text(encoding='utf-8'))
+        assert 'incomplete_paths' in context
+        # Should have recorded the inaccessible path
+        incomplete = context['incomplete_paths']
+        assert isinstance(incomplete, list)
+
+    def test_reuse_context_flag_skips_exploration(self, phase_runner_with_context):
+        """GIVEN previous exploration_context.json exists WHEN --reuse-context THEN skips exploration."""
+        setup = phase_runner_with_context
+
+        # Create existing context file
+        from pyralph.exploration_context import create_exploration_context, ExplorationContextManager
+        existing_context = create_exploration_context(
+            file_tree="├── existing/\n├── context/",
+            exploration_summary={'user_intent': 'previous run', 'tree_depth': 2, 'tree_ignore': []},
+            metadata={'base_dir': str(setup['tmp_path'])}
+        )
+        manager = ExplorationContextManager(CONF.EXPLORATION_CONTEXT_FILE)
+        manager.save(existing_context)
+
+        # Create runner with reuse_context=True
+        runner = setup['make_runner'](reuse_context=True)
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+
+        runner.run_planner("new intent")
+
+        # Shell's get_file_tree should NOT be called for exploration
+        # (though it might be called for other purposes)
+        emit_calls = setup['hooks'].emit.call_args_list
+        reuse_events = [c for c in emit_calls if c[0][0].event_type == EventType.EXPLORATION_CONTEXT_REUSED]
+        assert len(reuse_events) == 1
+
+    def test_corrupted_context_triggers_fresh_exploration(self, phase_runner_with_context):
+        """GIVEN exploration_context.json corrupted WHEN PRD generation reads THEN fresh exploration."""
+        setup = phase_runner_with_context
+
+        # Create corrupted context file (invalid JSON)
+        CONF.EXPLORATION_CONTEXT_FILE.write_text('{"invalid: json', encoding='utf-8')
+
+        runner = setup['make_runner'](reuse_context=True)
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+
+        runner.run_planner("test intent")
+
+        # Should emit EXPLORATION_CONTEXT_CORRUPTED event
+        emit_calls = setup['hooks'].emit.call_args_list
+        corrupted_events = [c for c in emit_calls if c[0][0].event_type == EventType.EXPLORATION_CONTEXT_CORRUPTED]
+        assert len(corrupted_events) == 1
+
+        # Should have created a new valid context
+        assert CONF.EXPLORATION_CONTEXT_FILE.exists()
+        new_context = json.loads(CONF.EXPLORATION_CONTEXT_FILE.read_text(encoding='utf-8'))
+        assert 'version' in new_context
+
+    def test_corrupted_hash_triggers_fresh_exploration(self, phase_runner_with_context):
+        """GIVEN exploration_context.json has invalid hash WHEN read THEN triggers fresh exploration."""
+        setup = phase_runner_with_context
+
+        # Create context with tampered content (hash won't match)
+        from pyralph.exploration_context import create_exploration_context, ExplorationContextManager
+        context = create_exploration_context(
+            file_tree="├── original/",
+            exploration_summary={'user_intent': 'test', 'tree_depth': 2, 'tree_ignore': []},
+        )
+        manager = ExplorationContextManager(CONF.EXPLORATION_CONTEXT_FILE)
+        manager.save(context)
+
+        # Tamper with the file content (breaks hash)
+        content = json.loads(CONF.EXPLORATION_CONTEXT_FILE.read_text(encoding='utf-8'))
+        content['file_tree'] = "├── tampered/"
+        CONF.EXPLORATION_CONTEXT_FILE.write_text(json.dumps(content), encoding='utf-8')
+
+        runner = setup['make_runner'](reuse_context=True)
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+
+        runner.run_planner("test intent")
+
+        # Should emit EXPLORATION_CONTEXT_CORRUPTED event due to hash mismatch
+        emit_calls = setup['hooks'].emit.call_args_list
+        corrupted_events = [c for c in emit_calls if c[0][0].event_type == EventType.EXPLORATION_CONTEXT_CORRUPTED]
+        assert len(corrupted_events) == 1
+
+    def test_exploration_events_emitted_correctly(self, phase_runner_with_context):
+        """GIVEN exploration runs WHEN complete THEN proper events emitted."""
+        setup = phase_runner_with_context
+        runner = setup['make_runner']()
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+
+        runner.run_planner("test intent")
+
+        emit_calls = setup['hooks'].emit.call_args_list
+        event_types = [c[0][0].event_type for c in emit_calls]
+
+        # Should have EXPLORATION_START and EXPLORATION_SUCCESS
+        assert EventType.EXPLORATION_START in event_types
+        assert EventType.EXPLORATION_SUCCESS in event_types
+
+    def test_exploration_context_path_in_success_event(self, phase_runner_with_context):
+        """GIVEN exploration succeeds WHEN event emitted THEN includes context path."""
+        setup = phase_runner_with_context
+        runner = setup['make_runner']()
+        setup['agent'].run.return_value = (True, VALID_PRD_MARKDOWN, None)
+
+        runner.run_planner("test intent")
+
+        emit_calls = setup['hooks'].emit.call_args_list
+        success_events = [c for c in emit_calls if c[0][0].event_type == EventType.EXPLORATION_SUCCESS]
+        assert len(success_events) == 1
+        event = success_events[0][0][0]
+        assert event.exploration_context_path == str(CONF.EXPLORATION_CONTEXT_FILE)

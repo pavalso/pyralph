@@ -97,7 +97,8 @@ class RalphOrchestrator:
                  pre: Optional[List[str]] = None, post: Optional[List[str]] = None,
                  plugin: Optional[List[str]] = None,
                  schema: Optional[str] = None, min_criteria: Optional[int] = None,
-                 label: Optional[List[str]] = None, revise_prd: bool = False) -> None:
+                 label: Optional[List[str]] = None, revise_prd: bool = False,
+                 reuse_context: bool = False) -> None:
         """Initialize the orchestrator with all configuration options."""
         # Initialize agent
         agent_timeout = timeout if timeout is not None else CONF.TIMEOUT_SECONDS
@@ -156,6 +157,7 @@ class RalphOrchestrator:
         self._min_criteria = min_criteria
         self._labels = label or []
         self._revise_prd = revise_prd
+        self._reuse_context = reuse_context
 
         # Initialize PRD manager
         self._prd = PRDManager(CONF.PRD_FILE)
@@ -213,6 +215,7 @@ class RalphOrchestrator:
             tree_depth=self._tree_depth,
             tree_ignore=self._tree_ignore,
             revise_prd=self._revise_prd,
+            reuse_context=self._reuse_context,
         )
 
         self._task_executor = TaskExecutor(

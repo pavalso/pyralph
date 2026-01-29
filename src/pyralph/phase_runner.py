@@ -5,11 +5,14 @@ This module contains the PhaseRunner class which handles the execution
 of architect and planner phases.
 """
 
+import json
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+from .exploration_context import ExplorationContextManager, create_exploration_context
 
 if TYPE_CHECKING:
     from .hooks import HookManager
@@ -44,6 +47,7 @@ class PhaseRunner:
         tree_depth: int = 2,
         tree_ignore=None,
         revise_prd: bool = False,
+        reuse_context: bool = False,
     ):
         """Initialize the phase runner.
 
@@ -63,6 +67,7 @@ class PhaseRunner:
             tree_depth: Depth for file tree generation
             tree_ignore: Patterns to ignore in file tree
             revise_prd: Whether to revise PRD after generation
+            reuse_context: Whether to reuse existing exploration context
         """
         self._agent = agent
         self._hooks = hooks
@@ -79,6 +84,10 @@ class PhaseRunner:
         self._tree_depth = tree_depth
         self._tree_ignore = tree_ignore
         self._revise_prd = revise_prd
+        self._reuse_context = reuse_context
+        self._exploration_context = ExplorationContextManager(
+            config.EXPLORATION_CONTEXT_FILE
+        )
 
     def _build_context(self) -> str:
         """Build context information for prompts.
@@ -87,6 +96,176 @@ class PhaseRunner:
             String containing file tree and other context information.
         """
         return self._shell.get_file_tree(depth=self._tree_depth, ignore=self._tree_ignore)
+
+    def _explore_codebase(self) -> Tuple[str, List[str]]:
+        """Explore the codebase and return file tree with any incomplete paths.
+
+        Returns:
+            Tuple of (file_tree_string, incomplete_paths_list)
+        """
+        incomplete_paths: List[str] = []
+        file_tree = ""
+
+        self._hooks.emit(self._event(
+            self._event_type.EXPLORATION_START,
+            phase="planner"
+        ))
+
+        try:
+            file_tree = self._shell.get_file_tree(
+                depth=self._tree_depth,
+                ignore=self._tree_ignore
+            )
+
+            # Check for any inaccessible directories in BASE_DIR
+            tree_ignore = self._tree_ignore
+            if tree_ignore is None:
+                try:
+                    tree_ignore = self._shell.DEFAULT_TREE_IGNORE
+                    if not isinstance(tree_ignore, list):
+                        tree_ignore = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
+                except (AttributeError, TypeError):
+                    tree_ignore = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
+            ignore_set = set(tree_ignore)
+            try:
+                for path in self._config.BASE_DIR.iterdir():
+                    if path.name in ignore_set:
+                        continue
+                    if path.is_dir():
+                        try:
+                            # Try to list directory contents to verify access
+                            list(path.iterdir())
+                        except PermissionError:
+                            incomplete_paths.append(str(path))
+                        except OSError as e:
+                            incomplete_paths.append(f"{path} ({e})")
+            except PermissionError:
+                incomplete_paths.append(str(self._config.BASE_DIR))
+
+            self._hooks.emit(self._event(
+                self._event_type.EXPLORATION_SUCCESS,
+                phase="planner",
+                exploration_context_path=str(self._config.EXPLORATION_CONTEXT_FILE),
+                metadata={'incomplete_paths_count': len(incomplete_paths)}
+            ))
+
+        except Exception as e:
+            self._logger.info(f"⚠️ Exploration encountered error: {e}", "YELLOW")
+            incomplete_paths.append(f"root: {e}")
+            self._hooks.emit(self._event(
+                self._event_type.EXPLORATION_FAILURE,
+                phase="planner",
+                error=str(e)
+            ))
+
+        return file_tree, incomplete_paths
+
+    def _save_exploration_context(
+        self,
+        file_tree: str,
+        incomplete_paths: List[str],
+        user_intent: str
+    ) -> None:
+        """Save exploration results to exploration_context.json.
+
+        Args:
+            file_tree: The generated file tree string
+            incomplete_paths: List of paths that could not be explored
+            user_intent: The user's intent for context
+        """
+        # Get tree_ignore from instance or shell module defaults
+        tree_ignore = self._tree_ignore
+        if tree_ignore is None:
+            try:
+                tree_ignore = self._shell.DEFAULT_TREE_IGNORE
+                # Ensure it's a list, not a MagicMock or other type
+                if not isinstance(tree_ignore, list):
+                    tree_ignore = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
+            except (AttributeError, TypeError):
+                tree_ignore = ['node_modules', 'venv', '.git', '.ralph', '__pycache__']
+
+        exploration_summary = {
+            'user_intent': user_intent,
+            'tree_depth': self._tree_depth,
+            'tree_ignore': tree_ignore,
+        }
+
+        context_data = create_exploration_context(
+            file_tree=file_tree,
+            exploration_summary=exploration_summary,
+            incomplete_paths=incomplete_paths,
+            metadata={
+                'base_dir': str(self._config.BASE_DIR),
+            }
+        )
+
+        self._exploration_context.save(context_data)
+        self._logger.info(
+            f"✅ Exploration context saved: {self._config.EXPLORATION_CONTEXT_FILE.name}",
+            "GREEN"
+        )
+
+    def _load_or_create_exploration_context(
+        self, user_intent: str
+    ) -> Tuple[str, List[str]]:
+        """Load existing exploration context or create new one.
+
+        Handles the --reuse-context flag and corruption detection.
+
+        Args:
+            user_intent: The user's intent for context
+
+        Returns:
+            Tuple of (file_tree_string, incomplete_paths_list)
+        """
+        # Check if we should reuse existing context
+        if self._reuse_context and self._exploration_context.exists():
+            try:
+                self._logger.info(
+                    "📂 Reusing existing exploration context...", "CYAN"
+                )
+                context = self._exploration_context.load()
+                self._hooks.emit(self._event(
+                    self._event_type.EXPLORATION_CONTEXT_REUSED,
+                    phase="planner",
+                    exploration_context_path=str(self._config.EXPLORATION_CONTEXT_FILE)
+                ))
+                return context.get('file_tree', ''), context.get('incomplete_paths', [])
+            except (json.JSONDecodeError, ValueError) as e:
+                self._logger.info(
+                    f"⚠️ Exploration context corrupted: {e}", "YELLOW"
+                )
+                self._logger.info(
+                    "🔄 Triggering fresh exploration...", "CYAN"
+                )
+                self._hooks.emit(self._event(
+                    self._event_type.EXPLORATION_CONTEXT_CORRUPTED,
+                    phase="planner",
+                    error=str(e),
+                    exploration_context_path=str(self._config.EXPLORATION_CONTEXT_FILE)
+                ))
+
+        # Perform fresh exploration
+        self._logger.info("🔍 Exploring codebase...", "CYAN")
+        file_tree, incomplete_paths = self._explore_codebase()
+
+        # Save exploration context
+        self._save_exploration_context(file_tree, incomplete_paths, user_intent)
+
+        return file_tree, incomplete_paths
+
+    def get_exploration_context(self) -> Optional[Dict[str, Any]]:
+        """Get the current exploration context if it exists and is valid.
+
+        Returns:
+            Exploration context dictionary or None if not available/invalid
+        """
+        if not self._exploration_context.is_valid():
+            return None
+        try:
+            return self._exploration_context.load()
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     def _generate_short_description(self, user_intent: str) -> str:
         """Generate a kebab-case short description from user intent.
@@ -162,6 +341,9 @@ class PhaseRunner:
     ) -> Optional[Path]:
         """Generate the PRD markdown file by exploring the codebase.
 
+        Uses exploration_context.json if available and valid, or creates
+        new exploration context during generation.
+
         Args:
             user_intent: Description of what the user wants to build
             short_description: Kebab-case identifier for the PRD
@@ -172,8 +354,30 @@ class PhaseRunner:
         self._logger.info("\n📝 Planner: Generating PRD markdown...", "CYAN")
         self._hooks.emit(self._event(self._event_type.PRD_MD_START, phase="planner"))
 
-        file_tree = self._build_context()
+        # Load or create exploration context
+        file_tree, incomplete_paths = self._load_or_create_exploration_context(user_intent)
+
+        # Log if there were incomplete paths
+        if incomplete_paths:
+            self._logger.info(
+                f"⚠️ Exploration incomplete: {len(incomplete_paths)} path(s) inaccessible",
+                "YELLOW"
+            )
+
         timestamp = datetime.now().isoformat()
+
+        # Build context string including exploration context info
+        exploration_context = self.get_exploration_context()
+        exploration_metadata = ""
+        if exploration_context:
+            exploration_metadata = (
+                f"\n<!-- Exploration Context: {self._config.EXPLORATION_CONTEXT_FILE.name} -->\n"
+                f"<!-- Timestamp: {exploration_context.get('timestamp', 'unknown')} -->\n"
+            )
+            if incomplete_paths:
+                exploration_metadata += (
+                    f"<!-- Incomplete Paths: {len(incomplete_paths)} -->\n"
+                )
 
         prompt = self._template_manager.render(
             "prd_markdown.txt",
@@ -181,7 +385,8 @@ class PhaseRunner:
             file_tree=file_tree,
             short_description=short_description,
             timestamp=timestamp,
-            title=user_intent[:100]
+            title=user_intent[:100],
+            exploration_metadata=exploration_metadata
         )
 
         for attempt in range(3):

@@ -79,6 +79,7 @@ def temp_config(tmp_path):
     CONF.ROOT_DIR = tmp_path / ".ralph"
     CONF.ARCHIVE_DIR = tmp_path / ".ralph" / "archive"
     CONF.PRD_FILE = tmp_path / ".ralph" / "prd.json"
+    CONF.EXPLORATION_CONTEXT_FILE = tmp_path / ".ralph" / "exploration_context.json"
 
     class TempConfigEnv:
         """Environment for config-dependent tests."""
@@ -176,7 +177,8 @@ def mock_orchestrator(tmp_path, mock_agent):
     optional keyword arguments.
     """
     config_attrs = ('BASE_DIR', 'ROOT_DIR', 'ARCHIVE_DIR', 'PRD_FILE',
-                    'TEMPLATES_DIR', 'HOOKS_DIR', 'PROGRESS_FILE', 'LOG_FILE')
+                    'TEMPLATES_DIR', 'HOOKS_DIR', 'PROGRESS_FILE', 'LOG_FILE',
+                    'EXPLORATION_CONTEXT_FILE')
     original_conf = {attr: getattr(CONF, attr) for attr in config_attrs}
 
     CONF.BASE_DIR = tmp_path
@@ -185,6 +187,7 @@ def mock_orchestrator(tmp_path, mock_agent):
     CONF.TEMPLATES_DIR = tmp_path / ".ralph" / "templates"
     CONF.HOOKS_DIR = tmp_path / ".ralph" / "hooks"
     CONF.PRD_FILE = tmp_path / ".ralph" / "prd.json"
+    CONF.EXPLORATION_CONTEXT_FILE = tmp_path / ".ralph" / "exploration_context.json"
     CONF.PROGRESS_FILE = tmp_path / ".ralph" / "progress.txt"
     CONF.LOG_FILE = tmp_path / ".ralph" / "ralph_log.txt"
 

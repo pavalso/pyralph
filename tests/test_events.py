@@ -11,12 +11,14 @@ class TestEvent:
         "TASK_START", "TASK_SUCCESS", "TASK_FAILURE", "TASK_RETRY",
         "VERIFICATION_START", "VERIFICATION_SUCCESS", "VERIFICATION_FAILURE",
         "PRD_CREATED", "PRD_ARCHIVED", "ERROR",
+        "EXPLORATION_START", "EXPLORATION_SUCCESS", "EXPLORATION_FAILURE",
+        "EXPLORATION_CONTEXT_LOADED", "EXPLORATION_CONTEXT_REUSED", "EXPLORATION_CONTEXT_CORRUPTED",
     ]
 
     def test_event_types_exist(self):
         for name in self.EVENTS:
             assert hasattr(EventType, name)
-        assert len(EventType) == 42
+        assert len(EventType) == 48
 
     def test_event_creation_serialization(self):
         event = Event(EventType.TASK_SUCCESS, phase="execute", task_id="T-001", metadata={"k": "v"})

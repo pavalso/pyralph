@@ -132,6 +132,8 @@ def main() -> None:
     parser.add_argument("--label", nargs="+", metavar="KEY=VAL", help="Add custom labels to PRD (format: key=value or just key)")
     parser.add_argument("--revise-prd", action="store_true", help="Pass PRD through revision agent for quality improvements before planner phase")
     parser.add_argument("--no-revise-prd", action="store_true", help="Disable PRD revision (overrides --enhance-all)")
+    # Exploration context control
+    parser.add_argument("--reuse-context", action="store_true", help="Reuse existing exploration_context.json instead of running fresh exploration")
     # Enhancement combination flag
     parser.add_argument("--enhance-all", action="store_true", help="Enable all enhancement features (--enhance-intent, --revise-prd). Individual --no-* flags can override specific features.")
     args = parser.parse_args()
@@ -260,5 +262,6 @@ def main() -> None:
         schema=args.schema,
         min_criteria=args.min_criteria,
         label=args.label,
-        revise_prd=revise_prd
+        revise_prd=revise_prd,
+        reuse_context=args.reuse_context
     ).start(phase=args.phase, accept_all=args.accept_all)
