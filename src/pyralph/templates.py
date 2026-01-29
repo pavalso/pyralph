@@ -348,7 +348,7 @@ Output ONLY the enhanced intent within the tags. No explanations outside tags.""
 Product Manager & Technical Analyst
 
 # OBJECTIVE
-Explore the codebase and generate a human-readable PRD specification document (prd-<short-description>.md) that will serve as the authoritative source for subsequent JSON PRD generation.
+Explore the codebase thoroughly and generate a human-readable PRD specification document (prd-<short-description>.md) that will serve as the authoritative source for subsequent JSON PRD generation.
 
 # CONTEXT
 <USER_INTENT>
@@ -359,15 +359,52 @@ Explore the codebase and generate a human-readable PRD specification document (p
 {{file_tree}}
 </FILE_TREE>
 
-# CODEBASE EXPLORATION REQUIREMENTS
+# MANDATORY CODEBASE EXPLORATION
 
-Before writing the PRD, you MUST explore and understand:
+**CRITICAL: You MUST thoroughly explore the codebase BEFORE generating prd-<short-description>.md.**
 
-1. **Project Structure**: Analyze the directory layout, main modules, and their relationships
-2. **Dependencies**: Identify external dependencies and their versions (package.json, pyproject.toml, requirements.txt, etc.)
-3. **Architectural Patterns**: Detect patterns used (MVC, layered, event-driven, repository, etc.)
-4. **Test Framework**: Identify the testing approach and conventions
-5. **Existing Conventions**: Note naming patterns, import organization, and coding style
+Skipping or rushing exploration will result in a PRD that lacks contextual depth and fails validation checks requiring project-specific references.
+
+## Exploration Steps (Execute ALL before writing PRD)
+
+1. **Analyze Project Structure**
+   - Examine the directory layout and identify main modules
+   - Understand how modules relate to each other
+   - Identify entry points and core components
+   - For minimal codebases: Document available structure without failing; adapt scope to content
+
+2. **Identify Dependencies**
+   - Check package manifests (package.json, pyproject.toml, requirements.txt, Cargo.toml, go.mod, etc.)
+   - Note key external libraries and their versions
+   - Identify any internal shared modules or utilities
+   - For minimal codebases: Note if no manifest exists; document any imports found
+
+3. **Detect Architectural Patterns**
+   - Look for patterns: MVC, layered architecture, event-driven, repository, clean architecture, hexagonal, etc.
+   - Identify separation of concerns and module boundaries
+   - Note any dependency injection or inversion of control patterns
+   - For minimal codebases: Document observed patterns or state "No clear pattern established"
+
+4. **Understand Test Framework**
+   - Identify testing tools (pytest, jest, mocha, go test, cargo test, etc.)
+   - Note test file locations and naming conventions
+   - Understand assertion patterns and test organization
+   - For minimal codebases: Note if no tests exist; recommend appropriate framework
+
+5. **Document Conventions**
+   - Naming conventions (snake_case, camelCase, PascalCase)
+   - Import organization (stdlib, third-party, local grouping)
+   - Code style patterns (formatting, documentation style)
+   - Error handling approaches
+   - For minimal codebases: Infer from available code or note "Conventions to be established"
+
+## Exploration Adaptation for Minimal Codebases
+
+When exploring a minimal or new codebase:
+- Adapt exploration scope to available content without failing
+- Document what IS present rather than what is missing
+- Provide recommendations for patterns/conventions to establish
+- Focus on the user intent to guide PRD content appropriately
 
 # OUTPUT SPECIFICATION
 
@@ -386,7 +423,9 @@ The file MUST follow this exact structure:
 ## Executive Summary
 [2-3 sentences describing the overall goal and value proposition]
 
-## Codebase Context
+## Project Context
+This section summarizes key findings from codebase exploration.
+
 ### Project Structure
 [Key directories and their purposes discovered during exploration]
 
