@@ -1,6 +1,5 @@
 import json
 import sys
-import unittest
 import warnings
 
 import pytest
@@ -194,7 +193,7 @@ class TestLoggerJsonOutput:
             json.loads(line)
 
 
-class TestCaptureStdoutEdgeCases(unittest.TestCase):
+class TestCaptureStdoutEdgeCases:
     """Test edge cases for CaptureStdout context manager."""
 
     def test_empty_capture_returns_empty_string(self):

@@ -1,6 +1,5 @@
 """Tests for the Phase Strategy pattern implementation."""
 
-import unittest
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,7 +22,7 @@ PHASE_CONFIGS = [
 ]
 
 
-class TestPhaseContext(unittest.TestCase):
+class TestPhaseContext:
     """Tests for PhaseContext class."""
 
     def test_init_with_all_args(self):
@@ -35,33 +34,33 @@ class TestPhaseContext(unittest.TestCase):
             user_intent="Build a CLI tool",
             custom_key="custom_value"
         )
-        self.assertIs(context.phase_runner, mock_runner)
-        self.assertIs(context.task_executor, mock_executor)
-        self.assertEqual(context.user_intent, "Build a CLI tool")
-        self.assertEqual(context.get("custom_key"), "custom_value")
+        assert context.phase_runner is mock_runner
+        assert context.task_executor is mock_executor
+        assert context.user_intent == "Build a CLI tool"
+        assert context.get("custom_key") == "custom_value"
 
     def test_init_defaults(self):
         context = PhaseContext()
-        self.assertIsNone(context.phase_runner)
-        self.assertIsNone(context.task_executor)
-        self.assertEqual(context.user_intent, "")
+        assert context.phase_runner is None
+        assert context.task_executor is None
+        assert context.user_intent == ""
 
     def test_get_missing_key_returns_default(self):
         context = PhaseContext()
-        self.assertIsNone(context.get("nonexistent"))
-        self.assertEqual(context.get("nonexistent", "fallback"), "fallback")
+        assert context.get("nonexistent") is None
+        assert context.get("nonexistent", "fallback") == "fallback"
 
     def test_set_and_get(self):
         context = PhaseContext()
         context.set("my_key", 42)
-        self.assertEqual(context.get("my_key"), 42)
+        assert context.get("my_key") == 42
 
 
-class TestPhaseABC(unittest.TestCase):
+class TestPhaseABC:
     """Tests for the Phase abstract base class."""
 
     def test_cannot_instantiate_phase_directly(self):
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
             Phase()
 
     def test_phase_requires_name_property(self):
@@ -69,7 +68,7 @@ class TestPhaseABC(unittest.TestCase):
             def execute(self, context):
                 pass
 
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
             IncompletePhase()
 
     def test_phase_requires_execute_method(self):
@@ -78,7 +77,7 @@ class TestPhaseABC(unittest.TestCase):
             def name(self):
                 return "incomplete"
 
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
             IncompletePhase()
 
     def test_valid_subclass_can_be_instantiated(self):
@@ -91,7 +90,7 @@ class TestPhaseABC(unittest.TestCase):
                 pass
 
         phase = CustomPhase()
-        self.assertEqual(phase.name, "custom")
+        assert phase.name == "custom"
 
 
 class TestPhaseImplementations:
@@ -302,7 +301,7 @@ class TestPhaseStrategyRunner:
         assert "Expected Phase instance" in str(exc_info.value)
 
 
-class TestExtensibility(unittest.TestCase):
+class TestExtensibility:
     """Tests demonstrating extensibility of the Phase pattern."""
 
     def test_new_phase_only_requires_subclass(self):
@@ -345,8 +344,4 @@ class TestExtensibility(unittest.TestCase):
         runner.run(phase, context)
 
         result = context.get("analysis_result")
-        self.assertEqual(result, {"files": 10, "lines": 500})
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert result == {"files": 10, "lines": 500}
