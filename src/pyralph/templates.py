@@ -348,7 +348,7 @@ Output ONLY the enhanced intent within the tags. No explanations outside tags.""
 Product Manager & Technical Analyst
 
 # OBJECTIVE
-Explore the codebase thoroughly and generate a human-readable PRD specification document (prd-<short-description>.md) that will serve as the authoritative source for subsequent JSON PRD generation.
+Explore the codebase thoroughly and generate an exhaustive human-readable PRD specification document (prd-<short-description>.md) that will serve as the authoritative source for subsequent JSON PRD generation.
 
 # CONTEXT
 <USER_INTENT>
@@ -410,18 +410,39 @@ When exploring a minimal or new codebase:
 
 Generate a markdown file named: prd-{{short_description}}.md
 
-The file MUST follow this exact structure:
+The file MUST follow this exact structure with ALL sections included:
 
 ```markdown
 # PRD: {{title}}
+
+## Table of Contents
+- [Metadata](#metadata)
+- [Executive Summary](#executive-summary)
+- [Project Context](#project-context)
+- [Problem Statement](#problem-statement)
+- [Proposed Solution](#proposed-solution)
+- [Functional Requirements](#functional-requirements)
+- [Non-Functional Requirements](#non-functional-requirements)
+- [User Stories](#user-stories)
+- [Technical Constraints](#technical-constraints)
+- [Assumptions](#assumptions)
+- [Risks](#risks)
+- [Out of Scope](#out-of-scope)
+- [Open Questions](#open-questions)
+
+---
 
 ## Metadata
 - **PRD ID**: PRD-XXX
 - **Created**: {{timestamp}}
 - **Short Description**: {{short_description}}
 
+---
+
 ## Executive Summary
-[2-3 sentences describing the overall goal and value proposition]
+[2-3 sentences describing the overall goal and value proposition. This should capture the essence of what is being built and why it matters.]
+
+---
 
 ## Project Context
 This section summarizes key findings from codebase exploration.
@@ -441,12 +462,73 @@ This section summarizes key findings from codebase exploration.
 ### Conventions
 [Naming, style, and organizational conventions to follow]
 
+---
+
+## Problem Statement
+[Clear description of the problem or need being addressed. Include:
+- What is the current state or pain point?
+- Who is affected by this problem?
+- What is the impact of not solving this problem?
+- How does this problem relate to the user intent?]
+
+---
+
+## Proposed Solution
+[High-level description of the proposed solution. Include:
+- Overview of the approach
+- Key components or changes involved
+- How this solution addresses the problem statement
+- Why this approach was chosen over alternatives (if applicable)]
+
+---
+
+## Functional Requirements
+[List of specific functional capabilities the solution must provide. Each requirement should be:
+- Uniquely numbered (FR-001, FR-002, etc.)
+- Traceable to the original intent
+- Testable and measurable]
+
+| ID | Requirement | Priority | Traces To |
+|----|-------------|----------|-----------|
+| FR-001 | [Requirement description] | [Must/Should/Could/Won't] | [Intent reference] |
+| FR-002 | [Requirement description] | [Must/Should/Could/Won't] | [Intent reference] |
+
+---
+
+## Non-Functional Requirements
+[List of quality attributes and constraints. Include relevant categories:]
+
+### Performance
+- [Response time requirements]
+- [Throughput requirements]
+
+### Security
+- [Authentication/authorization requirements]
+- [Data protection requirements]
+
+### Reliability
+- [Availability requirements]
+- [Error handling requirements]
+
+### Maintainability
+- [Code quality requirements]
+- [Documentation requirements]
+
+### Scalability
+- [Growth considerations]
+
+(Include only categories relevant to this PRD)
+
+---
+
 ## User Stories
 
 ### TASK-001: [Story Title]
 **Priority**: [Must Have|Should Have|Could Have|Won't Have]
 
 **Description**: As a [role], I want [capability] so that [benefit].
+
+**Rationale**: [Why this story is important. Explain the business value, user need, or technical necessity that justifies this work.]
 
 **Acceptance Criteria**:
 - GIVEN [precondition] WHEN [action] THEN [expected result]
@@ -461,22 +543,76 @@ This section summarizes key findings from codebase exploration.
 
 **Dependencies**: [TASK-XXX, TASK-YYY] or None
 
-[Repeat for each user story]
+[Repeat for each user story with sequential TASK IDs]
 
-## Technical Considerations
-[Any technical notes, risks, or implementation hints discovered during exploration]
+---
+
+## Technical Constraints
+[Hard limitations that must be respected during implementation. Include:
+- Technology stack constraints
+- Integration requirements
+- Backward compatibility requirements
+- Resource limitations
+- Regulatory or compliance constraints]
+
+---
+
+## Assumptions
+[Statements believed to be true for planning purposes. Each assumption should be:
+- Clearly stated
+- Identified with potential impact if proven false]
+
+| ID | Assumption | Impact if False |
+|----|------------|-----------------|
+| A-001 | [Assumption description] | [Consequence] |
+| A-002 | [Assumption description] | [Consequence] |
+
+---
+
+## Risks
+[Potential issues that could impact success. Include:]
+
+| ID | Risk | Likelihood | Impact | Mitigation |
+|----|------|------------|--------|------------|
+| R-001 | [Risk description] | [Low/Medium/High] | [Low/Medium/High] | [Mitigation strategy] |
+| R-002 | [Risk description] | [Low/Medium/High] | [Low/Medium/High] | [Mitigation strategy] |
+
+---
 
 ## Out of Scope
-[What is explicitly NOT included in this PRD]
+[What is explicitly NOT included in this PRD. Be specific to prevent scope creep:
+- Features or capabilities that will not be implemented
+- Use cases that are not addressed
+- Future enhancements deferred to later phases]
+
+---
+
+## Open Questions
+[Gaps requiring stakeholder input. List any unresolved questions or ambiguities that need clarification before or during implementation:]
+
+| ID | Question | Owner | Status |
+|----|----------|-------|--------|
+| Q-001 | [Question description] | [Who needs to answer] | [Open/Resolved] |
+| Q-002 | [Question description] | [Who needs to answer] | [Open/Resolved] |
+
+[If no open questions exist, state: "No open questions at this time."]
 ```
+
+# TRACEABILITY REQUIREMENTS
+- Every functional requirement MUST trace back to the original user intent
+- Every user story MUST connect to one or more functional requirements
+- Acceptance criteria MUST be verifiable against the requirements
 
 # CONSTRAINTS
 - MUST explore codebase before writing PRD
 - MUST use kebab-case for short_description (e.g., user-authentication, api-refactor)
+- MUST include ALL sections defined in the structure (do not omit any section)
 - MUST include at least 3 acceptance criteria per story (happy path, edge case, error scenario)
 - MUST include at least 3 definition of done items per story
 - MUST use GIVEN/WHEN/THEN format for acceptance criteria
 - MUST use MoSCoW prioritization (Must Have, Should Have, Could Have, Won't Have)
+- MUST include Table of Contents with working anchor links for documents with more than 3 user stories
+- MUST include Open Questions section even if empty (state "No open questions at this time.")
 - All story statuses are implicitly "pending"
 
 # RESPONSE FORMAT
@@ -505,7 +641,16 @@ Convert a human-readable PRD markdown document into a structured JSON format.
 Convert the markdown PRD into JSON format with the following structure:
 - Extract PRD ID from the Metadata section
 - Extract description from Executive Summary
-- Convert each User Story into a userStories array entry
+- Extract problemStatement from Problem Statement section
+- Extract proposedSolution from Proposed Solution section
+- Extract functionalRequirements from Functional Requirements table
+- Extract nonFunctionalRequirements from Non-Functional Requirements section
+- Convert each User Story into a userStories array entry (including rationale field)
+- Extract technicalConstraints from Technical Constraints section
+- Extract assumptions from Assumptions table
+- Extract risks from Risks table
+- Extract outOfScope items from Out of Scope section
+- Extract openQuestions from Open Questions table
 - Include sourceDocument metadata referencing the original markdown file
 
 # OUTPUT FORMAT
@@ -514,14 +659,32 @@ Output ONLY valid JSON (no markdown, no text outside JSON):
 {
   "id": "PRD-XXX",
   "description": "Executive summary content",
+  "problemStatement": "Problem statement content",
+  "proposedSolution": "Proposed solution content",
   "sourceDocument": {
     "path": "path/to/prd-short-description.md",
     "timestamp": "ISO timestamp when markdown was created"
+  },
+  "functionalRequirements": [
+    {
+      "id": "FR-001",
+      "requirement": "Requirement description",
+      "priority": "Must Have",
+      "tracesTo": "Intent reference"
+    }
+  ],
+  "nonFunctionalRequirements": {
+    "performance": ["Requirement 1", "Requirement 2"],
+    "security": ["Requirement 1"],
+    "reliability": ["Requirement 1"],
+    "maintainability": ["Requirement 1"],
+    "scalability": ["Requirement 1"]
   },
   "userStories": [
     {
       "id": "TASK-XXX",
       "description": "As a... I want... so that...",
+      "rationale": "Why this story is important",
       "priority": "Must Have",
       "acceptanceCriteria": [
         "GIVEN... WHEN... THEN...",
@@ -534,6 +697,32 @@ Output ONLY valid JSON (no markdown, no text outside JSON):
       "dependencies": [],
       "status": "pending"
     }
+  ],
+  "technicalConstraints": ["Constraint 1", "Constraint 2"],
+  "assumptions": [
+    {
+      "id": "A-001",
+      "assumption": "Assumption description",
+      "impactIfFalse": "Consequence"
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-001",
+      "risk": "Risk description",
+      "likelihood": "Medium",
+      "impact": "High",
+      "mitigation": "Mitigation strategy"
+    }
+  ],
+  "outOfScope": ["Item 1", "Item 2"],
+  "openQuestions": [
+    {
+      "id": "Q-001",
+      "question": "Question description",
+      "owner": "Who needs to answer",
+      "status": "Open"
+    }
   ]
 }
 
@@ -543,6 +732,10 @@ Output ONLY valid JSON (no markdown, no text outside JSON):
 - All stories MUST have status "pending"
 - Extract EXACTLY what is in the markdown - do not add or remove stories
 - Preserve all acceptance criteria and definition of done items
+- Include rationale field for each user story
+- If a section is empty or states no items, use empty array []
+- For openQuestions, if markdown states "No open questions at this time", use empty array []
+- Only include nonFunctionalRequirements categories that are present in the markdown
 """,
         "revise_prd.txt": """# ROLE
 PRD Quality Reviewer
