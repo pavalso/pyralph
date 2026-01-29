@@ -16,7 +16,7 @@ class TestEvent:
     def test_event_types_exist(self):
         for name in self.EVENTS:
             assert hasattr(EventType, name)
-        assert len(EventType) == 39
+        assert len(EventType) == 42
 
     def test_event_creation_serialization(self):
         event = Event(EventType.TASK_SUCCESS, phase="execute", task_id="T-001", metadata={"k": "v"})

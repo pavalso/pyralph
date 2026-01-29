@@ -58,6 +58,11 @@ class EventType(Enum):
     PRD_COMPLETE = auto()
     PRD_INCOMPLETE = auto()
 
+    # PRD Markdown events
+    PRD_MD_START = auto()
+    PRD_MD_SUCCESS = auto()
+    PRD_MD_FAILURE = auto()
+
     # Error events
     ERROR = auto()
 
@@ -90,6 +95,7 @@ class Event:
     verification_command: Optional[str] = None
     verification_exit_code: Optional[int] = None
     prd_path: Optional[str] = None
+    prd_md_path: Optional[str] = None
     # IssueWatcher-related fields
     issue_number: Optional[int] = None
     issue_title: Optional[str] = None
@@ -119,6 +125,7 @@ class Event:
             "verification_command": self.verification_command,
             "verification_exit_code": self.verification_exit_code,
             "prd_path": self.prd_path,
+            "prd_md_path": self.prd_md_path,
             "issue_number": self.issue_number,
             "issue_title": self.issue_title,
             "issue_url": self.issue_url,

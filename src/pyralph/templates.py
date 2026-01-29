@@ -344,6 +344,167 @@ Refine and clarify the user's intent into a precise, actionable description.
 </ENHANCED_INTENT>
 
 Output ONLY the enhanced intent within the tags. No explanations outside tags.""",
+        "prd_markdown.txt": """# ROLE
+Product Manager & Technical Analyst
+
+# OBJECTIVE
+Explore the codebase and generate a human-readable PRD specification document (prd-<short-description>.md) that will serve as the authoritative source for subsequent JSON PRD generation.
+
+# CONTEXT
+<USER_INTENT>
+{{user_intent}}
+</USER_INTENT>
+
+<FILE_TREE>
+{{file_tree}}
+</FILE_TREE>
+
+# CODEBASE EXPLORATION REQUIREMENTS
+
+Before writing the PRD, you MUST explore and understand:
+
+1. **Project Structure**: Analyze the directory layout, main modules, and their relationships
+2. **Dependencies**: Identify external dependencies and their versions (package.json, pyproject.toml, requirements.txt, etc.)
+3. **Architectural Patterns**: Detect patterns used (MVC, layered, event-driven, repository, etc.)
+4. **Test Framework**: Identify the testing approach and conventions
+5. **Existing Conventions**: Note naming patterns, import organization, and coding style
+
+# OUTPUT SPECIFICATION
+
+Generate a markdown file named: prd-{{short_description}}.md
+
+The file MUST follow this exact structure:
+
+```markdown
+# PRD: {{title}}
+
+## Metadata
+- **PRD ID**: PRD-XXX
+- **Created**: {{timestamp}}
+- **Short Description**: {{short_description}}
+
+## Executive Summary
+[2-3 sentences describing the overall goal and value proposition]
+
+## Codebase Context
+### Project Structure
+[Key directories and their purposes discovered during exploration]
+
+### Dependencies
+[Relevant dependencies that may impact implementation]
+
+### Architectural Patterns
+[Patterns identified that should be followed]
+
+### Test Framework
+[Testing approach to be used]
+
+### Conventions
+[Naming, style, and organizational conventions to follow]
+
+## User Stories
+
+### TASK-001: [Story Title]
+**Priority**: [Must Have|Should Have|Could Have|Won't Have]
+
+**Description**: As a [role], I want [capability] so that [benefit].
+
+**Acceptance Criteria**:
+- GIVEN [precondition] WHEN [action] THEN [expected result]
+- GIVEN [precondition] WHEN [action] THEN [expected result]
+- GIVEN [edge case] WHEN [action] THEN [expected result]
+- GIVEN [error scenario] WHEN [action] THEN [expected error handling]
+
+**Definition of Done**:
+- [ ] [Quality gate 1]
+- [ ] [Quality gate 2]
+- [ ] [Quality gate 3]
+
+**Dependencies**: [TASK-XXX, TASK-YYY] or None
+
+[Repeat for each user story]
+
+## Technical Considerations
+[Any technical notes, risks, or implementation hints discovered during exploration]
+
+## Out of Scope
+[What is explicitly NOT included in this PRD]
+```
+
+# CONSTRAINTS
+- MUST explore codebase before writing PRD
+- MUST use kebab-case for short_description (e.g., user-authentication, api-refactor)
+- MUST include at least 3 acceptance criteria per story (happy path, edge case, error scenario)
+- MUST include at least 3 definition of done items per story
+- MUST use GIVEN/WHEN/THEN format for acceptance criteria
+- MUST use MoSCoW prioritization (Must Have, Should Have, Could Have, Won't Have)
+- All story statuses are implicitly "pending"
+
+# RESPONSE FORMAT
+Output ONLY the markdown content. No explanations outside the markdown.
+After creating the file, output EXACTLY:
+```
+STATUS: CREATED prd-{{short_description}}.md
+```
+""",
+        "prd_from_markdown.txt": """# ROLE
+Technical Translator
+
+# OBJECTIVE
+Convert a human-readable PRD markdown document into a structured JSON format.
+
+# INPUT
+<PRD_MARKDOWN>
+{{prd_markdown_content}}
+</PRD_MARKDOWN>
+
+<SOURCE_DOCUMENT>
+{{source_document_path}}
+</SOURCE_DOCUMENT>
+
+# REQUIREMENTS
+Convert the markdown PRD into JSON format with the following structure:
+- Extract PRD ID from the Metadata section
+- Extract description from Executive Summary
+- Convert each User Story into a userStories array entry
+- Include sourceDocument metadata referencing the original markdown file
+
+# OUTPUT FORMAT
+Output ONLY valid JSON (no markdown, no text outside JSON):
+
+{
+  "id": "PRD-XXX",
+  "description": "Executive summary content",
+  "sourceDocument": {
+    "path": "path/to/prd-short-description.md",
+    "timestamp": "ISO timestamp when markdown was created"
+  },
+  "userStories": [
+    {
+      "id": "TASK-XXX",
+      "description": "As a... I want... so that...",
+      "priority": "Must Have",
+      "acceptanceCriteria": [
+        "GIVEN... WHEN... THEN...",
+        "..."
+      ],
+      "definitionOfDone": [
+        "Quality gate 1",
+        "..."
+      ],
+      "dependencies": [],
+      "status": "pending"
+    }
+  ]
+}
+
+# CONSTRAINTS
+- Output ONLY valid JSON
+- MUST include sourceDocument field
+- All stories MUST have status "pending"
+- Extract EXACTLY what is in the markdown - do not add or remove stories
+- Preserve all acceptance criteria and definition of done items
+""",
         "revise_prd.txt": """# ROLE
 PRD Quality Reviewer
 
