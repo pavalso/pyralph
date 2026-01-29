@@ -1,4 +1,5 @@
 import json
+import sys
 import unittest
 import warnings
 
@@ -213,7 +214,6 @@ class TestCaptureStdoutEdgeCases(unittest.TestCase):
 
     def test_stdout_restored_on_exception(self):
         """Stdout is properly restored even when assertions fail."""
-        import sys
         original = sys.stdout
 
         try:
